@@ -79,6 +79,7 @@
     <Compile Include="Critical\CarDefaultTyreSetRepair.cs" />
     <Compile Include="Critical\EmptyErsRepair.cs" />
     <Compile Include="Critical\MissingAeroLutRepair.cs" />
+    <Compile Include="Properties\XmlnsClubMappings.cs" />
     <Compile Include="Repairs\CarAiShiftingPointsRepair.cs" />
     <Compile Include="Repairs\CarDashCameraRepair.cs" />
     <Compile Include="Repairs\CarDriver3DRepair.cs" />

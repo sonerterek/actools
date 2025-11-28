@@ -726,6 +726,7 @@
     <Compile Include="Profile\PlayerStatsManager.cs" />
     <Compile Include="Profile\RaceWebServer.cs" />
     <Compile Include="Profile\OverallStats.cs" />
+    <Compile Include="Properties\XmlnsClubMappings.cs" />
     <Compile Include="SemiGui\CopyFilterToSystemForOculusHelper.cs" />
     <Compile Include="SemiGui\DataUpdateWarning.cs" />
     <Compile Include="SemiGui\GameStartedArgs.cs" />

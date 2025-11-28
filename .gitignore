@@ -57,6 +57,7 @@ TestResults/*
 Output/*
 
 # Local settings
+**/.vs/
 .vs/*
 *.DotSettings
 *.csproj.user
