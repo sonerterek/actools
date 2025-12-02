@@ -20,6 +20,7 @@ using FirstFloor.ModernUI.Presentation;
 using FirstFloor.ModernUI.Windows.Controls;
 using JetBrains.Annotations;
 using Application = System.Windows.Application;
+using UiObserver = AcManager.Tools.Helpers.UiObserver;
 
 namespace AcManager {
     public class AppUi {
@@ -30,6 +31,9 @@ namespace AcManager {
 
         public AppUi([NotNull] Application application) {
             _application = application ?? throw new ArgumentNullException(nameof(application));
+
+            // Initialize UI observer to start reporting UI events to external clients
+            UiObserver.Initialize();
 
             // Extra close-if-nothing-shown timer just to be sure
             if (_application.Dispatcher != null) {
