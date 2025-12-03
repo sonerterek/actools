@@ -966,8 +966,8 @@
     <Compile Include="Tools\WebDownloadListener.cs" />
     <Compile Include="Tools\WheelAnglesStorage.cs" />
     <Compile Include="Tools\Win10SharingUiHelper.cs" />
-    <Compile Include="UiObserver.cs" />
-    <Compile Include="UiObserverPipeClient.cs" />
+    <Compile Include="UiObserver\UiObserver.cs" />
+    <Compile Include="UiObserver\UiObserverPipeClient.cs" />
     <Compile Include="UserControls\AdditionalContentEntryTemplateSelector.cs" />
     <Compile Include="UserControls\BakedShadowsSettings.xaml.cs">
       <DependentUpon>BakedShadowsSettings.xaml</DependentUpon>

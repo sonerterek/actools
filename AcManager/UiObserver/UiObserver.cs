@@ -14,7 +14,7 @@ using System.Threading.Tasks;
 using System.Collections.Generic;
 using System.Windows.Documents;
 
-namespace AcManager.Tools.Helpers
+namespace AcManager.UiObserver
 {
     public static class UiObserver
     {

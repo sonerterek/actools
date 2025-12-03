@@ -95,7 +95,7 @@ namespace AcManager {
                 try {
                     var filename = Path.Combine(ApplicationDataDirectory, "UiObserverMap.csv");
                     Directory.CreateDirectory(Path.GetDirectoryName(filename));
-                    AcManager.Tools.Helpers.UiObserver.DumpControlParentTypeMapCsv(filename);
+                    AcManager.UiObserver.UiObserver.DumpControlParentTypeMapCsv(filename);
                 } catch { }
             };
 
