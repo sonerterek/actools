@@ -12,361 +12,481 @@ using System.IO.Pipes;
 using System.IO;
 using System.Threading.Tasks;
 using System.Collections.Generic;
+using System.Windows.Documents;
 
 namespace AcManager.Tools.Helpers
 {
-	public static class UiObserver
-	{
-		private static bool _initialized;
-		private static string _pipeName;
-		private static NamedPipeClientStream _pipeStream;
-		private static StreamWriter _pipeWriter;
-		private static readonly object PipeLock = new object();
+    public static class UiObserver
+    {
+        private static bool _initialized;
+        private static string _pipeName;
+        private static NamedPipeClientStream _pipeStream;
+        private static StreamWriter _pipeWriter;
+        private static readonly object PipeLock = new object();
 
-		// Map: parent type -> control type -> count
-		private static readonly object TypeMapLock = new object();
-		private static readonly Dictionary<string, Dictionary<string, int>> ParentControlCountMap =
-				new Dictionary<string, Dictionary<string, int>>(StringComparer.Ordinal);
+        // Map: parent type -> control type -> count (kept for compatibility)
+        private static readonly object TypeMapLock = new object();
+        private static readonly Dictionary<string, Dictionary<string, int>> ParentControlCountMap =
+                new Dictionary<string, Dictionary<string, int>>(StringComparer.Ordinal);
 
-		// Dumps the in-memory parent->control-type map to CSV file. Safe to call any time.
-		public static void DumpControlParentTypeMapCsv(string filename)
-		{
-			try {
-				if (string.IsNullOrEmpty(filename)) return;
-				lock (TypeMapLock) {
-					using (var writer = new StreamWriter(filename, false, System.Text.Encoding.UTF8)) {
-						writer.WriteLine("ParentType,ControlType,Count");
-						foreach (var parentType in ParentControlCountMap.Keys.OrderBy(x => x)) {
-							var controls = ParentControlCountMap[parentType];
-							foreach (var control in controls.OrderBy(x => x.Key)) {
-								// simple CSV escaping
-								string esc(string s) => '"' + (s?.Replace("\"", "\"\"") ?? string.Empty) + '"';
-								writer.WriteLine($"{esc(parentType)},{esc(control.Key)},{control.Value}");
-							}
-						}
-					}
-				}
-			} catch (Exception e) {
-				try { FirstFloor.ModernUI.Helpers.Logging.Warning($"UiObserver: Dump failed: {e.Message}"); } catch { }
-			}
-		}
+        // Per-instance tracking: instance id -> info
+        private class InstanceInfo {
+            public WeakReference<FrameworkElement> ElementRef;
+            public int ChildCount;
+        }
+        private static readonly Dictionary<string, InstanceInfo> Instances = new Dictionary<string, InstanceInfo>(StringComparer.Ordinal);
+        private static readonly object InstancesLock = new object();
+        private static readonly DependencyProperty InstanceIdProperty = DependencyProperty.RegisterAttached("UiObserverInstanceId", typeof(string), typeof(UiObserver), new PropertyMetadata(null));
 
-		public static void Initialize(string pipeName)
-		{
+        // Adorners for highlighting
+        private static readonly List<Adorner> CurrentAdorners = new List<Adorner>();
+        private static bool _highlightingShown;
+
+        // Dumps the in-memory parent->control-type map to CSV file. Safe to call any time.
+        public static void DumpControlParentTypeMapCsv(string filename)
+        {
+            try {
+                if (string.IsNullOrEmpty(filename)) return;
+                lock (TypeMapLock) {
+                    using (var writer = new StreamWriter(filename, false, System.Text.Encoding.UTF8)) {
+                        writer.WriteLine("ParentType,ControlType,Count");
+                        foreach (var parentType in ParentControlCountMap.Keys.OrderBy(x => x)) {
+                            var controls = ParentControlCountMap[parentType];
+                            foreach (var control in controls.OrderBy(x => x.Key)) {
+                                // simple CSV escaping
+                                string esc(string s) => '"' + (s?.Replace("\"", "\"\"") ?? string.Empty) + '"';
+                                writer.WriteLine($"{esc(parentType)},{esc(control.Key)},{control.Value}");
+                            }
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                try { FirstFloor.ModernUI.Helpers.Logging.Warning($"UiObserver: Dump failed: {e.Message}"); } catch { }
+            }
+        }
+
+        public static void Initialize(string pipeName)
+        {
 #if !DEBUG
             if (string.IsNullOrEmpty(pipeName)) return;
 #endif
-			if (_initialized) return;
-			_initialized = true;
-			_pipeName = pipeName;
+            if (_initialized) return;
+            _initialized = true;
+            _pipeName = pipeName;
 
-			// Try to connect in background
-			Task.Run(() => TryConnectPipe());
+            // Try to connect in background
+            Task.Run(() => TryConnectPipe());
 
-			// Window lifecycle: DpiAwareWindow.NewWindowCreated + class handler for Loaded
-			DpiAwareWindow.NewWindowCreated += (s, e) => OnWindowCreated(s as Window);
-			EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent, new RoutedEventHandler(OnWindowLoaded), true);
+            // Window lifecycle: DpiAwareWindow.NewWindowCreated + class handler for Loaded
+            DpiAwareWindow.NewWindowCreated += (s, e) => OnWindowCreated(s as Window);
+            EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent, new RoutedEventHandler(OnWindowLoaded), true);
 
-			// Intercept creation / destruction of controls (Loaded / Unloaded of FrameworkElement)
-			EventManager.RegisterClassHandler(typeof(FrameworkElement), FrameworkElement.LoadedEvent, new RoutedEventHandler(OnElementLoaded), true);
-			EventManager.RegisterClassHandler(typeof(FrameworkElement), FrameworkElement.UnloadedEvent, new RoutedEventHandler(OnElementUnloaded), true);
+            // Intercept creation / destruction of controls (Loaded / Unloaded of FrameworkElement)
+            EventManager.RegisterClassHandler(typeof(FrameworkElement), FrameworkElement.LoadedEvent, new RoutedEventHandler(OnElementLoaded), true);
+            EventManager.RegisterClassHandler(typeof(FrameworkElement), FrameworkElement.UnloadedEvent, new RoutedEventHandler(OnElementUnloaded), true);
 
-			// Focus (disabled for now)
-			// EventManager.RegisterClassHandler(typeof(FrameworkElement), UIElement.GotFocusEvent, new RoutedEventHandler(OnGotFocus), true);
-			// EventManager.RegisterClassHandler(typeof(FrameworkElement), UIElement.LostFocusEvent, new RoutedEventHandler(OnLostFocus), true);
+            // Key handler for toggling highlighting (Ctrl+Shift+F12)
+            EventManager.RegisterClassHandler(typeof(Window), UIElement.PreviewKeyDownEvent, new KeyEventHandler(OnPreviewKeyDown), true);
 
-			// Common control interactions
-			EventManager.RegisterClassHandler(typeof(Button), Button.ClickEvent, new RoutedEventHandler(OnButtonClick), true);
-			EventManager.RegisterClassHandler(typeof(Selector), Selector.SelectionChangedEvent, new SelectionChangedEventHandler(OnSelectionChanged), true);
-			EventManager.RegisterClassHandler(typeof(RangeBase), RangeBase.ValueChangedEvent, new RoutedPropertyChangedEventHandler<double>(OnRangeValueChanged), true);
-			EventManager.RegisterClassHandler(typeof(TextBox), TextBox.TextChangedEvent, new TextChangedEventHandler(OnTextChanged), true);
+            // Focus (disabled for now)
+            // EventManager.RegisterClassHandler(typeof(FrameworkElement), UIElement.GotFocusEvent, new RoutedEventHandler(OnGotFocus), true);
+            // EventManager.RegisterClassHandler(typeof(FrameworkElement), UIElement.LostFocusEvent, new RoutedEventHandler(OnLostFocus), true);
 
-			// Optionally hook Activated/Deactivated/Closed on existing Window instances:
-			if (Application.Current?.Dispatcher != null) {
-				Application.Current.Dispatcher.BeginInvoke(new Action(() => {
-					foreach (Window w in Application.Current.Windows) AttachWindowHandlers(w);
-				}), DispatcherPriority.ApplicationIdle);
-			}
-		}
+            // Common control interactions
+            EventManager.RegisterClassHandler(typeof(Button), Button.ClickEvent, new RoutedEventHandler(OnButtonClick), true);
+            EventManager.RegisterClassHandler(typeof(Selector), Selector.SelectionChangedEvent, new SelectionChangedEventHandler(OnSelectionChanged), true);
+            EventManager.RegisterClassHandler(typeof(RangeBase), RangeBase.ValueChangedEvent, new RoutedPropertyChangedEventHandler<double>(OnRangeValueChanged), true);
+            EventManager.RegisterClassHandler(typeof(TextBox), TextBox.TextChangedEvent, new TextChangedEventHandler(OnTextChanged), true);
 
-		private static void TryConnectPipe()
-		{
-			try {
-				lock (PipeLock) {
-					if (string.IsNullOrEmpty(_pipeName) || _pipeWriter != null) return;
+            // Optionally hook Activated/Deactivated/Closed on existing Window instances:
+            if (Application.Current?.Dispatcher != null) {
+                Application.Current.Dispatcher.BeginInvoke(new Action(() => {
+                    foreach (Window w in Application.Current.Windows) AttachWindowHandlers(w);
+                }), DispatcherPriority.ApplicationIdle);
+            }
+        }
 
-					try {
-						_pipeStream = new NamedPipeClientStream(".", _pipeName, PipeDirection.Out, PipeOptions.Asynchronous);
-						// try to connect with short timeout
-						_pipeStream.Connect(500);
-						_pipeStream.ReadMode = PipeTransmissionMode.Message;
-						_pipeWriter = new StreamWriter(_pipeStream) { AutoFlush = true };
-					} catch (Exception) {
-						// couldn't connect now; dispose
-						try { _pipeStream?.Dispose(); } catch { }
-						_pipeStream = null;
-						_pipeWriter = null;
-					}
-				}
-			} catch { /* ignore */ }
-		}
+        private static void TryConnectPipe()
+        {
+            try {
+                lock (PipeLock) {
+                    if (string.IsNullOrEmpty(_pipeName) || _pipeWriter != null) return;
 
-		private static void OnWindowCreated(Window w)
-		{
-			if (w == null) return;
-			AttachWindowHandlers(w);
-			PushEvent(new { Type = "WindowCreated", Window = DescribeWindow(w) });
-		}
+                    try {
+                        _pipeStream = new NamedPipeClientStream(".", _pipeName, PipeDirection.Out, PipeOptions.Asynchronous);
+                        // try to connect with short timeout
+                        _pipeStream.Connect(500);
+                        _pipeStream.ReadMode = PipeTransmissionMode.Message;
+                        _pipeWriter = new StreamWriter(_pipeStream) { AutoFlush = true };
+                    } catch (Exception) {
+                        // couldn't connect now; dispose
+                        try { _pipeStream?.Dispose(); } catch { }
+                        _pipeStream = null;
+                        _pipeWriter = null;
+                    }
+                }
+            } catch { /* ignore */ }
+        }
 
-		private static void AttachWindowHandlers(Window w)
-		{
-			if (w == null) return;
-			// avoid multiple subscriptions
-			w.Activated -= WindowActivatedHandler;
-			w.Deactivated -= WindowDeactivatedHandler;
-			w.Loaded -= WindowLoadedHandler;
-			w.Closed -= WindowClosedHandler;
+        private static void OnWindowCreated(Window w)
+        {
+            if (w == null) return;
+            AttachWindowHandlers(w);
+            PushEvent(new { Type = "WindowCreated", Window = DescribeWindow(w) });
+        }
 
-			w.Activated += WindowActivatedHandler;
-			w.Deactivated += WindowDeactivatedHandler;
-			w.Loaded += WindowLoadedHandler;
-			w.Closed += WindowClosedHandler;
-		}
+        private static void AttachWindowHandlers(Window w)
+        {
+            if (w == null) return;
+            // avoid multiple subscriptions
+            w.Activated -= WindowActivatedHandler;
+            w.Deactivated -= WindowDeactivatedHandler;
+            w.Loaded -= WindowLoadedHandler;
+            w.Closed -= WindowClosedHandler;
 
-		private static void WindowActivatedHandler(object s, EventArgs e)
-		{
-			PushEvent(new { Type = "WindowActivated", Window = DescribeWindow((Window)s) });
-		}
+            w.Activated += WindowActivatedHandler;
+            w.Deactivated += WindowDeactivatedHandler;
+            w.Loaded += WindowLoadedHandler;
+            w.Closed += WindowClosedHandler;
+        }
 
-		private static void WindowDeactivatedHandler(object s, EventArgs e)
-		{
-			PushEvent(new { Type = "WindowDeactivated", Window = DescribeWindow((Window)s) });
-		}
+        private static void WindowActivatedHandler(object s, EventArgs e)
+        {
+            PushEvent(new { Type = "WindowActivated", Window = DescribeWindow((Window)s) });
+        }
 
-		private static void WindowLoadedHandler(object s, RoutedEventArgs e)
-		{
-			PushEvent(new { Type = "WindowLoaded", Window = DescribeWindow((Window)s) });
-		}
+        private static void WindowDeactivatedHandler(object s, EventArgs e)
+        {
+            PushEvent(new { Type = "WindowDeactivated", Window = DescribeWindow((Window)s) });
+        }
 
-		private static void WindowClosedHandler(object s, EventArgs e)
-		{
-			PushEvent(new { Type = "WindowClosed", Window = DescribeWindow((Window)s) });
-		}
+        private static void WindowLoadedHandler(object s, RoutedEventArgs e)
+        {
+            PushEvent(new { Type = "WindowLoaded", Window = DescribeWindow((Window)s) });
+        }
 
-		private static void OnWindowLoaded(object sender, RoutedEventArgs e)
-		{
-			var w = sender as Window;
-			PushEvent(new { Type = "WindowLoaded", Window = DescribeWindow(w) });
-		}
+        private static void WindowClosedHandler(object s, EventArgs e)
+        {
+            PushEvent(new { Type = "WindowClosed", Window = DescribeWindow((Window)s) });
+        }
 
-		// Control creation/destruction handlers
-		private static void OnElementLoaded(object sender, RoutedEventArgs e)
-		{
-			var fe = sender as FrameworkElement;
-			if (fe == null) return;
-			// windows handled separately
-			if (fe is Window) return;
+        private static void OnWindowLoaded(object sender, RoutedEventArgs e)
+        {
+            var w = sender as Window;
+            PushEvent(new { Type = "WindowLoaded", Window = DescribeWindow(w) });
+        }
 
-			var parent = FindParentFrameworkElement(fe);
+        // Control creation/destruction handlers
+        private static void OnElementLoaded(object sender, RoutedEventArgs e)
+        {
+            var fe = sender as FrameworkElement;
+            if (fe == null) return;
+            // windows handled separately
+            if (fe is Window) return;
 
-			// update in-memory map of parent types and control types (counting instances)
-			try {
-				var parentType = parent?.GetType().FullName ?? "<null>";
-				var controlType = fe.GetType().FullName ?? fe.GetType().Name;
-				lock (TypeMapLock) {
-					if (!ParentControlCountMap.TryGetValue(parentType, out var inner)) {
-						inner = new Dictionary<string, int>(StringComparer.Ordinal);
-						ParentControlCountMap[parentType] = inner;
-					}
-					if (inner.ContainsKey(controlType)) inner[controlType]++; else inner[controlType] = 1;
-				}
-			} catch { /* ignore */ }
+            var parent = FindParentFrameworkElement(fe);
 
-			PushEvent(new {
-				Type = "ControlCreated",
-				Control = DescribeElement(fe),
-				ParentId = GetIdForElement(parent),
-				ParentType = parent?.GetType().FullName
-			});
-		}
+            // assign instance id
+            var id = GetOrCreateInstanceId(fe);
 
-		private static void OnElementUnloaded(object sender, RoutedEventArgs e)
-		{
-			var fe = sender as FrameworkElement;
-			if (fe == null) return;
-			if (fe is Window) return;
+            // update per-instance map and parent-child counts
+            try {
+                lock (InstancesLock) {
+                    if (!Instances.ContainsKey(id)) Instances[id] = new InstanceInfo { ElementRef = new WeakReference<FrameworkElement>(fe), ChildCount = 0 };
+                    if (parent != null) {
+                        var pid = GetOrCreateInstanceId(parent);
+                        if (Instances.TryGetValue(pid, out var pinfo)) pinfo.ChildCount++;
+                    }
+                }
+            } catch { /* ignore */ }
 
-			var parent = FindParentFrameworkElement(fe);
-			PushEvent(new {
-				Type = "ControlDestroyed",
-				Control = DescribeElement(fe),
-				ParentId = GetIdForElement(parent),
-				ParentType = parent?.GetType().FullName
-			});
-		}
+            // update parent->control-type aggregated map as before
+            try {
+                var parentType = parent?.GetType().FullName ?? "<null>";
+                var controlType = fe.GetType().FullName ?? fe.GetType().Name;
+                lock (TypeMapLock) {
+                    if (!ParentControlCountMap.TryGetValue(parentType, out var inner)) {
+                        inner = new Dictionary<string, int>(StringComparer.Ordinal);
+                        ParentControlCountMap[parentType] = inner;
+                    }
+                    if (inner.ContainsKey(controlType)) inner[controlType]++; else inner[controlType] = 1;
+                }
+            } catch { /* ignore */ }
 
-		// helper: walk up visual/logical tree to find nearest FrameworkElement parent
-		private static FrameworkElement FindParentFrameworkElement(FrameworkElement fe)
-		{
-			if (fe == null) return null;
-			DependencyObject current = fe;
-			while (true) {
-				DependencyObject next = null;
+            PushEvent(new {
+                Type = "ControlCreated",
+                Control = DescribeElement(fe),
+                ParentId = GetIdForElement(parent),
+                ParentType = parent?.GetType().FullName
+            });
+        }
 
-				// prefer logical Parent when available
-				if (current is FrameworkElement f && f.Parent != null) {
-					next = f.Parent;
-				} else {
-					try {
-						next = VisualTreeHelper.GetParent(current);
-					} catch {
-						next = null;
-					}
-				}
+        private static void OnElementUnloaded(object sender, RoutedEventArgs e)
+        {
+            var fe = sender as FrameworkElement;
+            if (fe == null) return;
+            if (fe is Window) return;
 
-				if (next == null) return null;
-				if (next is FrameworkElement parentFe) return parentFe;
-				current = next;
-			}
-		}
+            var parent = FindParentFrameworkElement(fe);
 
-		// Note: Popup.Opened/Closed are CLR events (not routed). We can't RegisterClassHandler for them.
-		// If detection for popups is required, consider scanning PresentationSource.CurrentSources periodically
-		// or attach handlers when you create/populate popups.
+            // update per-instance map: decrement parent child count and remove instance
+            try {
+                lock (InstancesLock) {
+                    var id = GetInstanceId(fe);
+                    if (id != null) {
+                        Instances.Remove(id);
+                    }
+                    if (parent != null) {
+                        var pid = GetInstanceId(parent);
+                        if (pid != null && Instances.TryGetValue(pid, out var pinfo)) {
+                            pinfo.ChildCount = Math.Max(0, pinfo.ChildCount - 1);
+                        }
+                    }
+                }
+            } catch { /* ignore */ }
 
-		private static void OnGotFocus(object sender, RoutedEventArgs e)
-		{
-			// Focus events disabled — do nothing
-			return;
-		}
+            PushEvent(new {
+                Type = "ControlDestroyed",
+                Control = DescribeElement(fe),
+                ParentId = GetIdForElement(parent),
+                ParentType = parent?.GetType().FullName
+            });
+        }
 
-		private static void OnLostFocus(object sender, RoutedEventArgs e)
-		{
-			// Focus events disabled — do nothing
-			return;
-		}
+        private static string GetOrCreateInstanceId(FrameworkElement fe) {
+            if (fe == null) return null;
+            var v = fe.GetValue(InstanceIdProperty) as string;
+            if (!string.IsNullOrEmpty(v)) return v;
+            v = "I:" + Guid.NewGuid().ToString("N");
+            fe.SetValue(InstanceIdProperty, v);
+            return v;
+        }
 
-		private static void OnButtonClick(object sender, RoutedEventArgs e)
-		{
-			var fe = sender as FrameworkElement;
-			PushEvent(new { Type = "ButtonClick", Control = DescribeElement(fe) });
-		}
+        private static string GetInstanceId(FrameworkElement fe) {
+            return fe?.GetValue(InstanceIdProperty) as string;
+        }
 
-		private static void OnSelectionChanged(object sender, SelectionChangedEventArgs e)
-		{
-			var fe = sender as FrameworkElement;
-			PushEvent(new { Type = "SelectionChanged", Control = DescribeElement(fe) });
-		}
+        // Key handler: toggle highlighting of leaf controls (no children)
+        private static void OnPreviewKeyDown(object sender, KeyEventArgs e) {
+            if (e == null) return;
+            if (e.Key == Key.F12 && (Keyboard.Modifiers & (ModifierKeys.Control | ModifierKeys.Shift)) == (ModifierKeys.Control | ModifierKeys.Shift)) {
+                e.Handled = true;
+                ToggleHighlighting();
+            }
+        }
 
-		private static void OnRangeValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
-		{
-			var fe = sender as FrameworkElement;
-			PushEvent(new { Type = "ValueChanged", Control = DescribeElement(fe), Value = e.NewValue });
-		}
+        private static void ToggleHighlighting() {
+            if (_highlightingShown) {
+                ClearHighlighting();
+                _highlightingShown = false;
+                return;
+            }
 
-		private static void OnTextChanged(object sender, TextChangedEventArgs e)
-		{
-			var fe = sender as FrameworkElement;
-			PushEvent(new { Type = "TextChanged", Control = DescribeElement(fe) });
-		}
+            var toHighlight = new List<FrameworkElement>();
+            lock (InstancesLock) {
+                foreach (var kv in Instances.ToList()) {
+                    if (kv.Value.ElementRef.TryGetTarget(out var fe)) {
+                        if (kv.Value.ChildCount == 0 && fe.IsVisible && fe.IsLoaded) toHighlight.Add(fe);
+                    }
+                }
+            }
 
-		// --- helpers to describe elements/windows/popups
+            foreach (var fe in toHighlight) {
+                try {
+                    var layer = AdornerLayer.GetAdornerLayer(fe) ?? AdornerLayer.GetAdornerLayer(Window.GetWindow(fe)?.Content as Visual);
+                    if (layer == null) continue;
+                    var ad = new OutlineAdorner(fe);
+                    layer.Add(ad);
+                    CurrentAdorners.Add(ad);
+                } catch { /* ignore */ }
+            }
 
-		private static object DescribeWindow(Window w)
-		{
-			if (w == null) return null;
-			return new {
-				Id = GetIdForElement(w),
-				Type = w.GetType().FullName,
-				Title = w.Title,
-				Bounds = GetScreenBounds(w)
-			};
-		}
+            _highlightingShown = true;
+        }
 
-		private static object DescribePopup(Popup p)
-		{
-			if (p == null) return null;
-			return new {
-				Id = GetIdForElement(p.Child as FrameworkElement),
-				Type = p.GetType().FullName,
-				IsOpen = p.IsOpen
-			};
-		}
+        private static void ClearHighlighting() {
+            foreach (var ad in CurrentAdorners.ToList()) {
+                try {
+                    var layer = AdornerLayer.GetAdornerLayer(ad.AdornedElement);
+                    layer?.Remove(ad);
+                } catch { /* ignore */ }
+            }
+            CurrentAdorners.Clear();
+        }
 
-		private static object DescribeElement(FrameworkElement fe)
-		{
-			if (fe == null) return null;
-			var w = Window.GetWindow(fe);
-			var bounds = GetScreenBounds(fe, w);
-			return new {
-				Id = GetIdForElement(fe),
-				Type = fe.GetType().FullName,
-				Name = fe.Name,
-				AutomationId = System.Windows.Automation.AutomationProperties.GetAutomationId(fe),
-				Bounds = bounds,
-				Visible = fe.IsVisible,
-				Enabled = (fe as Control)?.IsEnabled
-			};
-		}
+        // Adorner to draw orange rectangle around element
+        private class OutlineAdorner : Adorner {
+            public OutlineAdorner(UIElement adornedElement) : base(adornedElement) {
+                IsHitTestVisible = false;
+            }
 
-		private static string GetIdForElement(FrameworkElement fe)
-		{
-			if (fe == null) return null;
-			var auto = System.Windows.Automation.AutomationProperties.GetAutomationId(fe);
-			if (!string.IsNullOrEmpty(auto)) return "A:" + auto;
-			if (!string.IsNullOrEmpty(fe.Name)) return "N:" + fe.Name;
-			// fallback: type + hash
-			return $"G:{fe.GetType().Name}:{fe.GetHashCode():X8}";
-		}
+            protected override void OnRender(DrawingContext drawingContext) {
+                var fe = AdornedElement as FrameworkElement;
+                if (fe == null) return;
+                var r = new Rect(new Point(0, 0), new Size(fe.ActualWidth, fe.ActualHeight));
+                var pen = new Pen(Brushes.Orange, 2);
+                drawingContext.DrawRectangle(Brushes.Transparent, pen, r);
+            }
+        }
 
-		private static Rect? GetScreenBounds(FrameworkElement fe, Window w = null)
-		{
-			try {
-				if (fe == null) return null;
-				if (w == null) w = Window.GetWindow(fe);
-				if (w == null) return null;
-				var transform = fe.TransformToAncestor(w) as GeneralTransform;
-				var topLeft = transform.Transform(new Point(0, 0));
-				var bottomRight = transform.Transform(new Point(fe.ActualWidth, fe.ActualHeight));
-				var p1 = w.PointToScreen(topLeft);
-				var p2 = w.PointToScreen(bottomRight);
-				// convert to device pixels if necessary
-				var source = PresentationSource.FromVisual(w);
-				if (source != null) {
-					var m = source.CompositionTarget.TransformToDevice;
-					p1 = new Point(p1.X * m.M11, p1.Y * m.M22);
-					p2 = new Point(p2.X * m.M11, p2.Y * m.M22);
-				}
-				return new Rect(p1, p2);
-			} catch {
-				return null;
-			}
-		}
+        // helper: walk up visual/logical tree to find nearest FrameworkElement parent
+        private static FrameworkElement FindParentFrameworkElement(FrameworkElement fe)
+        {
+            if (fe == null) return null;
+            DependencyObject current = fe;
+            while (true) {
+                DependencyObject next = null;
 
-		// Very small placeholder: serialize and push to external process here
-		private static void PushEvent(object payload)
-		{
-			// For debug: log to app logging
-			try {
-				var s = Newtonsoft.Json.JsonConvert.SerializeObject(payload);
-				Logging.Debug("UiObserver: " + (s?.Length > 1000 ? s.Substring(0, 1000) + "…" : s));
-				// send to pipe if available
-				if (_pipeName != null) {
-					try {
-						lock (PipeLock) {
-							if (_pipeWriter == null) {
-								// try to connect once more
-								TryConnectPipe();
-							}
+                // prefer logical Parent when available
+                if (current is FrameworkElement f && f.Parent != null) {
+                    next = f.Parent;
+                } else {
+                    try {
+                        next = VisualTreeHelper.GetParent(current);
+                    } catch {
+                        next = null;
+                    }
+                }
 
-							if (_pipeWriter != null) {
-								_pipeWriter.WriteLine(s);
-								_pipeWriter.Flush();
-							}
-						}
-					} catch { /* ignore */ }
-				}
-			} catch { /* ignore */ }
-		}
-	}
+                if (next == null) return null;
+                if (next is FrameworkElement parentFe) return parentFe;
+                current = next;
+            }
+        }
+
+        private static void OnGotFocus(object sender, RoutedEventArgs e)
+        {
+            // Focus events disabled — do nothing
+            return;
+        }
+
+        private static void OnLostFocus(object sender, RoutedEventArgs e)
+        {
+            // Focus events disabled — do nothing
+            return;
+        }
+
+        private static void OnButtonClick(object sender, RoutedEventArgs e)
+        {
+            var fe = sender as FrameworkElement;
+            PushEvent(new { Type = "ButtonClick", Control = DescribeElement(fe) });
+        }
+
+        private static void OnSelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            var fe = sender as FrameworkElement;
+            PushEvent(new { Type = "SelectionChanged", Control = DescribeElement(fe) });
+        }
+
+        private static void OnRangeValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            var fe = sender as FrameworkElement;
+            PushEvent(new { Type = "ValueChanged", Control = DescribeElement(fe), Value = e.NewValue });
+        }
+
+        private static void OnTextChanged(object sender, TextChangedEventArgs e)
+        {
+            var fe = sender as FrameworkElement;
+            PushEvent(new { Type = "TextChanged", Control = DescribeElement(fe) });
+        }
+
+        // --- helpers to describe elements/windows/popups
+
+        private static object DescribeWindow(Window w)
+        {
+            if (w == null) return null;
+            return new {
+                Id = GetIdForElement(w),
+                Type = w.GetType().FullName,
+                Title = w.Title,
+                Bounds = GetScreenBounds(w)
+            };
+        }
+
+        private static object DescribePopup(Popup p)
+        {
+            if (p == null) return null;
+            return new {
+                Id = GetIdForElement(p.Child as FrameworkElement),
+                Type = p.GetType().FullName,
+                IsOpen = p.IsOpen
+            };
+        }
+
+        private static object DescribeElement(FrameworkElement fe)
+        {
+            if (fe == null) return null;
+            var w = Window.GetWindow(fe);
+            var bounds = GetScreenBounds(fe, w);
+            return new {
+                Id = GetIdForElement(fe),
+                Type = fe.GetType().FullName,
+                Name = fe.Name,
+                AutomationId = System.Windows.Automation.AutomationProperties.GetAutomationId(fe),
+                Bounds = bounds,
+                Visible = fe.IsVisible,
+                Enabled = (fe as Control)?.IsEnabled
+            };
+        }
+
+        private static string GetIdForElement(FrameworkElement fe)
+        {
+            if (fe == null) return null;
+            var auto = System.Windows.Automation.AutomationProperties.GetAutomationId(fe);
+            if (!string.IsNullOrEmpty(auto)) return "A:" + auto;
+            if (!string.IsNullOrEmpty(fe.Name)) return "N:" + fe.Name;
+            // fallback: type + hash
+            return $"G:{fe.GetType().Name}:{fe.GetHashCode():X8}";
+        }
+
+        private static Rect? GetScreenBounds(FrameworkElement fe, Window w = null)
+        {
+            try {
+                if (fe == null) return null;
+                if (w == null) w = Window.GetWindow(fe);
+                if (w == null) return null;
+                var transform = fe.TransformToAncestor(w) as GeneralTransform;
+                var topLeft = transform.Transform(new Point(0, 0));
+                var bottomRight = transform.Transform(new Point(fe.ActualWidth, fe.ActualHeight));
+                var p1 = w.PointToScreen(topLeft);
+                var p2 = w.PointToScreen(bottomRight);
+                // convert to device pixels if necessary
+                var source = PresentationSource.FromVisual(w);
+                if (source != null) {
+                    var m = source.CompositionTarget.TransformToDevice;
+                    p1 = new Point(p1.X * m.M11, p1.Y * m.M22);
+                    p2 = new Point(p2.X * m.M11, p2.Y * m.M22);
+                }
+                return new Rect(p1, p2);
+            } catch {
+                return null;
+            }
+        }
+
+        // Very small placeholder: serialize and push to external process here
+        private static void PushEvent(object payload)
+        {
+            // For debug: log to app logging
+            try {
+                var s = Newtonsoft.Json.JsonConvert.SerializeObject(payload);
+                Logging.Debug("UiObserver: " + (s?.Length > 1000 ? s.Substring(0, 1000) + "…" : s));
+                // send to pipe if available
+                if (_pipeName != null) {
+                    try {
+                        lock (PipeLock) {
+                            if (_pipeWriter == null) {
+                                // try to connect once more
+                                TryConnectPipe();
+                            }
+
+                            if (_pipeWriter != null) {
+                                _pipeWriter.WriteLine(s);
+                                _pipeWriter.Flush();
+                            }
+                        }
+                    } catch { /* ignore */ }
+                }
+            } catch { /* ignore */ }
+        }
+    }
 }
