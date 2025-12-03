@@ -797,6 +797,8 @@ namespace AcManager.Tools.Helpers
         // Very small placeholder: serialize and push to external process here
         private static void PushEvent(object payload)
         {
+            return;
+
             // For debug: log to app logging
             try {
                 var s = Newtonsoft.Json.JsonConvert.SerializeObject(payload);
