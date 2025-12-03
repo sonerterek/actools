@@ -90,6 +90,15 @@ namespace AcManager {
                         : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AcTools Content Manager");
             }
 
+            // Register dumping of UiObserver map on process exit
+            AppDomain.CurrentDomain.ProcessExit += (s, e) => {
+                try {
+                    var filename = Path.Combine(ApplicationDataDirectory, "UiObserverMap.csv");
+                    Directory.CreateDirectory(Path.GetDirectoryName(filename));
+                    AcManager.Tools.Helpers.UiObserver.DumpControlParentTypeMapCsv(filename);
+                } catch { }
+            };
+
             if (AppArguments.GetBool(AppFlag.VisualStyles, true)) {
                 Application.EnableVisualStyles();
             }

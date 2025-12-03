@@ -32,8 +32,9 @@ namespace AcManager {
         public AppUi([NotNull] Application application) {
             _application = application ?? throw new ArgumentNullException(nameof(application));
 
-            // Initialize UI observer to start reporting UI events to external clients
-            UiObserver.Initialize();
+            // Initialize UI observer only if pipe name was passed via command line
+            var pipe = AppArguments.Get(AppFlag.UiObserverPipe);
+            UiObserver.Initialize(pipe);
 
             // Extra close-if-nothing-shown timer just to be sure
             if (_application.Dispatcher != null) {

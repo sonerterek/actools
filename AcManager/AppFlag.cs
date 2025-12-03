@@ -648,5 +648,11 @@ namespace AcManager {
         /// Definitely only for internal use.
         /// </summary>
         MoveApp,
+
+        /// <summary>
+        /// If present, UI events will be sent to the specified named pipe.
+        /// Example: --ui-observer-pipe=MyPipeName
+        /// </summary>
+        UiObserverPipe
     }
 }
