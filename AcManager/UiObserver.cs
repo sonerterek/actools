@@ -38,6 +38,10 @@ namespace AcManager.Tools.Helpers
         private static readonly object InstancesLock = new object();
         private static readonly DependencyProperty InstanceIdProperty = DependencyProperty.RegisterAttached("UiObserverInstanceId", typeof(string), typeof(UiObserver), new PropertyMetadata(null));
 
+        // track ItemContainerGenerator owners
+        private static readonly object GeneratorOwnersLock = new object();
+        private static readonly Dictionary<ItemContainerGenerator, ItemsControl> GeneratorOwners = new Dictionary<ItemContainerGenerator, ItemsControl>();
+
         // Adorners for highlighting
         private static readonly List<Adorner> CurrentAdorners = new List<Adorner>();
         private static bool _highlightingShown;
@@ -65,48 +69,67 @@ namespace AcManager.Tools.Helpers
             }
         }
 
-        public static void Initialize(string pipeName)
-        {
+		public static void Initialize(string pipeName)
+		{
 #if !DEBUG
-            if (string.IsNullOrEmpty(pipeName)) return;
+    if (string.IsNullOrEmpty(pipeName)) return;
 #endif
-            if (_initialized) return;
-            _initialized = true;
-            _pipeName = pipeName;
+			if (_initialized) return;
+			_initialized = true;
+			_pipeName = pipeName;
 
-            // Try to connect in background
-            Task.Run(() => TryConnectPipe());
+			// Try to connect in background
+			Task.Run(() => TryConnectPipe());
 
-            // Window lifecycle: DpiAwareWindow.NewWindowCreated + class handler for Loaded
-            DpiAwareWindow.NewWindowCreated += (s, e) => OnWindowCreated(s as Window);
-            EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent, new RoutedEventHandler(OnWindowLoaded), true);
+			// Window lifecycle: DpiAwareWindow.NewWindowCreated + class handler for Loaded
+			DpiAwareWindow.NewWindowCreated += (s, e) => OnWindowCreated(s as Window);
+			EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent, new RoutedEventHandler(OnWindowLoaded), true);
 
-            // Intercept creation / destruction of controls (Loaded / Unloaded of FrameworkElement)
-            EventManager.RegisterClassHandler(typeof(FrameworkElement), FrameworkElement.LoadedEvent, new RoutedEventHandler(OnElementLoaded), true);
-            EventManager.RegisterClassHandler(typeof(FrameworkElement), FrameworkElement.UnloadedEvent, new RoutedEventHandler(OnElementUnloaded), true);
+			// Intercept creation / destruction of controls (Loaded / Unloaded of FrameworkElement)
+			EventManager.RegisterClassHandler(typeof(FrameworkElement), FrameworkElement.LoadedEvent, new RoutedEventHandler(OnElementLoaded), true);
+			EventManager.RegisterClassHandler(typeof(FrameworkElement), FrameworkElement.UnloadedEvent, new RoutedEventHandler(OnElementUnloaded), true);
 
-            // Key handler for toggling highlighting (Ctrl+Shift+F12)
-            EventManager.RegisterClassHandler(typeof(Window), UIElement.PreviewKeyDownEvent, new KeyEventHandler(OnPreviewKeyDown), true);
+			EventManager.RegisterClassHandler(typeof(CheckBox), System.Windows.Controls.Primitives.ToggleButton.CheckedEvent,
+					new RoutedEventHandler(OnCheckBoxToggled), true);
+			EventManager.RegisterClassHandler(typeof(CheckBox), System.Windows.Controls.Primitives.ToggleButton.UncheckedEvent,
+					new RoutedEventHandler(OnCheckBoxToggled), true);
 
-            // Focus (disabled for now)
-            // EventManager.RegisterClassHandler(typeof(FrameworkElement), UIElement.GotFocusEvent, new RoutedEventHandler(OnGotFocus), true);
-            // EventManager.RegisterClassHandler(typeof(FrameworkElement), UIElement.LostFocusEvent, new RoutedEventHandler(OnLostFocus), true);
+			// Additional handlers for dynamic menus/popups
+			EventManager.RegisterClassHandler(typeof(MenuItem), MenuItem.SubmenuOpenedEvent, new RoutedEventHandler(OnMenuItemSubmenuOpened), true);
+			// combo box DropDownOpened is a CLR event, attach per-instance in OnElementLoaded
+			EventManager.RegisterClassHandler(typeof(FrameworkElement), FrameworkElement.ContextMenuOpeningEvent, new ContextMenuEventHandler(OnContextMenuOpening), true);
 
-            // Common control interactions
-            EventManager.RegisterClassHandler(typeof(Button), Button.ClickEvent, new RoutedEventHandler(OnButtonClick), true);
-            EventManager.RegisterClassHandler(typeof(Selector), Selector.SelectionChangedEvent, new SelectionChangedEventHandler(OnSelectionChanged), true);
-            EventManager.RegisterClassHandler(typeof(RangeBase), RangeBase.ValueChangedEvent, new RoutedPropertyChangedEventHandler<double>(OnRangeValueChanged), true);
-            EventManager.RegisterClassHandler(typeof(TextBox), TextBox.TextChangedEvent, new TextChangedEventHandler(OnTextChanged), true);
+			// Key handler for toggling highlighting (Ctrl+Shift+F12)
+			EventManager.RegisterClassHandler(typeof(Window), UIElement.PreviewKeyDownEvent, new KeyEventHandler(OnPreviewKeyDown), true);
 
-            // Optionally hook Activated/Deactivated/Closed on existing Window instances:
-            if (Application.Current?.Dispatcher != null) {
-                Application.Current.Dispatcher.BeginInvoke(new Action(() => {
-                    foreach (Window w in Application.Current.Windows) AttachWindowHandlers(w);
-                }), DispatcherPriority.ApplicationIdle);
-            }
-        }
+			// Focus (disabled for now)
+			// EventManager.RegisterClassHandler(typeof(FrameworkElement), UIElement.GotFocusEvent, new RoutedEventHandler(OnGotFocus), true);
+			// EventManager.RegisterClassHandler(typeof(FrameworkElement), UIElement.LostFocusEvent, new RoutedEventHandler(OnLostFocus), true);
 
-        private static void TryConnectPipe()
+			// Common control interactions
+			EventManager.RegisterClassHandler(typeof(Button), Button.ClickEvent, new RoutedEventHandler(OnButtonClick), true);
+			EventManager.RegisterClassHandler(typeof(Selector), Selector.SelectionChangedEvent, new SelectionChangedEventHandler(OnSelectionChanged), true);
+			EventManager.RegisterClassHandler(typeof(RangeBase), RangeBase.ValueChangedEvent, new RoutedPropertyChangedEventHandler<double>(OnRangeValueChanged), true);
+			EventManager.RegisterClassHandler(typeof(TextBox), TextBox.TextChangedEvent, new TextChangedEventHandler(OnTextChanged), true);
+
+			// Optionally hook Activated/Deactivated/Closed on existing Window instances:
+			if (Application.Current?.Dispatcher != null) {
+				Application.Current.Dispatcher.BeginInvoke(new Action(() => {
+					foreach (Window w in Application.Current.Windows) AttachWindowHandlers(w);
+					// Also kick off discovery of templates/children for already-open windows' content
+					foreach (Window w in Application.Current.Windows) {
+						try {
+							var content = (w.Content as FrameworkElement);
+							if (content != null) {
+								Dispatcher.CurrentDispatcher.BeginInvoke(new Action(() => ForceRegisterSubtree(content)), DispatcherPriority.ApplicationIdle);
+							}
+						} catch { }
+					}
+				}), DispatcherPriority.ApplicationIdle);
+			}
+		}
+
+		private static void TryConnectPipe()
         {
             try {
                 lock (PipeLock) {
@@ -170,14 +193,22 @@ namespace AcManager.Tools.Helpers
             PushEvent(new { Type = "WindowClosed", Window = DescribeWindow((Window)s) });
         }
 
-        private static void OnWindowLoaded(object sender, RoutedEventArgs e)
-        {
-            var w = sender as Window;
-            PushEvent(new { Type = "WindowLoaded", Window = DescribeWindow(w) });
-        }
+		private static void OnWindowLoaded(object sender, RoutedEventArgs e)
+		{
+			var w = sender as Window;
+			PushEvent(new { Type = "WindowLoaded", Window = DescribeWindow(w) });
 
-        // Control creation/destruction handlers
-        private static void OnElementLoaded(object sender, RoutedEventArgs e)
+			try {
+				// Ensure templates and visual tree of window content are discovered shortly after load
+				var content = w?.Content as FrameworkElement;
+				if (content != null) {
+					Dispatcher.CurrentDispatcher.BeginInvoke(new Action(() => ForceRegisterSubtree(content)), DispatcherPriority.ApplicationIdle);
+				}
+			} catch { /* ignore */ }
+		}
+
+		// Control creation/destruction handlers
+		private static void OnElementLoaded(object sender, RoutedEventArgs e)
         {
             var fe = sender as FrameworkElement;
             if (fe == null) return;
@@ -219,6 +250,83 @@ namespace AcManager.Tools.Helpers
                 ParentId = GetIdForElement(parent),
                 ParentType = parent?.GetType().FullName
             });
+			// Kick off a deferred visual/logical subtree discovery for this element.
+			// This ensures template parts (Slider thumb, ContextMenuButton PART_MoreButton, etc.)
+			// are discovered after the template is applied.
+			try {
+				Dispatcher.CurrentDispatcher.BeginInvoke(new Action(() => ForceRegisterSubtree(fe)), DispatcherPriority.ApplicationIdle);
+			} catch { /* ignore */ }
+
+			// In OnElementLoaded(...) after other per-instance wiring
+
+			// Time slider: attach per-instance when TimeSliderService.IsTimeSlider == true
+			try {
+				var slider = fe as Slider;
+				if (slider != null && AcManager.Controls.Services.TimeSliderService.GetIsTimeSlider(slider)) {
+					slider.ValueChanged -= OnTimeSliderValueChanged;
+					slider.ValueChanged += OnTimeSliderValueChanged;
+					slider.PreviewMouseLeftButtonUp -= OnTimeSliderMouseUp;
+					slider.PreviewMouseLeftButtonUp += OnTimeSliderMouseUp;
+					// optional: find Thumb and subscribe to DragCompleted for final value event
+					var thumb = FindVisualChildByName(slider, "PART_Track") /* or search for Thumb in visual tree */;
+					// attach DragCompleted if found
+				}
+			} catch { /* ignore */ }
+
+			// ContextMenuButton: attach per-instance and register menu opened handler
+			try {
+				var cmb = fe as FirstFloor.ModernUI.Windows.Controls.ContextMenuButton;
+				if (cmb != null) {
+					// assume it exposes Click event taking ContextMenuButtonEventArgs
+					cmb.Click -= OnContextMenuButtonClick;
+					cmb.Click += OnContextMenuButtonClick;
+
+					if (cmb.Menu is FrameworkElement menuFe) {
+						// if menu is already set, prepare to inspect when opened
+						ForceRegisterSubtree(menuFe);
+						// if it's a ContextMenu instance, attach Opened to discover items when it opens
+						var cm = cmb.Menu as ContextMenu;
+						if (cm != null) {
+							cm.Opened -= ContextMenu_Opened;
+							cm.Opened += ContextMenu_Opened;
+						}
+					}
+				}
+			} catch { /* ignore */ }
+			
+            // If this is a Popup, attach to CLR Opened/Closed
+			try {
+                if (fe is Popup p) {
+                    p.Opened -= Popup_Opened;
+                    p.Closed -= Popup_Closed;
+                    p.Opened += Popup_Opened;
+                    p.Closed += Popup_Closed;
+                }
+
+                // If this element has a ContextMenu instance, attach Opened/Closed
+                if (fe.ContextMenu != null) {
+                    fe.ContextMenu.Opened -= ContextMenu_Opened;
+                    fe.ContextMenu.Closed -= ContextMenu_Closed;
+                    fe.ContextMenu.Opened += ContextMenu_Opened;
+                    fe.ContextMenu.Closed += ContextMenu_Closed;
+                }
+
+                // Watch item container generation for ItemsControl (including ComboBox)
+                if (fe is ItemsControl ic) {
+                    var gen = ic.ItemContainerGenerator;
+                    lock (GeneratorOwnersLock) {
+                        GeneratorOwners[gen] = ic;
+                    }
+                    gen.StatusChanged -= ItemContainerGenerator_StatusChanged;
+                    gen.StatusChanged += ItemContainerGenerator_StatusChanged;
+                }
+
+                // Attach ComboBox.DropDownOpened per-instance (CLR event)
+                if (fe is ComboBox cb) {
+                    cb.DropDownOpened -= ComboBox_DropDownOpened;
+                    cb.DropDownOpened += ComboBox_DropDownOpened;
+                }
+            } catch { /* ignore */ }
         }
 
         private static void OnElementUnloaded(object sender, RoutedEventArgs e)
@@ -251,9 +359,64 @@ namespace AcManager.Tools.Helpers
                 ParentId = GetIdForElement(parent),
                 ParentType = parent?.GetType().FullName
             });
+
+            // detach CLR handlers we may have attached earlier
+            try {
+                if (fe is Popup p) {
+                    p.Opened -= Popup_Opened;
+                    p.Closed -= Popup_Closed;
+                }
+
+                if (fe.ContextMenu != null) {
+                    fe.ContextMenu.Opened -= ContextMenu_Opened;
+                    fe.ContextMenu.Closed -= ContextMenu_Closed;
+                }
+
+                if (fe is ItemsControl ic) {
+                    var gen = ic.ItemContainerGenerator;
+                    gen.StatusChanged -= ItemContainerGenerator_StatusChanged;
+                    lock (GeneratorOwnersLock) {
+                        GeneratorOwners.Remove(gen);
+                    }
+                }
+
+                if (fe is ComboBox cb) {
+                    cb.DropDownOpened -= ComboBox_DropDownOpened;
+                }
+            } catch { /* ignore */ }
         }
 
-        private static string GetOrCreateInstanceId(FrameworkElement fe) {
+		// New handlers to add (examples)
+		private static void OnCheckBoxToggled(object sender, RoutedEventArgs e)
+		{
+			var cb = sender as CheckBox;
+			if (cb == null) return;
+			PushEvent(new { Type = "CheckBoxToggled", Id = GetIdForElement(cb), Name = cb.Name, Checked = cb.IsChecked });
+		}
+
+		private static void OnTimeSliderValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+		{
+			var s = sender as Slider;
+			if (s == null) return;
+			// optional: throttle or ignore intermediate values if you only want final value
+			PushEvent(new { Type = "TimeSliderValueChanged", Id = GetIdForElement(s), Value = e.NewValue });
+		}
+
+		private static void OnTimeSliderMouseUp(object sender, MouseButtonEventArgs e)
+		{
+			var s = sender as Slider;
+			if (s == null) return;
+			PushEvent(new { Type = "TimeSliderDragCompleted", Id = GetIdForElement(s), Value = s.Value });
+		}
+
+		private static void OnContextMenuButtonClick(object sender, ContextMenuButtonEventArgs e)
+		{
+			var fe = sender as FrameworkElement;
+			PushEvent(new { Type = "ContextMenuButtonClick", Id = GetIdForElement(fe) });
+			// inspect e.Menu / fe.Menu and ForceRegisterSubtree when appropriate
+		}
+
+		private static string GetOrCreateInstanceId(FrameworkElement fe) {
             if (fe == null) return null;
             var v = fe.GetValue(InstanceIdProperty) as string;
             if (!string.IsNullOrEmpty(v)) return v;
@@ -329,8 +492,176 @@ namespace AcManager.Tools.Helpers
             }
         }
 
+        // --- New handlers for dynamic UI elements
+        private static void OnMenuItemSubmenuOpened(object sender, RoutedEventArgs e) {
+            try {
+                var mi = sender as MenuItem;
+                if (mi == null) return;
+                PushEvent(new { Type = "MenuItem.SubmenuOpened", Header = mi.Header?.ToString(), Id = GetIdForElement(mi) });
+                Dispatcher.CurrentDispatcher.BeginInvoke(new Action(() => ForceRegisterSubtree(mi)), DispatcherPriority.ApplicationIdle);
+            } catch { }
+        }
+
+        private static void ComboBox_DropDownOpened(object sender, EventArgs e) {
+            try {
+                var cb = sender as ComboBox;
+                if (cb == null) return;
+                PushEvent(new { Type = "ComboBox.DropDownOpened", Name = cb.Name, Id = GetIdForElement(cb) });
+                Dispatcher.CurrentDispatcher.BeginInvoke(new Action(() => ForceRegisterSubtree(cb)), DispatcherPriority.ApplicationIdle);
+            } catch { }
+        }
+
+        private static void OnContextMenuOpening(object sender, ContextMenuEventArgs e) {
+            try {
+                var fe = sender as FrameworkElement;
+                if (fe == null) return;
+                var cm = fe.ContextMenu;
+                if (cm != null) {
+                    PushEvent(new { Type = "ContextMenuOpening", Owner = GetIdForElement(fe) });
+                    // ensure we register its subtree when opened
+                    cm.Opened -= ContextMenu_Opened;
+                    cm.Opened += ContextMenu_Opened;
+                }
+            } catch { }
+        }
+
+        private static void Popup_Opened(object sender, EventArgs e) {
+            try {
+                var p = sender as Popup;
+                if (p == null) return;
+                PushEvent(new { Type = "PopupOpened", Popup = DescribePopup(p) });
+                Dispatcher.CurrentDispatcher.BeginInvoke(new Action(() => ForceRegisterSubtree(p.Child as FrameworkElement)), DispatcherPriority.ApplicationIdle);
+            } catch { }
+        }
+
+        private static void Popup_Closed(object sender, EventArgs e) {
+            try {
+                var p = sender as Popup;
+                if (p == null) return;
+                PushEvent(new { Type = "PopupClosed", Popup = DescribePopup(p) });
+            } catch { }
+        }
+
+        private static void ContextMenu_Opened(object sender, EventArgs e) {
+            try {
+                var cm = sender as ContextMenu;
+                if (cm == null) return;
+                PushEvent(new { Type = "ContextMenuOpened", Owner = GetIdForElement(cm.PlacementTarget as FrameworkElement) });
+                Dispatcher.CurrentDispatcher.BeginInvoke(new Action(() => ForceRegisterSubtree(cm)), DispatcherPriority.ApplicationIdle);
+            } catch { }
+        }
+
+        private static void ContextMenu_Closed(object sender, EventArgs e) {
+            try {
+                var cm = sender as ContextMenu;
+                if (cm == null) return;
+                PushEvent(new { Type = "ContextMenuClosed", Owner = GetIdForElement(cm.PlacementTarget as FrameworkElement) });
+            } catch { }
+        }
+
+        private static void ItemContainerGenerator_StatusChanged(object sender, EventArgs e) {
+            try {
+                var gen = sender as ItemContainerGenerator;
+                if (gen == null) return;
+                if (gen.Status == GeneratorStatus.ContainersGenerated) {
+                    ItemsControl owner = null;
+                    lock (GeneratorOwnersLock) {
+                        GeneratorOwners.TryGetValue(gen, out owner);
+                    }
+                    if (owner != null) {
+                        Dispatcher.CurrentDispatcher.BeginInvoke(new Action(() => {
+                            try {
+                                for (int i = 0; i < owner.Items.Count; i++) {
+                                    var container = owner.ItemContainerGenerator.ContainerFromIndex(i) as FrameworkElement;
+                                    if (container != null) ForceRegisterSubtree(container);
+                                }
+                            } catch { }
+                        }), DispatcherPriority.ApplicationIdle);
+                    }
+                }
+            } catch { }
+        }
+
+        // Force-register subtree: walk visual tree and ensure instances are recorded (used for popups/menus)
+        private static void ForceRegisterSubtree(object rootObj) {
+            try {
+                if (rootObj == null) return;
+                var rootFe = rootObj as FrameworkElement;
+                if (rootFe == null && rootObj is ContextMenu cm) {
+                    // ContextMenu is not in visual tree of PlacementTarget; its logical children are in cm.Items
+                    foreach (var item in cm.Items) {
+                        if (item is FrameworkElement feItem) ForceRegisterSubtree(feItem);
+                    }
+                    return;
+                }
+
+                var stack = new Stack<DependencyObject>();
+                stack.Push(rootFe);
+                while (stack.Count > 0) {
+                    var node = stack.Pop();
+                    if (node is FrameworkElement fe) {
+                        // ensure instance id and map
+                        var id = GetOrCreateInstanceId(fe);
+                        try {
+                            lock (InstancesLock) {
+                                if (!Instances.ContainsKey(id)) Instances[id] = new InstanceInfo { ElementRef = new WeakReference<FrameworkElement>(fe), ChildCount = 0 };
+                                var parent = FindParentFrameworkElement(fe);
+                                if (parent != null) {
+                                    var pid = GetOrCreateInstanceId(parent);
+                                    if (Instances.TryGetValue(pid, out var pinfo)) pinfo.ChildCount++;
+                                }
+                            }
+                        } catch { }
+
+                        // Try push event for visibility
+                        PushEvent(new { Type = "ControlDiscovered", Control = DescribeElement(fe), ParentId = GetIdForElement(FindParentFrameworkElement(fe)), ParentType = FindParentFrameworkElement(fe)?.GetType().FullName });
+                    }
+
+                    // traverse visual children
+                    var count = 0;
+                    try {
+                        count = VisualTreeHelper.GetChildrenCount(node);
+                    } catch { count = 0; }
+
+                    for (int i = 0; i < count; i++) {
+                        var child = VisualTreeHelper.GetChild(node, i);
+                        if (child != null) stack.Push(child);
+                    }
+
+                    // also traverse logical children for items like MenuItem that may use logical tree
+                    if (node is ItemsControl itemsControl) {
+                        foreach (var item in itemsControl.Items) {
+                            if (item is DependencyObject dobj) stack.Push(dobj);
+                        }
+                    }
+                }
+            } catch { }
+        }
+
+		private static FrameworkElement FindVisualChildByName(DependencyObject parent, string name)
+		{
+			if (parent == null || string.IsNullOrEmpty(name)) return null;
+			try {
+				var stack = new Stack<DependencyObject>();
+				stack.Push(parent);
+				while (stack.Count > 0) {
+					var node = stack.Pop();
+					var count = 0;
+					try { count = VisualTreeHelper.GetChildrenCount(node); } catch { count = 0; }
+					for (int i = 0; i < count; i++) {
+						var child = VisualTreeHelper.GetChild(node, i);
+						if (child is FrameworkElement fe) {
+							if (fe.Name == name) return fe;
+						}
+						if (child != null) stack.Push(child);
+					}
+				}
+			} catch { /* ignore */ }
+			return null;
+		}
+
         // helper: walk up visual/logical tree to find nearest FrameworkElement parent
-        private static FrameworkElement FindParentFrameworkElement(FrameworkElement fe)
+		private static FrameworkElement FindParentFrameworkElement(FrameworkElement fe)
         {
             if (fe == null) return null;
             DependencyObject current = fe;
