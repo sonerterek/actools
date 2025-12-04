@@ -456,8 +456,6 @@ namespace AcManager.UiObserver
 #if !DEBUG
     if (string.IsNullOrEmpty(pipeName)) return;
 #endif
-            return;
-
             if (_initialized) return;
             _initialized = true;
             _pipeName = pipeName;
@@ -1210,21 +1208,65 @@ namespace AcManager.UiObserver
         {
             try {
                 if (fe == null) return null;
-                if (w == null) w = Window.GetWindow(fe);
-                if (w == null) return null;
-                var transform = fe.TransformToAncestor(w) as GeneralTransform;
-                var topLeft = transform.Transform(new Point(0, 0));
-                var bottomRight = transform.Transform(new Point(fe.ActualWidth, fe.ActualHeight));
-                var p1 = w.PointToScreen(topLeft);
-                var p2 = w.PointToScreen(bottomRight);
-                // convert to device pixels if necessary
-                var source = PresentationSource.FromVisual(w);
-                if (source != null) {
-                    var m = source.CompositionTarget.TransformToDevice;
-                    p1 = new Point(p1.X * m.M11, p1.Y * m.M22);
-                    p2 = new Point(p2.X * m.M11, p2.Y * m.M22);
+
+                Point p1, p2;
+                bool got = false;
+
+                // Preferred: direct element-to-screen
+                try {
+                    var topLeft = fe.PointToScreen(new Point(0, 0));
+                    var bottomRight = fe.PointToScreen(new Point(fe.ActualWidth, fe.ActualHeight));
+                    p1 = topLeft; p2 = bottomRight;
+                    got = true;
+                } catch {
+                    p1 = new Point(); p2 = new Point();
                 }
-                return new Rect(p1, p2);
+
+                // Fallback: transform to ancestor window
+                if (!got) {
+                    if (w == null) w = Window.GetWindow(fe);
+                    if (w != null) {
+                        try {
+                            var transform = fe.TransformToAncestor(w) as GeneralTransform;
+                            if (transform != null) {
+                                var topLeft = transform.Transform(new Point(0, 0));
+                                var bottomRight = transform.Transform(new Point(fe.ActualWidth, fe.ActualHeight));
+                                p1 = w.PointToScreen(topLeft);
+                                p2 = w.PointToScreen(bottomRight);
+                                got = true;
+                            }
+                        } catch { got = false; }
+                    }
+                }
+
+                if (!got) {
+                    if (fe.IsVisible) {
+                        return null;
+                    }
+                    return null;
+                }
+
+                // Normalize
+                var x1 = Math.Min(p1.X, p2.X);
+                var y1 = Math.Min(p1.Y, p2.Y);
+                var x2 = Math.Max(p1.X, p2.X);
+                var y2 = Math.Max(p1.Y, p2.Y);
+
+                // DPI conversion — prefer element's PresentationSource, fallback to window
+                PresentationSource ps = null;
+                try {
+                    ps = PresentationSource.FromVisual(fe) ?? (w != null ? PresentationSource.FromVisual(w) : null);
+                } catch { ps = null; }
+
+                if (ps != null) {
+                    try {
+                        var m = ps.CompositionTarget.TransformToDevice;
+                        x1 = x1 * m.M11; y1 = y1 * m.M22;
+                        x2 = x2 * m.M11; y2 = y2 * m.M22;
+                    } catch { }
+                }
+
+                return new Rect(new Point(x1, y1), new Point(x2, y2));
             } catch {
                 return null;
             }
