@@ -52,9 +52,30 @@ namespace AcManager.UiObserver
         private static readonly HashSet<FrameworkElement> PendingRoots = new HashSet<FrameworkElement>();
         private static bool _scheduled;
 
+        // Decide whether to perform immediate (visual-only) registration for a root
+        private static bool ShouldImmediateRegisterRoot(FrameworkElement fe) {
+            if (fe == null) return false;
+            // Named or automation id or holds data — likely important
+            if (!string.IsNullOrEmpty(fe.Name) || !string.IsNullOrEmpty(System.Windows.Automation.AutomationProperties.GetAutomationId(fe))) return true;
+            if (fe.DataContext != null) return true;
+
+            // Important control types worth immediate inspection
+            if (fe is ItemsControl) return true; // lists, tabcontrols, combo boxes
+            if (fe is TabControl) return true;
+            if (fe is ComboBox) return true;
+            if (fe is ContentPresenter) return true;
+            // ModernUI specific button/menu helper
+            if (fe is FirstFloor.ModernUI.Windows.Controls.ContextMenuButton) return true;
+
+            return false;
+        }
+
         // Helper to decide whether a visual node is worth traversing
         private static bool ShouldTraverseVisualNode(DependencyObject node) {
             if (node == null) return false;
+
+            // Skip visuals injected by Snoop or similar overlay tools
+            if (IsSnoopVisual(node)) return false;
 
             // Only visuals are relevant
             if (!(node is Visual) && !(node is Visual3D)) return false;
@@ -64,6 +85,9 @@ namespace AcManager.UiObserver
 
             var fe = node as FrameworkElement;
             if (fe != null) {
+                // Skip any elements that look like overlay helpers
+                if (IsSnoopVisual(fe)) return false;
+
                 // Named or automation id — interesting
                 if (!string.IsNullOrEmpty(fe.Name) || !string.IsNullOrEmpty(System.Windows.Automation.AutomationProperties.GetAutomationId(fe))) return true;
 
@@ -78,9 +102,45 @@ namespace AcManager.UiObserver
             try { return VisualTreeHelper.GetChildrenCount(node) > 0; } catch { return false; }
         }
 
+        // Detect Snoop visuals / overlays by type/namespace/assembly/name heuristics
+        private static bool IsSnoopVisual(DependencyObject node) {
+            if (node == null) return false;
+            try {
+                var t = node.GetType();
+                if (t == null) return false;
+
+                var full = t.FullName ?? string.Empty;
+                var ns = t.Namespace ?? string.Empty;
+                var asm = t.Assembly?.GetName()?.Name ?? string.Empty;
+
+                if (full.IndexOf("Snoop", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                if (ns.IndexOf("Snoop", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                if (asm.IndexOf("Snoop", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+
+                // Some overlays might be named like "UIVisualizer" or "Visualizer" in third-party assemblies
+                // Heuristic: if the type name contains Visualizer and comes from an assembly not part of the app, treat as overlay
+                var name = t.Name ?? string.Empty;
+                if ((name.IndexOf("Visualizer", StringComparison.OrdinalIgnoreCase) >= 0 || name.IndexOf("Overlay", StringComparison.OrdinalIgnoreCase) >= 0)
+                        && !string.IsNullOrEmpty(asm) && !asm.Equals(System.Reflection.Assembly.GetEntryAssembly()?.GetName().Name, StringComparison.OrdinalIgnoreCase)) {
+                    return true;
+                }
+
+                // Also ignore AdornerDecorator-like or other well-known overlay types by name
+                if (name.IndexOf("Adorner", StringComparison.OrdinalIgnoreCase) >= 0 || name.IndexOf("Overlay", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+
+                // Finally, check element name
+                if (node is FrameworkElement fe) {
+                    if (!string.IsNullOrEmpty(fe.Name) && fe.Name.IndexOf("Snoop", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+                }
+            } catch { }
+            return false;
+        }
+
         // Schedule a debounced traversal for a root element (coalesces multiple requests)
         private static void ScheduleTraversal(FrameworkElement root) {
             if (root == null) return;
+            // If root itself is a snoop visual, ignore scheduling
+            if (IsSnoopVisual(root)) return;
             lock (ScheduleLock) {
                 PendingRoots.Add(root);
                 if (_scheduled) return;
@@ -88,6 +148,13 @@ namespace AcManager.UiObserver
                 Dispatcher.CurrentDispatcher.BeginInvoke(new Action(ProcessPendingTraversals), DispatcherPriority.ApplicationIdle);
             }
         }
+
+        // Batched traversal state
+        private static readonly object BatchedLock = new object();
+        private static Queue<DependencyObject> BatchedQueue = new Queue<DependencyObject>();
+        private static HashSet<DependencyObject> BatchedVisited = new HashSet<DependencyObject>();
+        private static bool BatchedProcessing;
+        private const int BatchedNodesPerTick = 200;
 
         private static void ProcessPendingTraversals() {
             FrameworkElement[] roots;
@@ -97,8 +164,139 @@ namespace AcManager.UiObserver
                 _scheduled = false;
             }
 
-            foreach (var r in roots) {
-                try { ForceRegisterSubtreeVisualOnly(r); } catch { }
+            // Enqueue roots to batched processor
+            lock (BatchedLock) {
+                foreach (var r in roots) {
+                    if (r == null) continue;
+                    if (IsSnoopVisual(r)) continue;
+                    if (!BatchedVisited.Contains(r)) {
+                        BatchedVisited.Add(r);
+                        BatchedQueue.Enqueue(r);
+                    }
+                }
+                if (!BatchedProcessing && BatchedQueue.Count > 0) {
+                    BatchedProcessing = true;
+                    Dispatcher.CurrentDispatcher.BeginInvoke(new Action(ProcessBatchedTraversal), DispatcherPriority.ApplicationIdle);
+                }
+            }
+        }
+
+        private static void ProcessBatchedTraversal() {
+            try {
+                var processed = 0;
+                while (processed < BatchedNodesPerTick) {
+                    DependencyObject node = null;
+                    lock (BatchedLock) {
+                        if (BatchedQueue.Count > 0) node = BatchedQueue.Dequeue(); else break;
+                    }
+                    if (node == null) break;
+
+                    try {
+                        // Process single node similarly to ForceRegisterSubtreeVisualOnly body
+                        if (node is FrameworkElement fe) {
+                            var id = GetOrCreateInstanceId(fe);
+                            try {
+                                lock (InstancesLock) {
+                                    if (!Instances.ContainsKey(id)) Instances[id] = new InstanceInfo { ElementRef = new WeakReference<FrameworkElement>(fe), ChildCount = 0 };
+                                    var parent = VisualTreeHelper.GetParent(fe) as FrameworkElement;
+                                    if (parent != null) {
+                                        var pid = GetOrCreateInstanceId(parent);
+                                        if (Instances.TryGetValue(pid, out var pinfo)) pinfo.ChildCount++;
+                                    }
+                                }
+                            } catch { }
+
+                            PushEvent(new { Type = "ControlDiscovered", Control = DescribeElement(fe), ParentId = GetIdForElement(VisualTreeHelper.GetParent(fe) as FrameworkElement), ParentType = (VisualTreeHelper.GetParent(fe) as FrameworkElement)?.GetType().FullName });
+                        }
+
+                        // Enqueue visual children
+                        var visualCount = 0;
+                        try { visualCount = VisualTreeHelper.GetChildrenCount(node); } catch { visualCount = 0; }
+                        for (int i = 0; i < visualCount; i++) {
+                            var child = VisualTreeHelper.GetChild(node, i);
+                            if (child == null) continue;
+                            if (IsSnoopVisual(child)) continue;
+                            lock (BatchedLock) {
+                                if (!BatchedVisited.Contains(child) && ShouldTraverseVisualNode(child)) {
+                                    BatchedVisited.Add(child);
+                                    BatchedQueue.Enqueue(child);
+                                }
+                            }
+                        }
+
+                        // ItemsControl realized containers / logical items
+                        if (node is ItemsControl itemsControl) {
+                            try {
+                                var gen = itemsControl.ItemContainerGenerator;
+                                for (int i = 0; i < itemsControl.Items.Count; i++) {
+                                    var container = gen.ContainerFromIndex(i) as DependencyObject;
+                                    if (container != null) {
+                                        if (IsSnoopVisual(container)) continue;
+                                        lock (BatchedLock) {
+                                            if (!BatchedVisited.Contains(container) && ShouldTraverseVisualNode(container)) {
+                                                BatchedVisited.Add(container);
+                                                BatchedQueue.Enqueue(container);
+                                            }
+                                        }
+                                    } else {
+                                        var item = itemsControl.Items[i];
+                                        if (item is FrameworkElement itemFe) {
+                                            if (IsSnoopVisual(itemFe)) continue;
+                                            lock (BatchedLock) {
+                                                if (!BatchedVisited.Contains(itemFe)) {
+                                                    BatchedVisited.Add(itemFe);
+                                                    BatchedQueue.Enqueue(itemFe);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } catch { }
+                        }
+
+                        // ContentControl.Content
+                        try {
+                            if (node is ContentControl cc) {
+                                var content = cc.Content as DependencyObject;
+                                if (content != null) {
+                                    if (IsSnoopVisual(content)) {
+                                        // skip
+                                    } else {
+                                        lock (BatchedLock) {
+                                            if (!BatchedVisited.Contains(content) && (content is FrameworkElement || content is Visual || content is Visual3D)) {
+                                                BatchedVisited.Add(content);
+                                                BatchedQueue.Enqueue(content);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } catch { }
+
+                        // Logical children (restricted)
+                        try {
+                            foreach (var logicalChild in LogicalTreeHelper.GetChildren(node).OfType<DependencyObject>()) {
+                                if (logicalChild == null) continue;
+                                if (IsSnoopVisual(logicalChild)) continue;
+                                lock (BatchedLock) {
+                                    if (!BatchedVisited.Contains(logicalChild) && (logicalChild is FrameworkElement || logicalChild is Visual || logicalChild is Visual3D)) {
+                                        BatchedVisited.Add(logicalChild);
+                                        BatchedQueue.Enqueue(logicalChild);
+                                    }
+                                }
+                            }
+                        } catch { }
+
+                    } catch { /* ignore node processing errors */ }
+
+                    processed++;
+                }
+            } finally {
+                bool scheduleMore = false;
+                lock (BatchedLock) {
+                    if (BatchedQueue.Count > 0) scheduleMore = true; else BatchedProcessing = false;
+                }
+                if (scheduleMore) Dispatcher.CurrentDispatcher.BeginInvoke(new Action(ProcessBatchedTraversal), DispatcherPriority.ApplicationIdle);
             }
         }
 
@@ -123,6 +321,9 @@ namespace AcManager.UiObserver
 
             if (rootFe == null) return;
 
+            // if root is Snoop visual — bail out early
+            if (IsSnoopVisual(rootFe)) return;
+
             // visited set to avoid cycles when mixing logical and visual traversal
             var visited = new HashSet<DependencyObject>();
             var stack = new Stack<DependencyObject>();
@@ -143,6 +344,9 @@ namespace AcManager.UiObserver
                 var node = stack.Pop();
 
                 if (node is FrameworkElement fe) {
+                    // avoid Snoop visuals
+                    if (IsSnoopVisual(fe)) continue;
+
                     var id = GetOrCreateInstanceId(fe);
                     try {
                         lock (InstancesLock) {
@@ -164,6 +368,7 @@ namespace AcManager.UiObserver
                 for (int i = 0; i < visualCount; i++) {
                     var child = VisualTreeHelper.GetChild(node, i);
                     if (child == null) continue;
+                    if (IsSnoopVisual(child)) continue;
                     if (!visited.Contains(child) && ShouldTraverseVisualNode(child)) {
                         visited.Add(child);
                         stack.Push(child);
@@ -178,6 +383,7 @@ namespace AcManager.UiObserver
                             // realized container (visual)
                             var container = gen.ContainerFromIndex(i) as DependencyObject;
                             if (container != null) {
+                                if (IsSnoopVisual(container)) continue;
                                 if (!visited.Contains(container) && ShouldTraverseVisualNode(container)) {
                                     visited.Add(container);
                                     stack.Push(container);
@@ -186,6 +392,7 @@ namespace AcManager.UiObserver
                                 // fallback: push logical item only if it's a FrameworkElement (avoid pushing data objects)
                                 var item = itemsControl.Items[i];
                                 if (item is FrameworkElement itemFe && !visited.Contains(itemFe)) {
+                                    if (IsSnoopVisual(itemFe)) continue;
                                     visited.Add(itemFe);
                                     stack.Push(itemFe);
                                 }
@@ -199,8 +406,10 @@ namespace AcManager.UiObserver
                     if (node is ContentControl cc) {
                         var content = cc.Content as DependencyObject;
                         if (content != null && !visited.Contains(content) && (content is FrameworkElement || content is Visual || content is Visual3D)) {
-                            visited.Add(content);
-                            stack.Push(content);
+                            if (!IsSnoopVisual(content)) {
+                                visited.Add(content);
+                                stack.Push(content);
+                            }
                         }
                     }
                 } catch { }
@@ -210,6 +419,7 @@ namespace AcManager.UiObserver
                     foreach (var logicalChild in LogicalTreeHelper.GetChildren(node).OfType<DependencyObject>()) {
                         if (logicalChild == null || visited.Contains(logicalChild)) continue;
                         if (logicalChild is FrameworkElement || logicalChild is Visual || logicalChild is Visual3D) {
+                            if (IsSnoopVisual(logicalChild)) continue;
                             visited.Add(logicalChild);
                             stack.Push(logicalChild);
                         }
@@ -246,6 +456,8 @@ namespace AcManager.UiObserver
 #if !DEBUG
     if (string.IsNullOrEmpty(pipeName)) return;
 #endif
+            return;
+
             if (_initialized) return;
             _initialized = true;
             _pipeName = pipeName;
@@ -293,7 +505,11 @@ namespace AcManager.UiObserver
                         try {
                             var content = (w.Content as FrameworkElement);
                             if (content != null) {
-                                Dispatcher.CurrentDispatcher.BeginInvoke(new Action(() => ForceRegisterSubtreeVisualOnly(content)), DispatcherPriority.ApplicationIdle);
+                                if (ShouldImmediateRegisterRoot(content)) {
+                                    Dispatcher.CurrentDispatcher.BeginInvoke(new Action(() => ForceRegisterSubtreeVisualOnly(content)), DispatcherPriority.ApplicationIdle);
+                                } else {
+                                    ScheduleTraversal(content);
+                                }
                             }
                         } catch { }
                     }
@@ -330,7 +546,15 @@ namespace AcManager.UiObserver
             PushEvent(new { Type = "WindowCreated", Window = DescribeWindow(w) });
             try {
                 var content = w.Content as FrameworkElement;
-                if (content != null) ScheduleTraversal(content);
+                if (content != null) {
+                    Dispatcher.CurrentDispatcher.BeginInvoke(new Action(() => {
+                        if (ShouldImmediateRegisterRoot(content)) {
+                            try { ForceRegisterSubtreeVisualOnly(content); } catch { }
+                        } else {
+                            ScheduleTraversal(content);
+                        }
+                    }), DispatcherPriority.ApplicationIdle);
+                }
             } catch { }
         }
 
@@ -378,8 +602,11 @@ namespace AcManager.UiObserver
                 // Ensure templates and visual tree of window content are discovered shortly after load
                 var content = w?.Content as FrameworkElement;
                 if (content != null) {
-				Dispatcher.CurrentDispatcher.BeginInvoke(new Action(() => ForceRegisterSubtreeVisualOnly(content)), DispatcherPriority.ApplicationIdle);
-                    ScheduleTraversal(content);
+                    if (ShouldImmediateRegisterRoot(content)) {
+                        Dispatcher.CurrentDispatcher.BeginInvoke(new Action(() => ForceRegisterSubtreeVisualOnly(content)), DispatcherPriority.ApplicationIdle);
+                    } else {
+                        ScheduleTraversal(content);
+                    }
                 }
             } catch { /* ignore */ }
         }
@@ -438,8 +665,13 @@ namespace AcManager.UiObserver
 		// are discovered after the template is applied.
             // Kick off a deferred visual subtree discovery for this element.
             try {
-			Dispatcher.CurrentDispatcher.BeginInvoke(new Action(() => ForceRegisterSubtreeVisualOnly(fe)), DispatcherPriority.ApplicationIdle);
-                ScheduleTraversal(fe);
+			Dispatcher.CurrentDispatcher.BeginInvoke(new Action(() => {
+                    if (ShouldImmediateRegisterRoot(fe)) {
+                        try { ForceRegisterSubtreeVisualOnly(fe); } catch { }
+                    } else {
+                        ScheduleTraversal(fe);
+                    }
+                }), DispatcherPriority.ApplicationIdle);
             } catch { /* ignore */ }
 
             // In OnElementLoaded(...) after other per-instance wiring
@@ -680,8 +912,7 @@ namespace AcManager.UiObserver
             }
         }
 
-        // Remaining methods (menu/popup handlers, generator status, ForceRegisterSubtree, etc.) are left unchanged
-        // to keep this patch minimal. The ForceRegisterSubtreeVisualOnly augmentation should help discover logical/template parts.
+        // --- New handlers for dynamic UI elements
 
         private static void OnMenuItemSubmenuOpened(object sender, RoutedEventArgs e) {
             try {
@@ -710,6 +941,7 @@ namespace AcManager.UiObserver
                 var cm = fe.ContextMenu;
                 if (cm != null) {
                     PushEvent(new { Type = "ContextMenuOpening", Owner = GetIdForElement(fe) });
+                    // ensure we register its subtree when opened
                     cm.Opened -= ContextMenu_Opened;
                     cm.Opened += ContextMenu_Opened;
                 }
@@ -767,8 +999,10 @@ namespace AcManager.UiObserver
                                 // schedule traversal for realized containers
                                 for (int i = 0; i < owner.Items.Count; i++) {
                                     var container = owner.ItemContainerGenerator.ContainerFromIndex(i) as FrameworkElement;
-                                    if (container != null) ForceRegisterSubtree(container);
-                                    if (container != null) ScheduleTraversal(container);
+                                    if (container != null) {
+                                        ForceRegisterSubtreeVisualOnly(container);
+                                        ScheduleTraversal(container);
+                                    }
                                 }
                             } catch { }
                         }), DispatcherPriority.ApplicationIdle);
@@ -777,50 +1011,21 @@ namespace AcManager.UiObserver
             } catch { }
         }
 
+        // Force-register subtree: walk visual tree and ensure instances are recorded (used for popups/menus)
         private static void ForceRegisterSubtree(object rootObj) {
             try {
                 if (rootObj == null) return;
-                var rootFe = rootObj as FrameworkElement;
-                if (rootFe == null && rootObj is ContextMenu cm) {
+                // Prefer visual-first discovery for most cases
+                if (rootObj is ContextMenu cm) {
+                    // ContextMenu is not in visual tree of PlacementTarget; its logical children are in cm.Items
                     foreach (var item in cm.Items) {
-                        if (item is FrameworkElement feItem) ForceRegisterSubtree(feItem);
+                        if (item is FrameworkElement feItem) ForceRegisterSubtreeVisualOnly(feItem);
                     }
                     return;
                 }
 
-                var stack = new Stack<DependencyObject>();
-                stack.Push(rootFe);
-                while (stack.Count > 0) {
-                    var node = stack.Pop();
-                    if (node is FrameworkElement fe) {
-                        var id = GetOrCreateInstanceId(fe);
-                        try {
-                            lock (InstancesLock) {
-                                if (!Instances.ContainsKey(id)) Instances[id] = new InstanceInfo { ElementRef = new WeakReference<FrameworkElement>(fe), ChildCount = 0 };
-                                var parent = FindParentFrameworkElement(fe);
-                                if (parent != null) {
-                                    var pid = GetOrCreateInstanceId(parent);
-                                    if (Instances.TryGetValue(pid, out var pinfo)) pinfo.ChildCount++;
-                                }
-                            }
-                        } catch { }
-
-                        PushEvent(new { Type = "ControlDiscovered", Control = DescribeElement(fe), ParentId = GetIdForElement(FindParentFrameworkElement(fe)), ParentType = FindParentFrameworkElement(fe)?.GetType().FullName });
-                    }
-
-                    var count = 0;
-                    try { count = VisualTreeHelper.GetChildrenCount(node); } catch { count = 0; }
-                    for (int i = 0; i < count; i++) {
-                        var child = VisualTreeHelper.GetChild(node, i);
-                        if (child != null) stack.Push(child);
-                    }
-
-                    if (node is ItemsControl itemsControl) {
-                        foreach (var item in itemsControl.Items) {
-                            if (item is DependencyObject dobj) stack.Push(dobj);
-                        }
-                    }
-                }
+                // Fallback: use visual-only registration for other root types
+                ForceRegisterSubtreeVisualOnly(rootObj);
             } catch { /* ignore */ }
         }
 
@@ -854,12 +1059,15 @@ namespace AcManager.UiObserver
             return null;
         }
 
+        // helper: walk up visual/logical tree to find nearest FrameworkElement parent
         private static FrameworkElement FindParentFrameworkElement(FrameworkElement fe)
         {
             if (fe == null) return null;
             DependencyObject current = fe;
             while (true) {
                 DependencyObject next = null;
+
+                // prefer logical Parent when available
                 if (current is FrameworkElement f && f.Parent != null) {
                     next = f.Parent;
                 } else {
@@ -876,8 +1084,17 @@ namespace AcManager.UiObserver
             }
         }
 
-        private static void OnGotFocus(object sender, RoutedEventArgs e) { return; }
-        private static void OnLostFocus(object sender, RoutedEventArgs e) { return; }
+        private static void OnGotFocus(object sender, RoutedEventArgs e)
+        {
+            // Focus events disabled — do nothing
+            return;
+        }
+
+        private static void OnLostFocus(object sender, RoutedEventArgs e)
+        {
+            // Focus events disabled — do nothing
+            return;
+        }
 
         private static void OnButtonClick(object sender, RoutedEventArgs e)
         {
@@ -885,10 +1102,49 @@ namespace AcManager.UiObserver
             PushEvent(new { Type = "ButtonClick", Control = DescribeElement(fe) });
         }
 
+        // Targeted selection handler: only traverse selected item's container/content (TabControl/ItemsControl)
         private static void OnSelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             var fe = sender as FrameworkElement;
             PushEvent(new { Type = "SelectionChanged", Control = DescribeElement(fe) });
+
+            try {
+                var selector = sender as Selector;
+                if (selector == null) return;
+
+                // Defer targeted traversal to allow containers/templates to be applied
+                Dispatcher.CurrentDispatcher.BeginInvoke(new Action(() => {
+                    try {
+                        FrameworkElement target = null;
+
+                        // If this is an ItemsControl (ListBox, ListView, TabControl, etc.) try to find the realized container
+                        if (selector is ItemsControl ic) {
+                            var selectedItem = selector.SelectedItem;
+                            if (selectedItem != null) {
+                                try {
+                                    var container = ic.ItemContainerGenerator.ContainerFromItem(selectedItem) as FrameworkElement;
+                                    if (container != null) target = container;
+                                } catch { /* ignore */ }
+                            }
+
+                            // Special-case TabControl: if container is not realized, use SelectedContent as fallback
+                            if (target == null && selector is TabControl tab) {
+                                try {
+                                    if (tab.SelectedContent is FrameworkElement contentFe) target = contentFe;
+                                } catch { }
+                            }
+                        }
+
+                        // If we found a reasonable target, do a focused discovery only for that subtree
+                        if (target != null) {
+                          try {
+                                ForceRegisterSubtreeVisualOnly(target);
+                                ScheduleTraversal(target);
+                            } catch { }
+                        }
+                    } catch { }
+                }), DispatcherPriority.ApplicationIdle);
+            } catch { }
         }
 
         private static void OnRangeValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -903,32 +1159,55 @@ namespace AcManager.UiObserver
             PushEvent(new { Type = "TextChanged", Control = DescribeElement(fe) });
         }
 
-        private static object DescribeWindow(Window w) {
+        private static object DescribeWindow(Window w)
+        {
             if (w == null) return null;
-            return new { Id = GetIdForElement(w), Type = w.GetType().FullName, Title = w.Title, Bounds = GetScreenBounds(w) };
+            return new {
+                Id = GetIdForElement(w),
+                Type = w.GetType().FullName,
+                Title = w.Title,
+                Bounds = GetScreenBounds(w)
+            };
         }
 
-        private static object DescribePopup(Popup p) {
+        private static object DescribePopup(Popup p)
+        {
             if (p == null) return null;
-            return new { Id = GetIdForElement(p.Child as FrameworkElement), Type = p.GetType().FullName, IsOpen = p.IsOpen };
+            return new {
+                Id = GetIdForElement(p.Child as FrameworkElement),
+                Type = p.GetType().FullName,
+                IsOpen = p.IsOpen
+            };
         }
 
-        private static object DescribeElement(FrameworkElement fe) {
+        private static object DescribeElement(FrameworkElement fe)
+        {
             if (fe == null) return null;
             var w = Window.GetWindow(fe);
             var bounds = GetScreenBounds(fe, w);
-            return new { Id = GetIdForElement(fe), Type = fe.GetType().FullName, Name = fe.Name, AutomationId = System.Windows.Automation.AutomationProperties.GetAutomationId(fe), Bounds = bounds, Visible = fe.IsVisible, Enabled = (fe as Control)?.IsEnabled };
+            return new {
+                Id = GetIdForElement(fe),
+                Type = fe.GetType().FullName,
+                Name = fe.Name,
+                AutomationId = System.Windows.Automation.AutomationProperties.GetAutomationId(fe),
+                Bounds = bounds,
+                Visible = fe.IsVisible,
+                Enabled = (fe as Control)?.IsEnabled
+            };
         }
 
-        private static string GetIdForElement(FrameworkElement fe) {
+        private static string GetIdForElement(FrameworkElement fe)
+        {
             if (fe == null) return null;
             var auto = System.Windows.Automation.AutomationProperties.GetAutomationId(fe);
             if (!string.IsNullOrEmpty(auto)) return "A:" + auto;
             if (!string.IsNullOrEmpty(fe.Name)) return "N:" + fe.Name;
+            // fallback: type + hash
             return $"G:{fe.GetType().Name}:{fe.GetHashCode():X8}";
         }
 
-        private static Rect? GetScreenBounds(FrameworkElement fe, Window w = null) {
+        private static Rect? GetScreenBounds(FrameworkElement fe, Window w = null)
+        {
             try {
                 if (fe == null) return null;
                 if (w == null) w = Window.GetWindow(fe);
@@ -938,6 +1217,7 @@ namespace AcManager.UiObserver
                 var bottomRight = transform.Transform(new Point(fe.ActualWidth, fe.ActualHeight));
                 var p1 = w.PointToScreen(topLeft);
                 var p2 = w.PointToScreen(bottomRight);
+                // convert to device pixels if necessary
                 var source = PresentationSource.FromVisual(w);
                 if (source != null) {
                     var m = source.CompositionTarget.TransformToDevice;
@@ -945,9 +1225,37 @@ namespace AcManager.UiObserver
                     p2 = new Point(p2.X * m.M11, p2.Y * m.M22);
                 }
                 return new Rect(p1, p2);
-            } catch { return null; }
+            } catch {
+                return null;
+            }
         }
 
-        private static void PushEvent(object payload) { return; }
+        // Very small placeholder: serialize and push to external process here
+        private static void PushEvent(object payload)
+        {
+            return;
+
+            // For debug: log to app logging
+            try {
+                var s = Newtonsoft.Json.JsonConvert.SerializeObject(payload);
+                Logging.Debug("UiObserver: " + (s?.Length > 1000 ? s.Substring(0, 1000) + "…" : s));
+                // send to pipe if available
+                if (_pipeName != null) {
+                    try {
+                        lock (PipeLock) {
+                            if (_pipeWriter == null) {
+                                // try to connect once more
+                                TryConnectPipe();
+                            }
+
+                            if (_pipeWriter != null) {
+                                _pipeWriter.WriteLine(s);
+                                _pipeWriter.Flush();
+                            }
+                        }
+                    } catch { /* ignore */ }
+                }
+            } catch { /* ignore */ }
+        }
     }
 }
