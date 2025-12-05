@@ -58,6 +58,7 @@ namespace AcManager.UiObserver
 
 		public static void DebugDumpNavElems()
 		{
+			return;
 			System.Diagnostics.Debug.WriteLine($"NavMapper.DebugDumpNavElems: _navByLogical.Count={_navByLogical.Count}");
 			foreach (var kv in _navByLogical.ToArray()) {
 				var logicalKey = kv.Key;

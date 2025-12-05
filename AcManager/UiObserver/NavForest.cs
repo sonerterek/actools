@@ -8,6 +8,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media.Media3D;
 using System.Windows.Threading;
+using System.Reflection;
 
 namespace AcManager.UiObserver {
     // Helper composite key uniquely identifying a logical element within a particular root
@@ -203,7 +204,72 @@ namespace AcManager.UiObserver {
                             mi.SubmenuOpened += (s2, e2) => { try { RegisterRoot(mi); SyncRoot(mi); } catch { } };
                         }
                     } catch { }
+
+                    // TabControl: when selection changes, scan the TabControl subtree to discover newly realized tab content
+                    try {
+                        if (fe is TabControl tc) {
+                            tc.SelectionChanged += (s2, e2) => {
+                                try {
+                                    // Register the TabControl as a scanning root so we only traverse its subtree
+                                    RegisterRoot(tc);
+                                    // Sync after layout settles
+                                    tc.Dispatcher.BeginInvoke(new Action(() => {
+                                        try { SyncRoot(tc); } catch { }
+                                    }), DispatcherPriority.ApplicationIdle);
+                                } catch { }
+                            };
+
+                            // Also listen for the ItemContainerGenerator status — when containers are generated,
+                            // the TabItem visuals are realized (useful for virtualized/delayed templates).
+                            try {
+                                var gen = tc.ItemContainerGenerator;
+                                gen.StatusChanged += (s2, e2) => {
+                                    try {
+                                        if (gen.Status == System.Windows.Controls.Primitives.GeneratorStatus.ContainersGenerated) {
+                                            RegisterRoot(tc);
+                                            tc.Dispatcher.BeginInvoke(new Action(() => {
+                                                try { SyncRoot(tc); } catch { }
+                                            }), DispatcherPriority.ApplicationIdle);
+                                        }
+                                    } catch { }
+                                };
+                            } catch { }
+                        }
+
+                        // Special-case: ModernTab from FirstFloor.ModernUI is not a TabControl but behaves similarly.
+                        // Attach to its selection/navigation change to rescan its subtree.
+                        if (fe.GetType().FullName == "FirstFloor.ModernUI.Windows.Controls.ModernTab") {
+                            try {
+                                // Try to attach to SelectedSourceChanged event via reflection.
+                                var et = fe.GetType();
+                                var ev = et.GetEvent("SelectedSourceChanged");
+                                if (ev != null) {
+                                    // Use a compatible handler method defined below
+                                    var handler = Delegate.CreateDelegate(ev.EventHandlerType,
+                                            typeof(NavForest).GetMethod(nameof(ModernTab_OnSelectedSourceChanged), BindingFlags.NonPublic | BindingFlags.Static));
+                                    ev.AddEventHandler(fe, handler);
+                                } else {
+                                    // Fallback: when event not found, listen to LayoutUpdated to trigger scanning after layout changes
+                                    fe.LayoutUpdated += (s2, e2) => {
+                                        try {
+                                            RegisterRoot(fe);
+                                            fe.Dispatcher.BeginInvoke(new Action(() => { try { SyncRoot(fe); } catch { } }), DispatcherPriority.ApplicationIdle);
+                                        } catch { }
+                                    };
+                                }
+                            } catch { }
+                        }
+                    } catch { }
                 }
+            } catch { }
+        }
+
+        private static void ModernTab_OnSelectedSourceChanged(object sender, EventArgs e) {
+            try {
+                var fe = sender as FrameworkElement;
+                if (fe == null) return;
+                RegisterRoot(fe);
+                fe.Dispatcher.BeginInvoke(new Action(() => { try { SyncRoot(fe); } catch { } }), DispatcherPriority.ApplicationIdle);
             } catch { }
         }
 
