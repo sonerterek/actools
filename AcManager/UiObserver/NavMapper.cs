@@ -198,13 +198,6 @@ namespace AcManager.UiObserver
 
 			try {
 				if (_overlay == null) _overlay = new HighlightOverlay();
-				// Set overlay to cover virtual screen in DIP (SystemParameters already in DIP)
-				try {
-					_overlay.Left = SystemParameters.VirtualScreenLeft;
-					_overlay.Top = SystemParameters.VirtualScreenTop;
-					_overlay.Width = SystemParameters.VirtualScreenWidth;
-					_overlay.Height = SystemParameters.VirtualScreenHeight;
-				} catch { }
 
 				try { if (!_overlay.IsVisible) _overlay.Show(); } catch { }
 				_overlay.ShowRects(rectsInDip);

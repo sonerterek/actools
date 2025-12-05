@@ -4,6 +4,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Windows;
 using System.Windows.Media;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Media.Media3D;
 using System.Windows.Threading;
 
@@ -51,6 +53,18 @@ namespace AcManager.UiObserver {
 
         public static event Action<FrameworkElement> RootChanged;
 
+        // Attached flag to avoid subscribing handlers multiple times on the same element
+        private static readonly DependencyProperty AttachedHandlersProperty = DependencyProperty.RegisterAttached(
+                "AttachedHandlers", typeof(bool), typeof(NavForest), new PropertyMetadata(false));
+
+        private static bool GetAttachedHandlers(DependencyObject o) {
+            try { return (bool)o.GetValue(AttachedHandlersProperty); } catch { return false; }
+        }
+
+        private static void SetAttachedHandlers(DependencyObject o, bool value) {
+            try { o.SetValue(AttachedHandlersProperty, value); } catch { }
+        }
+
         public static void Configure(Func<FrameworkElement, object> getLogicalKey,
                                      Func<FrameworkElement, bool> isTrulyVisible,
                                      Func<FrameworkElement, string> computeStableId) {
@@ -65,6 +79,32 @@ namespace AcManager.UiObserver {
             try {
                 EventManager.RegisterClassHandler(typeof(FrameworkElement), FrameworkElement.LoadedEvent,
                         new RoutedEventHandler(OnAnyElementLoaded), true);
+                // Listen for common popup open events (ContextMenu/MenuItem). These are routed events and help discover popup roots.
+                try {
+                    EventManager.RegisterClassHandler(typeof(System.Windows.Controls.ContextMenu), System.Windows.Controls.ContextMenu.OpenedEvent,
+                            new RoutedEventHandler(OnAnyPopupOpened), true);
+                } catch { }
+                try {
+                    EventManager.RegisterClassHandler(typeof(System.Windows.Controls.MenuItem), System.Windows.Controls.MenuItem.SubmenuOpenedEvent,
+                            new RoutedEventHandler(OnAnyPopupOpened), true);
+                } catch { }
+            } catch { }
+        }
+
+        private static void OnAnyElementVisibilityChanged(object sender, DependencyPropertyChangedEventArgs e) {
+            try {
+                if (!(e.NewValue is bool b) || !b) return; // only care when element becomes visible
+                var fe = sender as FrameworkElement;
+                if (fe == null) return;
+
+                // If this visual has a PresentationSource (popup/overlay), register and sync it
+                try {
+                    var ps = PresentationSource.FromVisual(fe);
+                    if (ps != null) {
+                        RegisterRoot(fe);
+                        SyncRoot(fe);
+                    }
+                } catch { }
             } catch { }
         }
 
@@ -123,6 +163,46 @@ namespace AcManager.UiObserver {
                     }
 
                     // Otherwise, if some other element loaded that equals the content, we handled it above.
+                }
+
+                // Attach per-instance handlers for common popup-like controls when elements are loaded
+                if (!GetAttachedHandlers(fe)) {
+                    SetAttachedHandlers(fe, true);
+
+                    try {
+                        if (fe is ComboBox cb) {
+                            cb.DropDownOpened += (s2, e2) => {
+                                try {
+                                    // ComboBox popup is typically PART_Popup in template
+                                    var popup = cb.Template?.FindName("PART_Popup", cb) as Popup;
+                                    if (popup?.Child is FrameworkElement child) {
+                                        RegisterRoot(child);
+                                        SyncRoot(child);
+                                    }
+                                } catch { }
+                            };
+                        }
+                    } catch { }
+
+                    try {
+                        if (fe is Popup p) {
+                            p.Opened += (s2, e2) => {
+                                try { if (p.Child is FrameworkElement child) { RegisterRoot(child); SyncRoot(child); } } catch { }
+                            };
+                        }
+                    } catch { }
+
+                    try {
+                        if (fe is ContextMenu cm) {
+                            cm.Opened += (s2, e2) => { try { RegisterRoot(cm); SyncRoot(cm); } catch { } };
+                        }
+                    } catch { }
+
+                    try {
+                        if (fe is MenuItem mi) {
+                            mi.SubmenuOpened += (s2, e2) => { try { RegisterRoot(mi); SyncRoot(mi); } catch { } };
+                        }
+                    } catch { }
                 }
             } catch { }
         }
@@ -363,6 +443,44 @@ namespace AcManager.UiObserver {
                 if (_byComposite.TryGetValue(composite, out var nav)) list.Add(nav);
             }
             return list;
+        }
+
+        // Handler invoked when common popup-like controls open (ContextMenu, MenuItem submenu).
+        // Attempts to register the popup's visual root so it will be scanned.
+        private static void OnAnyPopupOpened(object sender, RoutedEventArgs e) {
+            try {
+                if (sender == null) return;
+
+                // The actual popup visual may be created after this event fires. Schedule a short delayed scan
+                // of current PresentationSources to discover newly created popup roots and register them.
+                try {
+                    var dispatcher = (sender as DispatcherObject)?.Dispatcher ?? Application.Current?.Dispatcher;
+                    if (dispatcher != null) {
+                        dispatcher.BeginInvoke(new Action(() => {
+                            try { RegisterNewPresentationSourceRoots(); } catch { }
+                        }), DispatcherPriority.ApplicationIdle);
+                    } else {
+                        RegisterNewPresentationSourceRoots();
+                    }
+                } catch { }
+            } catch { }
+        }
+
+        // Enumerate PresentationSource.CurrentSources and register any root visuals not yet tracked.
+        private static void RegisterNewPresentationSourceRoots() {
+            try {
+                var sources = PresentationSource.CurrentSources;
+                foreach (PresentationSource ps in sources) {
+                    try {
+                        var root = ps?.RootVisual as FrameworkElement;
+                        if (root == null) continue;
+                        if (!_rootIndex.ContainsKey(root)) {
+                            RegisterRoot(root);
+                            SyncRoot(root);
+                        }
+                    } catch { }
+                }
+            } catch { }
         }
     }
 }
