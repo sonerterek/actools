@@ -458,7 +458,11 @@ namespace AcManager.UiObserver
 #endif
             if (_initialized) return;
             _initialized = true;
-            _pipeName = pipeName;
+            NavMapper.Initialize();
+
+            return;
+
+		_pipeName = pipeName;
 
             // Try to connect in background
             Task.Run(() => TryConnectPipe());
