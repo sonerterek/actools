@@ -235,21 +235,20 @@ namespace AcManager.UiObserver {
                                 };
                             } catch { }
                         }
+                    } catch { }
 
-                        // Special-case: ModernTab from FirstFloor.ModernUI is not a TabControl but behaves similarly.
-                        // Attach to its selection/navigation change to rescan its subtree.
+                    // Special-case: ModernTab from FirstFloor.ModernUI is not a TabControl but behaves similarly.
+                    // Attach to its selection/navigation change to rescan its subtree.
+                    try {
                         if (fe.GetType().FullName == "FirstFloor.ModernUI.Windows.Controls.ModernTab") {
                             try {
-                                // Try to attach to SelectedSourceChanged event via reflection.
                                 var et = fe.GetType();
                                 var ev = et.GetEvent("SelectedSourceChanged");
                                 if (ev != null) {
-                                    // Use a compatible handler method defined below
                                     var handler = Delegate.CreateDelegate(ev.EventHandlerType,
                                             typeof(NavForest).GetMethod(nameof(ModernTab_OnSelectedSourceChanged), BindingFlags.NonPublic | BindingFlags.Static));
                                     ev.AddEventHandler(fe, handler);
                                 } else {
-                                    // Fallback: when event not found, listen to LayoutUpdated to trigger scanning after layout changes
                                     fe.LayoutUpdated += (s2, e2) => {
                                         try {
                                             RegisterRoot(fe);
@@ -259,12 +258,91 @@ namespace AcManager.UiObserver {
                                 }
                             } catch { }
                         }
+
+                        // Special-case: ModernMenu (FirstFloor.ModernUI) fires SelectedChange when menu selection changes.
+                        try {
+                            if (fe.GetType().FullName == "FirstFloor.ModernUI.Windows.Controls.ModernMenu") {
+                                try {
+                                    var et = fe.GetType();
+                                    var ev = et.GetEvent("SelectedChange");
+                                    if (ev != null) {
+                                        var handler = Delegate.CreateDelegate(ev.EventHandlerType,
+                                                typeof(NavForest).GetMethod(nameof(ModernMenu_OnSelectedChange), BindingFlags.NonPublic | BindingFlags.Static));
+                                        ev.AddEventHandler(fe, handler);
+                                    } else {
+                                        fe.LayoutUpdated += (s2, e2) => {
+                                            try {
+                                                RegisterRoot(fe);
+                                                fe.Dispatcher.BeginInvoke(new Action(() => { try { SyncRoot(fe); } catch { } }), DispatcherPriority.ApplicationIdle);
+                                            } catch { }
+                                        };
+                                    }
+                                } catch { }
+                            }
+                        } catch { }
+
+                        // Special-case: ModernFrame (FirstFloor.ModernUI) hosts navigable content — when it navigates, its Content is updated.
+                        try {
+                            if (fe.GetType().FullName == "FirstFloor.ModernUI.Windows.Controls.ModernFrame") {
+                                try {
+                                    // Use direct type reference if available
+                                    var mf = fe as FirstFloor.ModernUI.Windows.Controls.ModernFrame;
+                                    if (mf != null) {
+                                        mf.Navigated += (s2, e2) => {
+                                            try {
+                                                // Register the new content (usually a Page or UserControl) as a root for scanning
+                                                var content = mf.Content as FrameworkElement;
+                                                if (content != null) {
+                                                    RegisterRoot(content);
+                                                    content.Dispatcher.BeginInvoke(new Action(() => { try { SyncRoot(content); } catch { } }), DispatcherPriority.ApplicationIdle);
+                                                } else {
+                                                    // fallback to register the frame itself
+                                                    RegisterRoot(mf);
+                                                    mf.Dispatcher.BeginInvoke(new Action(() => { try { SyncRoot(mf); } catch { } }), DispatcherPriority.ApplicationIdle);
+                                                }
+                                            } catch { }
+                                        };
+
+                                        // Also when the frame itself is loaded, attempt to register current content
+                                        mf.Loaded += (s2, e2) => {
+                                            try {
+                                                var content = mf.Content as FrameworkElement;
+                                                if (content != null) {
+                                                    RegisterRoot(content);
+                                                    content.Dispatcher.BeginInvoke(new Action(() => { try { SyncRoot(content); } catch { } }), DispatcherPriority.ApplicationIdle);
+                                                } else {
+                                                    RegisterRoot(mf);
+                                                    mf.Dispatcher.BeginInvoke(new Action(() => { try { SyncRoot(mf); } catch { } }), DispatcherPriority.ApplicationIdle);
+                                                }
+                                            } catch { }
+                                        };
+                                    } else {
+                                        // If direct type not available for some reason, fall back to layout updates
+                                        fe.LayoutUpdated += (s2, e2) => {
+                                            try {
+                                                RegisterRoot(fe);
+                                                fe.Dispatcher.BeginInvoke(new Action(() => { try { SyncRoot(fe); } catch { } }), DispatcherPriority.ApplicationIdle);
+                                            } catch { }
+                                        };
+                                    }
+                                } catch { }
+                            }
+                        } catch { }
                     } catch { }
                 }
             } catch { }
         }
 
         private static void ModernTab_OnSelectedSourceChanged(object sender, EventArgs e) {
+            try {
+                var fe = sender as FrameworkElement;
+                if (fe == null) return;
+                RegisterRoot(fe);
+                fe.Dispatcher.BeginInvoke(new Action(() => { try { SyncRoot(fe); } catch { } }), DispatcherPriority.ApplicationIdle);
+            } catch { }
+        }
+
+        private static void ModernMenu_OnSelectedChange(object sender, EventArgs e) {
             try {
                 var fe = sender as FrameworkElement;
                 if (fe == null) return;
