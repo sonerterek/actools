@@ -11,15 +11,27 @@ using System.Windows.Threading;
 using System.Reflection;
 
 namespace AcManager.UiObserver {
-    // NavForest keeps per-root trees and allows incremental sync
+    /// <summary>
+    /// NavForest maintains one NavTree per PresentationSource.
+    /// Each NavTree is an isolated navigation domain for keyboard navigation.
+    /// Supports incremental subtree rescanning for dynamic content changes.
+    /// </summary>
     internal static class NavForest {
-        // Track NavNodes by their FrameworkElement (direct reference instead of CompositeKey)
+        // Track NavNodes by their FrameworkElement
         private static readonly ConcurrentDictionary<FrameworkElement, NavNode> _nodesByElement = new ConcurrentDictionary<FrameworkElement, NavNode>();
         private static readonly ConcurrentDictionary<string, NavNode> _nodesById = new ConcurrentDictionary<string, NavNode>();
-        private static readonly ConcurrentDictionary<FrameworkElement, HashSet<FrameworkElement>> _rootIndex = new ConcurrentDictionary<FrameworkElement, HashSet<FrameworkElement>>();
+        
+        // Map each PresentationSource to its NavTree root element (enforces 1:1 mapping)
+        private static readonly ConcurrentDictionary<PresentationSource, FrameworkElement> _presentationSourceRoots = 
+            new ConcurrentDictionary<PresentationSource, FrameworkElement>();
+        
+        // Root index: NavTree root element ? all elements in that tree
+        private static readonly ConcurrentDictionary<FrameworkElement, HashSet<FrameworkElement>> _rootIndex = 
+            new ConcurrentDictionary<FrameworkElement, HashSet<FrameworkElement>>();
         
         // Debouncing: track pending sync operations per root
-        private static readonly ConcurrentDictionary<FrameworkElement, DispatcherOperation> _pendingSyncs = new ConcurrentDictionary<FrameworkElement, DispatcherOperation>();
+        private static readonly ConcurrentDictionary<FrameworkElement, DispatcherOperation> _pendingSyncs = 
+            new ConcurrentDictionary<FrameworkElement, DispatcherOperation>();
         
         private static Func<FrameworkElement, bool> _isTrulyVisible = null;
 
@@ -41,37 +53,22 @@ namespace AcManager.UiObserver {
             if (isTrulyVisible != null) _isTrulyVisible = isTrulyVisible;
         }
 
-        // Enable automatic discovery of visual roots by listening to Loaded events.
-        // This helps detect popups/context menus/other separate visuals when they appear.
+        /// <summary>
+        /// Enable automatic discovery of PresentationSource roots by listening to Loaded events.
+        /// </summary>
         public static void EnableAutoRootTracking() {
             try {
                 EventManager.RegisterClassHandler(typeof(FrameworkElement), FrameworkElement.LoadedEvent,
                         new RoutedEventHandler(OnAnyElementLoaded), true);
-                // Listen for common popup open events (ContextMenu/MenuItem). These are routed events and help discover popup roots.
+                
+                // Listen for popup open events to ensure new PresentationSources are registered
                 try {
-                    EventManager.RegisterClassHandler(typeof(System.Windows.Controls.ContextMenu), System.Windows.Controls.ContextMenu.OpenedEvent,
+                    EventManager.RegisterClassHandler(typeof(ContextMenu), ContextMenu.OpenedEvent,
                             new RoutedEventHandler(OnAnyPopupOpened), true);
                 } catch { }
                 try {
-                    EventManager.RegisterClassHandler(typeof(System.Windows.Controls.MenuItem), System.Windows.Controls.MenuItem.SubmenuOpenedEvent,
+                    EventManager.RegisterClassHandler(typeof(MenuItem), MenuItem.SubmenuOpenedEvent,
                             new RoutedEventHandler(OnAnyPopupOpened), true);
-                } catch { }
-            } catch { }
-        }
-
-        private static void OnAnyElementVisibilityChanged(object sender, DependencyPropertyChangedEventArgs e) {
-            try {
-                if (!(e.NewValue is bool b) || !b) return; // only care when element becomes visible
-                var fe = sender as FrameworkElement;
-                if (fe == null) return;
-
-                // If this visual has a PresentationSource (popup/overlay), register and sync it
-                try {
-                    var ps = PresentationSource.FromVisual(fe);
-                    if (ps != null) {
-                        RegisterRoot(fe);
-                        SyncRoot(fe);
-                    }
                 } catch { }
             } catch { }
         }
@@ -79,250 +76,283 @@ namespace AcManager.UiObserver {
         private static void OnAnyElementLoaded(object sender, RoutedEventArgs e) {
             var fe = sender as FrameworkElement;
             if (fe == null) return;
+            
             try {
-                // Heuristics: register as root when element is not hosted in a Window or when it's a top-level content
-                // PresentationSource.FromVisual non-null while Window.GetWindow returns null usually means popup-like visual
                 var win = Window.GetWindow(fe);
-                if (win == null) {
-                    try {
-                        var ps = PresentationSource.FromVisual(fe);
-                        if (ps != null) {
-                            RegisterRoot(fe);
-                            return;
-                        }
-                    } catch { }
-
-                    // fallback: if element has no visual parent and no logical parent, treat as root
-                    try {
-                        var hasVisualParent = false;
-                        try { hasVisualParent = VisualTreeHelper.GetParent(fe) != null; } catch { hasVisualParent = false; }
-                        if (!hasVisualParent && fe.Parent == null) {
-                            RegisterRoot(fe);
-                            return;
-                        }
-                    } catch { }
-                } else {
-                    // if it's the window content, ensure the window's content is registered
-                    var content = win.Content as FrameworkElement;
-
-                    // If the loaded element IS the window content (common case), register that content.
-                    if (content != null && ReferenceEquals(content, fe)) {
-                        RegisterRoot(content);
-                        return;
-                    }
-
-                    // If the loaded element is the Window itself (Window.Loaded fired), content may not yet be set.
-                    // Register the content if available, otherwise register the Window object as a root (Window is a FrameworkElement).
+                
+                // Handle Window-based content
+                if (win != null) {
+                    // Only register Window.Content or Window itself as roots
                     if (ReferenceEquals(win, fe)) {
-                        if (content != null) {
-                            RegisterRoot(content);
-                        } else {
-                            // Register the Window itself as a scanning root. This ensures the main window is scanned
-                            // even when Content is not yet assigned at the time of this Loaded event.
-                            RegisterRoot(win);
-                        }
+                        // Window.Loaded fired
+                        var content = win.Content as FrameworkElement;
+                        RegisterRoot(content ?? win);
                         return;
                     }
-
-                    // Otherwise, if some other element loaded that equals the content, we handled it above.
+                    
+                    if (win.Content != null && ReferenceEquals(win.Content, fe)) {
+                        // Window.Content loaded
+                        RegisterRoot(fe);
+                        return;
+                    }
+                    
+                    // For other elements in window, just attach change handlers
+                    AttachSubtreeChangeHandlers(fe);
+                    return;
                 }
+                
+                // Handle non-Window elements (Popups, ContextMenus, dialog overlays)
+                var ps = PresentationSource.FromVisual(fe);
+                if (ps != null) {
+                    var psRoot = ps.RootVisual as FrameworkElement;
+                    
+                    // Check if this element IS the PresentationSource.RootVisual
+                    if (psRoot != null && object.ReferenceEquals(psRoot, fe)) {
+                        // This IS a PS root - register it
+                        RegisterRoot(fe);
+                        return;
+                    }
+                    
+                    // Not a PS root - check if PS is already tracked
+                    if (_presentationSourceRoots.ContainsKey(ps)) {
+                        // PS already tracked - just attach handlers
+                        AttachSubtreeChangeHandlers(fe);
+                        return;
+                    }
+                    
+                    // PS not tracked - register its root
+                    if (psRoot != null) {
+                        RegisterRoot(psRoot);
+                        return;
+                    }
+                }
+                
+                // Fallback: disconnected elements with no parent
+                try {
+                    var hasVisualParent = VisualTreeHelper.GetParent(fe) != null;
+                    if (!hasVisualParent && fe.Parent == null) {
+                        RegisterRoot(fe);
+                    }
+                } catch { }
+            } catch { }
+        }
 
-                // Attach per-instance handlers for common popup-like controls when elements are loaded
-                if (!GetAttachedHandlers(fe)) {
-                    SetAttachedHandlers(fe, true);
-
-                    // Clear the flag when element unloads so handlers can re-attach if element is re-added
-                    RoutedEventHandler unloadedHandler = null;
-                    unloadedHandler = (s, args) => {
+        /// <summary>
+        /// Attaches handlers for subtree content changes (TabControl, ComboBox, ModernFrame, etc.)
+        /// Does NOT create new NavTree roots - just triggers rescans.
+        /// </summary>
+        private static void AttachSubtreeChangeHandlers(FrameworkElement fe) {
+            if (GetAttachedHandlers(fe)) return;
+            SetAttachedHandlers(fe, true);
+            
+            // Clear flag on unload for potential reattachment
+            fe.Unloaded += (s, e) => SetAttachedHandlers(fe, false);
+            
+            try {
+                // ComboBox: dropdown has its own PresentationSource - register as new root
+                if (fe is ComboBox cb) {
+                    cb.DropDownOpened += (s, e) => {
                         try {
-                            SetAttachedHandlers(fe, false);
-                            fe.Unloaded -= unloadedHandler;
+                            var popup = cb.Template?.FindName("PART_Popup", cb) as Popup;
+                            if (popup?.Child is FrameworkElement child) {
+                                RegisterRoot(child); // Popup.Child has its own PS
+                            }
                         } catch { }
                     };
-                    fe.Unloaded += unloadedHandler;
-
+                }
+            } catch { }
+            
+            try {
+                // Popup: has its own PresentationSource - register as new root
+                if (fe is Popup p) {
+                    p.Opened += (s, e) => {
+                        try {
+                            if (p.Child is FrameworkElement child) {
+                                RegisterRoot(child);
+                            }
+                        } catch { }
+                    };
+                }
+            } catch { }
+            
+            try {
+                // ContextMenu: has its own PresentationSource - register as new root
+                if (fe is ContextMenu cm) {
+                    cm.Opened += (s, e) => {
+                        try { RegisterRoot(cm); } catch { }
+                    };
+                }
+            } catch { }
+            
+            try {
+                // MenuItem: submenu is a separate PresentationSource - register as new root
+                if (fe is MenuItem mi) {
+                    mi.SubmenuOpened += (s, e) => {
+                        try { RegisterRoot(mi); } catch { }
+                    };
+                }
+            } catch { }
+            
+            try {
+                // TabControl: content changes within same PS - rescan subtree
+                if (fe is TabControl tc) {
+                    tc.SelectionChanged += (s, e) => {
+                        try { RescanSubtree(tc); } catch { }
+                    };
+                    
+                    // Handle virtualized/delayed container generation
                     try {
-                        if (fe is ComboBox cb) {
-                            cb.DropDownOpened += (s2, e2) => {
-                                try {
-                                    // ComboBox popup is typically PART_Popup in template
-                                    var popup = cb.Template?.FindName("PART_Popup", cb) as Popup;
-                                    if (popup?.Child is FrameworkElement child) {
-                                        RegisterRoot(child);
-                                    }
-                                } catch { }
-                            };
-                        }
-                    } catch { }
-
-                    try {
-                        if (fe is Popup p) {
-                            p.Opened += (s2, e2) => {
-                                try { if (p.Child is FrameworkElement child) { RegisterRoot(child); } } catch { }
-                            };
-                        }
-                    } catch { }
-
-                    try {
-                        if (fe is ContextMenu cm) {
-                            cm.Opened += (s2, e2) => { try { RegisterRoot(cm); } catch { } };
-                        }
-                    } catch { }
-
-                    try {
-                        if (fe is MenuItem mi) {
-                            mi.SubmenuOpened += (s2, e2) => { try { RegisterRoot(mi); } catch { } };
-                        }
-                    } catch { }
-
-                    // TabControl: when selection changes, scan the TabControl subtree to discover newly realized tab content
-                    try {
-                        if (fe is TabControl tc) {
-                            tc.SelectionChanged += (s2, e2) => {
-                                try {
-                                    RegisterRoot(tc);
-                                } catch { }
-                            };
-
-                            // Also listen for the ItemContainerGenerator status — when containers are generated,
-                            // the TabItem visuals are realized (useful for virtualized/delayed templates).
+                        var gen = tc.ItemContainerGenerator;
+                        gen.StatusChanged += (s, e) => {
                             try {
-                                var gen = tc.ItemContainerGenerator;
-                                gen.StatusChanged += (s2, e2) => {
-                                    try {
-                                        if (gen.Status == System.Windows.Controls.Primitives.GeneratorStatus.ContainersGenerated) {
-                                            RegisterRoot(tc);
-                                        }
-                                    } catch { }
-                                };
-                            } catch { }
-                        }
-                    } catch { }
-
-                    // Special-case: ModernTab from FirstFloor.ModernUI is not a TabControl but behaves similarly.
-                    // Attach to its selection/navigation change to rescan its subtree.
-                    try {
-                        if (fe.GetType().FullName == "FirstFloor.ModernUI.Windows.Controls.ModernTab") {
-                            try {
-                                var et = fe.GetType();
-                                var ev = et.GetEvent("SelectedSourceChanged");
-                                if (ev != null) {
-                                    var handler = Delegate.CreateDelegate(ev.EventHandlerType,
-                                            typeof(NavForest).GetMethod(nameof(ModernTab_OnSelectedSourceChanged), BindingFlags.NonPublic | BindingFlags.Static));
-                                    ev.AddEventHandler(fe, handler);
+                                if (gen.Status == GeneratorStatus.ContainersGenerated) {
+                                    RescanSubtree(tc);
                                 }
                             } catch { }
+                        };
+                    } catch { }
+                }
+            } catch { }
+            
+            try {
+                // ModernTab: content changes - rescan subtree
+                if (fe.GetType().FullName == "FirstFloor.ModernUI.Windows.Controls.ModernTab") {
+                    try {
+                        var et = fe.GetType();
+                        var ev = et.GetEvent("SelectedSourceChanged");
+                        if (ev != null) {
+                            var handler = Delegate.CreateDelegate(ev.EventHandlerType,
+                                    typeof(NavForest).GetMethod(nameof(OnModernControlChanged), BindingFlags.NonPublic | BindingFlags.Static));
+                            ev.AddEventHandler(fe, handler);
                         }
-
-                        // Special-case: ModernMenu (FirstFloor.ModernUI) fires SelectedChange when menu selection changes.
-                        try {
-                            if (fe.GetType().FullName == "FirstFloor.ModernUI.Windows.Controls.ModernMenu") {
-                                try {
-                                    var et = fe.GetType();
-                                    var ev = et.GetEvent("SelectedChange");
-                                    if (ev != null) {
-                                        var handler = Delegate.CreateDelegate(ev.EventHandlerType,
-                                                typeof(NavForest).GetMethod(nameof(ModernMenu_OnSelectedChange), BindingFlags.NonPublic | BindingFlags.Static));
-                                        ev.AddEventHandler(fe, handler);
-                                    }
-                                } catch { }
-                            }
-                        } catch { }
-
-                        // Special-case: ModernFrame (FirstFloor.ModernUI) hosts navigable content — when it navigates, its Content is updated.
-                        try {
-                            if (fe.GetType().FullName == "FirstFloor.ModernUI.Windows.Controls.ModernFrame") {
-                                try {
-                                    // Use direct type reference if available
-                                    var mf = fe as FirstFloor.ModernUI.Windows.Controls.ModernFrame;
-                                    if (mf != null) {
-                                        mf.Navigated += (s2, e2) => {
-                                            try {
-                                                // Register the new content (usually a Page or UserControl) as a root for scanning
-                                                var content = mf.Content as FrameworkElement;
-                                                if (content != null) {
-                                                    RegisterRoot(content);
-                                                } else {
-                                                    // fallback to register the frame itself
-                                                    RegisterRoot(mf);
-                                                }
-                                            } catch { }
-                                        };
-
-                                        // Also when the frame itself is loaded, attempt to register current content
-                                        mf.Loaded += (s2, e2) => {
-                                            try {
-                                                var content = mf.Content as FrameworkElement;
-                                                if (content != null) {
-                                                    RegisterRoot(content);
-                                                } else {
-                                                    RegisterRoot(mf);
-                                                }
-                                            } catch { }
-                                        };
-                                    }
-                                } catch { }
-                            }
-                        } catch { }
+                    } catch { }
+                }
+            } catch { }
+            
+            try {
+                // ModernMenu: selection changes - rescan subtree
+                if (fe.GetType().FullName == "FirstFloor.ModernUI.Windows.Controls.ModernMenu") {
+                    try {
+                        var et = fe.GetType();
+                        var ev = et.GetEvent("SelectedChange");
+                        if (ev != null) {
+                            var handler = Delegate.CreateDelegate(ev.EventHandlerType,
+                                    typeof(NavForest).GetMethod(nameof(OnModernControlChanged), BindingFlags.NonPublic | BindingFlags.Static));
+                            ev.AddEventHandler(fe, handler);
+                        }
+                    } catch { }
+                }
+            } catch { }
+            
+            try {
+                // ModernFrame: navigation changes content - rescan subtree
+                if (fe.GetType().FullName == "FirstFloor.ModernUI.Windows.Controls.ModernFrame") {
+                    try {
+                        var mf = fe as FirstFloor.ModernUI.Windows.Controls.ModernFrame;
+                        if (mf != null) {
+                            mf.Navigated += (s, e) => {
+                                try { RescanSubtree(mf); } catch { }
+                            };
+                        }
                     } catch { }
                 }
             } catch { }
         }
 
-        private static void ModernTab_OnSelectedSourceChanged(object sender, EventArgs e) {
+        private static void OnModernControlChanged(object sender, EventArgs e) {
             try {
-                var fe = sender as FrameworkElement;
-                if (fe == null) return;
-                RegisterRoot(fe);
+                if (sender is FrameworkElement fe) {
+                    RescanSubtree(fe);
+                }
             } catch { }
         }
 
-        private static void ModernMenu_OnSelectedChange(object sender, EventArgs e) {
-            try {
-                var fe = sender as FrameworkElement;
-                if (fe == null) return;
-                RegisterRoot(fe);
-            } catch { }
-        }
-
+        /// <summary>
+        /// Registers a NavTree root for a PresentationSource.
+        /// Enforces 1:1 mapping - only PresentationSource.RootVisual elements are registered as roots.
+        /// If a child element is passed, the actual PS root is registered instead.
+        /// </summary>
         public static void RegisterRoot(FrameworkElement root) {
             if (root == null) return;
             
-            var isNew = !_rootIndex.ContainsKey(root);
-            _rootIndex.GetOrAdd(root, _ => new HashSet<FrameworkElement>());
-            
-            // Debug output for root registration
             try {
-                var typeName = root.GetType().Name;
-                var elementName = string.IsNullOrEmpty(root.Name) ? "(unnamed)" : root.Name;
-                var status = isNew ? "NEW" : "existing";
-                System.Diagnostics.Debug.WriteLine($"[NavForest] RegisterRoot: {typeName} '{elementName}' ({status})");
+                var ps = PresentationSource.FromVisual(root);
+                if (ps == null) return; // Not connected to a presentation source
                 
-                // Show what triggered this (call stack info)
-                if (isNew) {
-                    var ps = PresentationSource.FromVisual(root);
-                    System.Diagnostics.Debug.WriteLine($"[NavForest]   -> PresentationSource: {ps?.GetType().Name ?? "null"}");
-                    System.Diagnostics.Debug.WriteLine($"[NavForest]   -> IsLoaded: {root.IsLoaded}");
-                    System.Diagnostics.Debug.WriteLine($"[NavForest]   -> IsVisible: {root.IsVisible}");
+                // Get the actual PresentationSource.RootVisual
+                var psRootVisual = ps.RootVisual as FrameworkElement;
+                if (psRootVisual == null) return;
+                
+                // If we're trying to register a non-root element, redirect to actual root
+                if (!object.ReferenceEquals(root, psRootVisual)) {
+                    // Check if the actual PS root is already registered
+                    if (_presentationSourceRoots.TryGetValue(ps, out var existingRoot)) {
+                        // PS root already registered - schedule a rescan instead
+                        ScheduleDebouncedSync(existingRoot);
+                        return;
+                    }
+                    
+                    // Register the actual PS root, not the child element
+                    root = psRootVisual;
                 }
+                
+                // Register this PresentationSource ? Root mapping
+                var isNew = _presentationSourceRoots.TryAdd(ps, root);
+                _rootIndex.GetOrAdd(root, _ => new HashSet<FrameworkElement>());
+                
+                // Debug output
+                try {
+                    var typeName = root.GetType().Name;
+                    var elementName = string.IsNullOrEmpty(root.Name) ? "(unnamed)" : root.Name;
+                    var status = isNew ? "NEW" : "existing";
+                    System.Diagnostics.Debug.WriteLine($"[NavForest] RegisterRoot: {typeName} '{elementName}' ({status})");
+                    
+                    if (isNew) {
+                        System.Diagnostics.Debug.WriteLine($"[NavForest]   -> PresentationSource: {ps.GetType().Name}");
+                        System.Diagnostics.Debug.WriteLine($"[NavForest]   -> IsLoaded: {root.IsLoaded}");
+                        System.Diagnostics.Debug.WriteLine($"[NavForest]   -> IsVisible: {root.IsVisible}");
+                    }
+                } catch { }
+                
+                // Attach cleanup handlers once per root
+                if (isNew) {
+                    AttachCleanupHandlers(root);
+                }
+                
+                // Schedule debounced sync
+                ScheduleDebouncedSync(root);
             } catch { }
+        }
+
+        /// <summary>
+        /// Rescans a specific subtree within an existing NavTree.
+        /// Used when content changes within the same PresentationSource (TabControl selection, ModernFrame navigation, etc.)
+        /// </summary>
+        public static void RescanSubtree(FrameworkElement subtreeRoot) {
+            if (subtreeRoot == null) return;
             
-            // Attach cleanup handlers once per root
-            if (isNew) {
-                AttachCleanupHandlers(root);
-            }
-            
-            // Schedule debounced sync: cancel any pending sync and schedule a new one
-            ScheduleDebouncedSync(root);
+            try {
+                var ps = PresentationSource.FromVisual(subtreeRoot);
+                if (ps == null) return;
+                
+                // Find the NavTree root for this PresentationSource
+                if (!_presentationSourceRoots.TryGetValue(ps, out var navTreeRoot)) {
+                    // PS not tracked yet - register it
+                    RegisterRoot(subtreeRoot);
+                    return;
+                }
+                
+                // Schedule rescan of the entire NavTree (which includes this subtree)
+                // The scan will be debounced, so multiple rapid calls coalesce
+                ScheduleDebouncedSync(navTreeRoot);
+            } catch { }
         }
 
         private static void AttachCleanupHandlers(FrameworkElement root) {
             if (root == null) return;
             
-            // Unloaded event for general cleanup
             root.Unloaded += OnRootUnloaded;
             
-            // Closed event for Window, Popup, ContextMenu
             try {
                 if (root is Window win) {
                     win.Closed += OnWindowClosed;
@@ -343,29 +373,25 @@ namespace AcManager.UiObserver {
         }
 
         private static void OnRootUnloaded(object sender, RoutedEventArgs e) {
-            var root = sender as FrameworkElement;
-            if (root != null) {
+            if (sender is FrameworkElement root) {
                 UnregisterRoot(root);
             }
         }
 
         private static void OnWindowClosed(object sender, EventArgs e) {
-            var root = sender as FrameworkElement;
-            if (root != null) {
+            if (sender is FrameworkElement root) {
                 UnregisterRoot(root);
             }
         }
 
         private static void OnPopupClosed(object sender, EventArgs e) {
-            var root = sender as FrameworkElement;
-            if (root != null) {
+            if (sender is FrameworkElement root) {
                 UnregisterRoot(root);
             }
         }
 
         private static void OnContextMenuClosed(object sender, RoutedEventArgs e) {
-            var root = sender as FrameworkElement;
-            if (root != null) {
+            if (sender is FrameworkElement root) {
                 UnregisterRoot(root);
             }
         }
@@ -406,6 +432,14 @@ namespace AcManager.UiObserver {
                     }
                 } catch { }
             }
+            
+            // Remove PS ? Root mapping
+            try {
+                var ps = PresentationSource.FromVisual(root);
+                if (ps != null) {
+                    _presentationSourceRoots.TryRemove(ps, out var _);
+                }
+            } catch { }
             
             // Detach cleanup handlers
             DetachCleanupHandlers(root);
@@ -463,7 +497,7 @@ namespace AcManager.UiObserver {
                 
                 var newElements = new HashSet<FrameworkElement>();
                 
-                // Scan visual tree and create NavNodes using the factory
+                // Scan visual tree and create NavNodes
                 ScanVisualTree(root, newElements);
 
                 System.Diagnostics.Debug.WriteLine($"[NavForest] SyncRoot END: {typeName} '{elementName}' - found {newElements.Count} elements");
@@ -487,7 +521,7 @@ namespace AcManager.UiObserver {
         private static void ScanVisualTree(FrameworkElement root, HashSet<FrameworkElement> discoveredElements) {
             if (root == null) return;
 
-            // Capture root's PresentationSource once to avoid mixing visuals from other roots.
+            // Capture root's PresentationSource once to enforce boundary
             PresentationSource psRoot = null;
             try { psRoot = PresentationSource.FromVisual(root); } catch { psRoot = null; }
 
@@ -511,14 +545,7 @@ namespace AcManager.UiObserver {
                         psFe = PresentationSource.FromVisual(fe);
                         if (psFe == null) continue; // disconnected visual
                         
-                        // IMPORTANT: Any element with its own PresentationSource is a navigation group boundary.
-                        // This includes:
-                        // - Popup content (has separate HwndSource)
-                        // - Dialog overlays with separate HwndSource (Grid-based dialogs)
-                        // - Any other element that serves as a PresentationSource root
-                        //
-                        // Check if this element IS the root visual of its PresentationSource.
-                        // If so, treat it as a navigation group (unless it's the root we're currently scanning).
+                        // Check if this element IS the root visual of its PresentationSource
                         bool isOwnPresentationSourceRoot = false;
                         try {
                             isOwnPresentationSourceRoot = object.ReferenceEquals(psFe.RootVisual, fe);
@@ -527,14 +554,14 @@ namespace AcManager.UiObserver {
                         // If element has different PresentationSource than root, register it as a separate root
                         if (psRoot != null && !object.ReferenceEquals(psFe, psRoot)) {
                             RegisterRoot(fe);
-                            continue; // Don't scan this subtree now - it will be scanned as its own root
+                            continue; // Don't scan this subtree - it will be scanned as its own root
                         }
                         
                         // If element IS a PresentationSource root (and not the root we're scanning),
                         // also register it as a group boundary
                         if (isOwnPresentationSourceRoot && !object.ReferenceEquals(fe, root)) {
                             RegisterRoot(fe);
-                            continue; // Don't scan this subtree now - it will be scanned as its own root
+                            continue; // Don't scan this subtree - it will be scanned as its own root
                         }
                     } catch { continue; }
 
@@ -584,26 +611,15 @@ namespace AcManager.UiObserver {
                 var sources = PresentationSource.CurrentSources;
                 foreach (PresentationSource ps in sources) {
                     try {
-                        var root = ps?.RootVisual as FrameworkElement;
-                        if (root == null) continue;
-                        if (!_rootIndex.ContainsKey(root)) {
-                            RegisterRoot(root);
+                        if (!_presentationSourceRoots.ContainsKey(ps)) {
+                            var root = ps?.RootVisual as FrameworkElement;
+                            if (root != null) {
+                                RegisterRoot(root);
+                            }
                         }
                     } catch { }
                 }
             } catch { }
-        }
-
-        private static bool DefaultIsTrulyVisible(FrameworkElement fe) {
-            if (fe == null) return false;
-            DependencyObject cur = fe;
-            while (cur != null) {
-                if (cur is UIElement ui) {
-                    if (ui.Visibility != Visibility.Visible) return false;
-                }
-                try { cur = VisualTreeHelper.GetParent(cur); } catch { break; }
-            }
-            return fe.IsVisible && fe.IsLoaded;
         }
 
         public static IReadOnlyCollection<NavNode> GetNavNodesForRoot(FrameworkElement root) {
