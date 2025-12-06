@@ -48,9 +48,13 @@ namespace AcManager.UiObserver {
         private static readonly ConcurrentDictionary<CompositeKey, NavElem> _byComposite = new ConcurrentDictionary<CompositeKey, NavElem>();
         private static readonly ConcurrentDictionary<FrameworkElement, HashSet<CompositeKey>> _rootIndex = new ConcurrentDictionary<FrameworkElement, HashSet<CompositeKey>>();
         private static readonly ConcurrentDictionary<CompositeKey, CompositeKey?> _parent = new ConcurrentDictionary<CompositeKey, CompositeKey?>();
-        private static Func<FrameworkElement, object> _getLogicalKey = DefaultGetLogicalKey;
-        private static Func<FrameworkElement, bool> _isTrulyVisible = DefaultIsTrulyVisible;
-        private static Func<FrameworkElement, string> _computeStableId = DefaultComputeStableId;
+        
+        // Debouncing: track pending sync operations per root
+        private static readonly ConcurrentDictionary<FrameworkElement, DispatcherOperation> _pendingSyncs = new ConcurrentDictionary<FrameworkElement, DispatcherOperation>();
+        
+        private static Func<FrameworkElement, object> _getLogicalKey = null;
+        private static Func<FrameworkElement, bool> _isTrulyVisible = null;
+        private static Func<FrameworkElement, string> _computeStableId = null;
 
         public static event Action<FrameworkElement> RootChanged;
 
@@ -121,8 +125,6 @@ namespace AcManager.UiObserver {
                         var ps = PresentationSource.FromVisual(fe);
                         if (ps != null) {
                             RegisterRoot(fe);
-                            // trigger an immediate sync
-                            SyncRoot(fe);
                             return;
                         }
                     } catch { }
@@ -133,7 +135,6 @@ namespace AcManager.UiObserver {
                         try { hasVisualParent = VisualTreeHelper.GetParent(fe) != null; } catch { hasVisualParent = false; }
                         if (!hasVisualParent && fe.Parent == null) {
                             RegisterRoot(fe);
-                            SyncRoot(fe);
                             return;
                         }
                     } catch { }
@@ -144,7 +145,6 @@ namespace AcManager.UiObserver {
                     // If the loaded element IS the window content (common case), register that content.
                     if (content != null && ReferenceEquals(content, fe)) {
                         RegisterRoot(content);
-                        SyncRoot(content);
                         return;
                     }
 
@@ -153,12 +153,10 @@ namespace AcManager.UiObserver {
                     if (ReferenceEquals(win, fe)) {
                         if (content != null) {
                             RegisterRoot(content);
-                            SyncRoot(content);
                         } else {
                             // Register the Window itself as a scanning root. This ensures the main window is scanned
                             // even when Content is not yet assigned at the time of this Loaded event.
                             RegisterRoot(win);
-                            SyncRoot(win);
                         }
                         return;
                     }
@@ -178,7 +176,6 @@ namespace AcManager.UiObserver {
                                     var popup = cb.Template?.FindName("PART_Popup", cb) as Popup;
                                     if (popup?.Child is FrameworkElement child) {
                                         RegisterRoot(child);
-                                        SyncRoot(child);
                                     }
                                 } catch { }
                             };
@@ -188,20 +185,20 @@ namespace AcManager.UiObserver {
                     try {
                         if (fe is Popup p) {
                             p.Opened += (s2, e2) => {
-                                try { if (p.Child is FrameworkElement child) { RegisterRoot(child); SyncRoot(child); } } catch { }
+                                try { if (p.Child is FrameworkElement child) { RegisterRoot(child); } } catch { }
                             };
                         }
                     } catch { }
 
                     try {
                         if (fe is ContextMenu cm) {
-                            cm.Opened += (s2, e2) => { try { RegisterRoot(cm); SyncRoot(cm); } catch { } };
+                            cm.Opened += (s2, e2) => { try { RegisterRoot(cm); } catch { } };
                         }
                     } catch { }
 
                     try {
                         if (fe is MenuItem mi) {
-                            mi.SubmenuOpened += (s2, e2) => { try { RegisterRoot(mi); SyncRoot(mi); } catch { } };
+                            mi.SubmenuOpened += (s2, e2) => { try { RegisterRoot(mi); } catch { } };
                         }
                     } catch { }
 
@@ -210,12 +207,7 @@ namespace AcManager.UiObserver {
                         if (fe is TabControl tc) {
                             tc.SelectionChanged += (s2, e2) => {
                                 try {
-                                    // Register the TabControl as a scanning root so we only traverse its subtree
                                     RegisterRoot(tc);
-                                    // Sync after layout settles
-                                    tc.Dispatcher.BeginInvoke(new Action(() => {
-                                        try { SyncRoot(tc); } catch { }
-                                    }), DispatcherPriority.ApplicationIdle);
                                 } catch { }
                             };
 
@@ -227,9 +219,6 @@ namespace AcManager.UiObserver {
                                     try {
                                         if (gen.Status == System.Windows.Controls.Primitives.GeneratorStatus.ContainersGenerated) {
                                             RegisterRoot(tc);
-                                            tc.Dispatcher.BeginInvoke(new Action(() => {
-                                                try { SyncRoot(tc); } catch { }
-                                            }), DispatcherPriority.ApplicationIdle);
                                         }
                                     } catch { }
                                 };
@@ -248,13 +237,6 @@ namespace AcManager.UiObserver {
                                     var handler = Delegate.CreateDelegate(ev.EventHandlerType,
                                             typeof(NavForest).GetMethod(nameof(ModernTab_OnSelectedSourceChanged), BindingFlags.NonPublic | BindingFlags.Static));
                                     ev.AddEventHandler(fe, handler);
-                                } else {
-                                    fe.LayoutUpdated += (s2, e2) => {
-                                        try {
-                                            RegisterRoot(fe);
-                                            fe.Dispatcher.BeginInvoke(new Action(() => { try { SyncRoot(fe); } catch { } }), DispatcherPriority.ApplicationIdle);
-                                        } catch { }
-                                    };
                                 }
                             } catch { }
                         }
@@ -269,13 +251,6 @@ namespace AcManager.UiObserver {
                                         var handler = Delegate.CreateDelegate(ev.EventHandlerType,
                                                 typeof(NavForest).GetMethod(nameof(ModernMenu_OnSelectedChange), BindingFlags.NonPublic | BindingFlags.Static));
                                         ev.AddEventHandler(fe, handler);
-                                    } else {
-                                        fe.LayoutUpdated += (s2, e2) => {
-                                            try {
-                                                RegisterRoot(fe);
-                                                fe.Dispatcher.BeginInvoke(new Action(() => { try { SyncRoot(fe); } catch { } }), DispatcherPriority.ApplicationIdle);
-                                            } catch { }
-                                        };
                                     }
                                 } catch { }
                             }
@@ -294,11 +269,9 @@ namespace AcManager.UiObserver {
                                                 var content = mf.Content as FrameworkElement;
                                                 if (content != null) {
                                                     RegisterRoot(content);
-                                                    content.Dispatcher.BeginInvoke(new Action(() => { try { SyncRoot(content); } catch { } }), DispatcherPriority.ApplicationIdle);
                                                 } else {
                                                     // fallback to register the frame itself
                                                     RegisterRoot(mf);
-                                                    mf.Dispatcher.BeginInvoke(new Action(() => { try { SyncRoot(mf); } catch { } }), DispatcherPriority.ApplicationIdle);
                                                 }
                                             } catch { }
                                         };
@@ -309,19 +282,9 @@ namespace AcManager.UiObserver {
                                                 var content = mf.Content as FrameworkElement;
                                                 if (content != null) {
                                                     RegisterRoot(content);
-                                                    content.Dispatcher.BeginInvoke(new Action(() => { try { SyncRoot(content); } catch { } }), DispatcherPriority.ApplicationIdle);
                                                 } else {
                                                     RegisterRoot(mf);
-                                                    mf.Dispatcher.BeginInvoke(new Action(() => { try { SyncRoot(mf); } catch { } }), DispatcherPriority.ApplicationIdle);
                                                 }
-                                            } catch { }
-                                        };
-                                    } else {
-                                        // If direct type not available for some reason, fall back to layout updates
-                                        fe.LayoutUpdated += (s2, e2) => {
-                                            try {
-                                                RegisterRoot(fe);
-                                                fe.Dispatcher.BeginInvoke(new Action(() => { try { SyncRoot(fe); } catch { } }), DispatcherPriority.ApplicationIdle);
                                             } catch { }
                                         };
                                     }
@@ -338,7 +301,6 @@ namespace AcManager.UiObserver {
                 var fe = sender as FrameworkElement;
                 if (fe == null) return;
                 RegisterRoot(fe);
-                fe.Dispatcher.BeginInvoke(new Action(() => { try { SyncRoot(fe); } catch { } }), DispatcherPriority.ApplicationIdle);
             } catch { }
         }
 
@@ -347,19 +309,119 @@ namespace AcManager.UiObserver {
                 var fe = sender as FrameworkElement;
                 if (fe == null) return;
                 RegisterRoot(fe);
-                fe.Dispatcher.BeginInvoke(new Action(() => { try { SyncRoot(fe); } catch { } }), DispatcherPriority.ApplicationIdle);
             } catch { }
         }
 
         public static void RegisterRoot(FrameworkElement root) {
             if (root == null) return;
+            
+            var isNew = !_rootIndex.ContainsKey(root);
             _rootIndex.GetOrAdd(root, _ => new HashSet<CompositeKey>());
-            // schedule an initial sync on UI thread
-            try { root.Dispatcher.BeginInvoke(new Action(() => SyncRoot(root)), DispatcherPriority.ApplicationIdle); } catch { }
+            
+            // Attach cleanup handlers once per root
+            if (isNew) {
+                AttachCleanupHandlers(root);
+            }
+            
+            // Schedule debounced sync: cancel any pending sync and schedule a new one
+            ScheduleDebouncedSync(root);
+        }
+
+        private static void AttachCleanupHandlers(FrameworkElement root) {
+            if (root == null) return;
+            
+            // Unloaded event for general cleanup
+            root.Unloaded += OnRootUnloaded;
+            
+            // Closed event for Window, Popup, ContextMenu
+            try {
+                if (root is Window win) {
+                    win.Closed += OnWindowClosed;
+                }
+            } catch { }
+            
+            try {
+                if (root is Popup popup) {
+                    popup.Closed += OnPopupClosed;
+                }
+            } catch { }
+            
+            try {
+                if (root is ContextMenu cm) {
+                    cm.Closed += OnContextMenuClosed;
+                }
+            } catch { }
+        }
+
+        private static void OnRootUnloaded(object sender, RoutedEventArgs e) {
+            var root = sender as FrameworkElement;
+            if (root != null) {
+                UnregisterRoot(root);
+            }
+        }
+
+        private static void OnWindowClosed(object sender, EventArgs e) {
+            var root = sender as FrameworkElement;
+            if (root != null) {
+                UnregisterRoot(root);
+            }
+        }
+
+        private static void OnPopupClosed(object sender, EventArgs e) {
+            var root = sender as FrameworkElement;
+            if (root != null) {
+                UnregisterRoot(root);
+            }
+        }
+
+        private static void OnContextMenuClosed(object sender, RoutedEventArgs e) {
+            var root = sender as FrameworkElement;
+            if (root != null) {
+                UnregisterRoot(root);
+            }
+        }
+
+        private static void ScheduleDebouncedSync(FrameworkElement root) {
+            if (root == null) return;
+            
+            try {
+                // Cancel any pending sync operation for this root
+                if (_pendingSyncs.TryGetValue(root, out var pendingOp)) {
+                    try {
+                        if (pendingOp != null && pendingOp.Status == DispatcherOperationStatus.Pending) {
+                            pendingOp.Abort();
+                        }
+                    } catch { }
+                }
+                
+                // Schedule new sync at ApplicationIdle priority
+                var newOp = root.Dispatcher.BeginInvoke(new Action(() => {
+                    try {
+                        _pendingSyncs.TryRemove(root, out var _);
+                        SyncRoot(root);
+                    } catch { }
+                }), DispatcherPriority.ApplicationIdle);
+                
+                _pendingSyncs[root] = newOp;
+            } catch { }
         }
 
         public static void UnregisterRoot(FrameworkElement root) {
             if (root == null) return;
+            
+            // Cancel any pending sync operation
+            if (_pendingSyncs.TryRemove(root, out var pendingOp)) {
+                try {
+                    if (pendingOp != null && pendingOp.Status == DispatcherOperationStatus.Pending) {
+                        pendingOp.Abort();
+                    }
+                } catch { }
+            }
+            
+            // Detach cleanup handlers
+            DetachCleanupHandlers(root);
+            
+            // Remove all NavElems associated with this root
             if (_rootIndex.TryRemove(root, out var set)) {
                 foreach (var k in set) {
                     _byComposite.TryRemove(k, out var _);
@@ -368,13 +430,39 @@ namespace AcManager.UiObserver {
             }
         }
 
+        private static void DetachCleanupHandlers(FrameworkElement root) {
+            if (root == null) return;
+            
+            try {
+                root.Unloaded -= OnRootUnloaded;
+            } catch { }
+            
+            try {
+                if (root is Window win) {
+                    win.Closed -= OnWindowClosed;
+                }
+            } catch { }
+            
+            try {
+                if (root is Popup popup) {
+                    popup.Closed -= OnPopupClosed;
+                }
+            } catch { }
+            
+            try {
+                if (root is ContextMenu cm) {
+                    cm.Closed -= OnContextMenuClosed;
+                }
+            } catch { }
+        }
+
         public static void SyncRoot(FrameworkElement root) {
             if (root == null) return;
             if (!root.IsLoaded) return; // only scan after layout applied
 
             // Ensure we're on UI thread
             if (!root.Dispatcher.CheckAccess()) {
-                try { root.Dispatcher.BeginInvoke(new Action(() => SyncRoot(root)), DispatcherPriority.ApplicationIdle); } catch { }
+                ScheduleDebouncedSync(root);
                 return;
             }
 
@@ -416,6 +504,43 @@ namespace AcManager.UiObserver {
                 PruneAndUpdateBoundsForRoot(root);
 
                 try { RootChanged?.Invoke(root); } catch { }
+            } catch { }
+        }
+
+        // Handler invoked when common popup-like controls open (ContextMenu, MenuItem submenu).
+        // Attempts to register the popup's visual root so it will be scanned.
+        private static void OnAnyPopupOpened(object sender, RoutedEventArgs e) {
+            try {
+                if (sender == null) return;
+
+                // The actual popup visual may be created after this event fires. Schedule a short delayed scan
+                // of current PresentationSources to discover newly created popup roots and register them.
+                try {
+                    var dispatcher = (sender as DispatcherObject)?.Dispatcher ?? Application.Current?.Dispatcher;
+                    if (dispatcher != null) {
+                        dispatcher.BeginInvoke(new Action(() => {
+                            try { RegisterNewPresentationSourceRoots(); } catch { }
+                        }), DispatcherPriority.ApplicationIdle);
+                    } else {
+                        RegisterNewPresentationSourceRoots();
+                    }
+                } catch { }
+            } catch { }
+        }
+
+        // Enumerate PresentationSource.CurrentSources and register any root visuals not yet tracked.
+        private static void RegisterNewPresentationSourceRoots() {
+            try {
+                var sources = PresentationSource.CurrentSources;
+                foreach (PresentationSource ps in sources) {
+                    try {
+                        var root = ps?.RootVisual as FrameworkElement;
+                        if (root == null) continue;
+                        if (!_rootIndex.ContainsKey(root)) {
+                            RegisterRoot(root);
+                        }
+                    } catch { }
+                }
             } catch { }
         }
 
@@ -587,44 +712,6 @@ namespace AcManager.UiObserver {
                 if (_byComposite.TryGetValue(composite, out var nav)) list.Add(nav);
             }
             return list;
-        }
-
-        // Handler invoked when common popup-like controls open (ContextMenu, MenuItem submenu).
-        // Attempts to register the popup's visual root so it will be scanned.
-        private static void OnAnyPopupOpened(object sender, RoutedEventArgs e) {
-            try {
-                if (sender == null) return;
-
-                // The actual popup visual may be created after this event fires. Schedule a short delayed scan
-                // of current PresentationSources to discover newly created popup roots and register them.
-                try {
-                    var dispatcher = (sender as DispatcherObject)?.Dispatcher ?? Application.Current?.Dispatcher;
-                    if (dispatcher != null) {
-                        dispatcher.BeginInvoke(new Action(() => {
-                            try { RegisterNewPresentationSourceRoots(); } catch { }
-                        }), DispatcherPriority.ApplicationIdle);
-                    } else {
-                        RegisterNewPresentationSourceRoots();
-                    }
-                } catch { }
-            } catch { }
-        }
-
-        // Enumerate PresentationSource.CurrentSources and register any root visuals not yet tracked.
-        private static void RegisterNewPresentationSourceRoots() {
-            try {
-                var sources = PresentationSource.CurrentSources;
-                foreach (PresentationSource ps in sources) {
-                    try {
-                        var root = ps?.RootVisual as FrameworkElement;
-                        if (root == null) continue;
-                        if (!_rootIndex.ContainsKey(root)) {
-                            RegisterRoot(root);
-                            SyncRoot(root);
-                        }
-                    } catch { }
-                }
-            } catch { }
         }
     }
 }
