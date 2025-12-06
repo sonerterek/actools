@@ -168,6 +168,16 @@ namespace AcManager.UiObserver {
                 if (!GetAttachedHandlers(fe)) {
                     SetAttachedHandlers(fe, true);
 
+                    // Clear the flag when element unloads so handlers can re-attach if element is re-added
+                    RoutedEventHandler unloadedHandler = null;
+                    unloadedHandler = (s, args) => {
+                        try {
+                            SetAttachedHandlers(fe, false);
+                            fe.Unloaded -= unloadedHandler;
+                        } catch { }
+                    };
+                    fe.Unloaded += unloadedHandler;
+
                     try {
                         if (fe is ComboBox cb) {
                             cb.DropDownOpened += (s2, e2) => {
