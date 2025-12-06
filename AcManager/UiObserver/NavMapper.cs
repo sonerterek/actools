@@ -18,8 +18,7 @@ namespace AcManager.UiObserver
 	internal static class NavMapper
 	{
 		private static bool _initialized = false;
-		private static readonly ConcurrentDictionary<object, NavElem> _navByLogical = new ConcurrentDictionary<object, NavElem>();
-		private static readonly ConcurrentDictionary<string, NavElem> _navById = new ConcurrentDictionary<string, NavElem>();
+		private static readonly ConcurrentDictionary<string, NavNode> _navById = new ConcurrentDictionary<string, NavNode>();
 
 		public static event Action NavMapUpdated;
 
@@ -33,7 +32,7 @@ namespace AcManager.UiObserver
 			_initialized = true;
 
 			// configure NavForest with helpers
-			NavForest.Configure(GetLogicalKeyForElement, IsTrulyVisible, ComputeStableId);
+			NavForest.Configure(IsTrulyVisible);
 			NavForest.RootChanged += OnRootChanged;
 			// enable automatic tracking of newly created visual roots (popups, menus, etc.)
 			NavForest.EnableAutoRootTracking();
@@ -56,35 +55,23 @@ namespace AcManager.UiObserver
 			}
 		}
 
-		public static void DebugDumpNavElems()
+		public static void DebugDumpNavNodes()
 		{
 			return;
-			System.Diagnostics.Debug.WriteLine($"NavMapper.DebugDumpNavElems: _navByLogical.Count={_navByLogical.Count}");
-			foreach (var kv in _navByLogical.ToArray()) {
-				var logicalKey = kv.Key;
+			System.Diagnostics.Debug.WriteLine($"NavMapper.DebugDumpNavNodes: count={_navById.Count}");
+			foreach (var kv in _navById.ToArray()) {
 				var nav = kv.Value;
 				try {
 					if (!nav.TryGetVisual(out var fe)) {
-						System.Diagnostics.Debug.WriteLine($"NavElem Id={nav.Id} LogicalKey={logicalKey ?? "<null>"} Visual=GONE");
+						System.Diagnostics.Debug.WriteLine($"NavNode Id={nav.Id} Visual=GONE");
 						continue;
 					}
 
-					var ps = nav.PresentationSource;
-					var psId = ps == null ? "<null>" : ps.GetHashCode().ToString();
-					var rectDip = nav.BoundsDip;
-
-					System.Diagnostics.Debug.WriteLine(
-						$"NavElem Id={nav.Id} Type={fe.GetType().FullName} Name={fe.Name ?? "<noname>"} " +
-						$"Loaded={fe.IsLoaded} Visible={fe.IsVisible} PresentationSource={psId} BoundsDIP={rectDip}");
-					try {
-						var tl = fe.PointToScreen(new Point(0, 0));
-						var br = fe.PointToScreen(new Point(fe.ActualWidth, fe.ActualHeight));
-						System.Diagnostics.Debug.WriteLine($"  PointToScreen TL={tl} BR={br} Actual={fe.ActualWidth}x{fe.ActualHeight}");
-					} catch (Exception ex) {
-						System.Diagnostics.Debug.WriteLine($"  PointToScreen failed: {ex.Message}");
-					}
+					var type = nav.IsGroup ? "Group" : "Leaf";
+					var navigable = nav.IsNavigable ? "Navigable" : "NotNavigable";
+					System.Diagnostics.Debug.WriteLine($"NavNode Id={nav.Id} Type={type} {navigable} Element={fe.GetType().Name}");
 				} catch (Exception ex) {
-					System.Diagnostics.Debug.WriteLine($"DebugDumpNavElems: exception for key={logicalKey}: {ex.Message}");
+					System.Diagnostics.Debug.WriteLine($"DebugDumpNavNodes: exception for id={kv.Key}: {ex.Message}");
 				}
 			}
 		}
@@ -106,13 +93,13 @@ namespace AcManager.UiObserver
 					Debug.WriteLine("Main window present");
 				} else Debug.WriteLine("Application.Current.MainWindow is null");
 
-				// Dump first 10 NavElems
+				// Dump first 10 NavNodes
 				int i = 0;
-				foreach (var kv in _navByLogical.ToArray()) {
+				foreach (var node in NavForest.GetAllNavNodes()) {
 					if (i++ > 10) break;
-					var nav = kv.Value;
-					if (!nav.TryGetVisual(out var fe)) { Debug.WriteLine($"Nav {nav.Id}: Visual=GONE"); continue; }
-					Debug.WriteLine($"Nav {nav.Id}: BoundsDIP={nav.BoundsDip} Fe.PointToScreen(0,0)={(TryPointToScreen(fe))} Fe.Actual={fe.ActualWidth}x{fe.ActualHeight}");
+					if (!node.TryGetVisual(out var fe)) { Debug.WriteLine($"Nav {node.Id}: Visual=GONE"); continue; }
+					var center = node.GetCenterDip();
+					Debug.WriteLine($"Nav {node.Id}: Center={center} Fe.PointToScreen(0,0)={(TryPointToScreen(fe))} Fe.Actual={fe.ActualWidth}x{fe.ActualHeight}");
 				}
 			} catch (Exception ex) {
 				Debug.WriteLine($"DebugDumpOverlayInfo failed: {ex.Message}");
@@ -157,43 +144,76 @@ namespace AcManager.UiObserver
 				return;
 			}
 
-			DebugDumpNavElems();
+			DebugDumpNavNodes();
 
-			var rectsInDip = new List<Rect>();
-			foreach (var kv in _navByLogical.ToArray()) {
-				var nav = kv.Value;
-				if (!nav.TryGetVisual(out var fe)) continue;
+			var leafRects = new List<Rect>();
+			var groupRects = new List<Rect>();
+			
+			foreach (var node in NavForest.GetAllNavNodes()) {
+				if (!node.IsNavigable) continue;
+				
+				var center = node.GetCenterDip();
+				if (!center.HasValue) continue;
+				
+				if (!node.TryGetVisual(out var fe)) continue;
+				
 				try {
 					if (!fe.IsLoaded || !fe.IsVisible) continue;
-					// Prefer computing rectangle in DIP using PointToScreen (returns DIP)
-					Point tl, br;
+					
+					// PointToScreen returns DEVICE PIXELS, need to transform to DIP
+					Point tlDevice, brDevice;
 					try {
-						tl = fe.PointToScreen(new Point(0, 0));
-						br = fe.PointToScreen(new Point(fe.ActualWidth, fe.ActualHeight));
+						tlDevice = fe.PointToScreen(new Point(0, 0));
+						brDevice = fe.PointToScreen(new Point(fe.ActualWidth, fe.ActualHeight));
 					} catch {
 						continue; // cannot compute screen points for this element now
 					}
 
-					// PointToScreen may return coordinates in device pixels depending on DPI-awareness context.
-					// Normalize to DIP explicitly using the PresentationSource transform if available.
-					try {
-						var ps = PresentationSource.FromVisual(fe) ?? nav.PresentationSource;
-						if (ps?.CompositionTarget != null) {
-							var fromDevice = ps.CompositionTarget.TransformFromDevice;
-							tl = fromDevice.Transform(tl);
-							br = fromDevice.Transform(br);
-						}
-					} catch { }
+					// Transform from device pixels to DIP
+					Point tlDip, brDip;
+					var ps = PresentationSource.FromVisual(fe);
+					if (ps?.CompositionTarget != null) {
+						var transform = ps.CompositionTarget.TransformFromDevice;
+						tlDip = transform.Transform(tlDevice);
+						brDip = transform.Transform(brDevice);
+					} else {
+						// Fallback: use device pixels as-is (shouldn't happen for visible elements)
+						tlDip = tlDevice;
+						brDip = brDevice;
+					}
 
-					var x1 = Math.Min(tl.X, br.X);
-					var y1 = Math.Min(tl.Y, br.Y);
-					var x2 = Math.Max(tl.X, br.X);
-					var y2 = Math.Max(tl.Y, br.Y);
+					var x1 = Math.Min(tlDip.X, brDip.X);
+					var y1 = Math.Min(tlDip.Y, brDip.Y);
+					var x2 = Math.Max(tlDip.X, brDip.X);
+					var y2 = Math.Max(tlDip.Y, brDip.Y);
 					var rectDip = new Rect(new Point(x1, y1), new Point(x2, y2));
 
 					if (double.IsNaN(rectDip.Width) || double.IsNaN(rectDip.Height)) continue;
 					if (rectDip.Width < 1.0 || rectDip.Height < 1.0) continue;
-					rectsInDip.Add(rectDip);
+					
+					// Color based on current navigable state and type:
+					// - Pure leaf (not a group): Orange (always navigable)
+					// - Dual-role group (closed): Orange (navigable as leaf when closed)
+					// - Dual-role group (open): Gray (acting as container when open)
+					// - Pure container group: Gray (always just a container, never directly navigable)
+					bool shouldBeGray = false;
+					
+					if (node.IsGroup) {
+						if (node.IsDualRoleGroup) {
+							// Dual-role: gray only when open, orange when closed
+							shouldBeGray = (node as INavGroup)?.IsOpen == true;
+						} else {
+							// Pure container: always gray
+							shouldBeGray = true;
+						}
+					}
+					// else: pure leaf, not gray (orange)
+					
+					if (shouldBeGray) {
+						groupRects.Add(rectDip);
+					} else {
+						leafRects.Add(rectDip);
+					}
 				} catch { /* ignore per-element errors */ }
 			}
 
@@ -201,7 +221,9 @@ namespace AcManager.UiObserver
 				if (_overlay == null) _overlay = new HighlightOverlay();
 
 				try { if (!_overlay.IsVisible) _overlay.Show(); } catch { }
-				_overlay.ShowRects(rectsInDip);
+				
+				// Show both leaf and group rects with different colors
+				_overlay.ShowRects(leafRects, groupRects);
 				_highlightingShown = true;
 			} catch { }
 		}
@@ -226,36 +248,15 @@ namespace AcManager.UiObserver
 		{
 			if (root == null) return;
 			try {
-				var elems = NavForest.GetNavElemsForRoot(root);
+				var nodes = NavForest.GetNavNodesForRoot(root);
 
-				// remove previous entries belonging to this root
-				var toRemove = new List<object>();
-				foreach (var kv in _navByLogical.ToArray()) {
-					if (kv.Value.TryGetVisual(out var fe)) {
-						if (IsDescendantOf(fe, root)) toRemove.Add(kv.Key);
-					}
-				}
-				foreach (var key in toRemove) _navByLogical.TryRemove(key, out var _);
-
-				// add new ones
-				foreach (var nav in elems) {
-					_navByLogical.AddOrUpdate(nav.LogicalKey, nav, (k, old) => nav);
+				// Update our local cache
+				foreach (var nav in nodes) {
 					_navById.AddOrUpdate(nav.Id, nav, (k, old) => nav);
 				}
 
 				try { NavMapUpdated?.Invoke(); } catch { }
 			} catch { }
-		}
-
-		private static bool IsDescendantOf(FrameworkElement candidate, FrameworkElement root)
-		{
-			if (candidate == null || root == null) return false;
-			DependencyObject cur = candidate;
-			while (cur != null) {
-				if (object.ReferenceEquals(cur, root)) return true;
-				try { cur = VisualTreeHelper.GetParent(cur); } catch { break; }
-			}
-			return false;
 		}
 
 		private static bool IsTrulyVisible(FrameworkElement fe)
@@ -271,45 +272,20 @@ namespace AcManager.UiObserver
 			return fe.IsVisible && fe.IsLoaded;
 		}
 
-		private static object GetLogicalKeyForElement(FrameworkElement fe)
-		{
-			if (fe == null) return null;
-			if (fe.TemplatedParent != null) return fe.TemplatedParent;
-			var dc = fe.DataContext;
-			if (dc != null && !(dc is string) && !(dc.GetType().IsPrimitive)) return Tuple.Create((object)"DC", dc);
-			try {
-				DependencyObject current = fe;
-				while (current != null) {
-					if (current is FrameworkElement f && f.Parent != null) return f;
-					current = LogicalTreeHelper.GetParent(current);
-				}
-			} catch { }
-			return fe;
-		}
-
-		private static string ComputeStableId(FrameworkElement fe)
-		{
-			if (fe == null) return null;
-			var auto = System.Windows.Automation.AutomationProperties.GetAutomationId(fe);
-			if (!string.IsNullOrEmpty(auto)) return "A:" + auto;
-			if (!string.IsNullOrEmpty(fe.Name)) return "N:" + fe.Name;
-			return string.Format("G:{0}:{1:X8}", fe.GetType().Name, fe.GetHashCode());
-		}
-
 		// Public API
-		public static IEnumerable<NavElem> GetAllNavElems() => _navByLogical.Values.ToArray();
+		public static IEnumerable<NavNode> GetAllNavNodes() => _navById.Values.ToArray();
 
-		public static bool TryGetById(string id, out NavElem nav) => _navById.TryGetValue(id, out nav);
+		public static bool TryGetById(string id, out NavNode nav) => _navById.TryGetValue(id, out nav);
 
 		public static string Navigate(string currentId, NavDirection dir)
 		{
 			if (string.IsNullOrEmpty(currentId)) return null;
 			if (!_navById.TryGetValue(currentId, out var current)) return null;
-			var curCenter = current.CenterDip;
+			var curCenter = current.GetCenterDip();
 			if (curCenter == null) return null;
 
-			var candidates = _navById.Values.Where(n => n.Id != currentId && n.CenterDip != null)
-					.Select(n => new { Nav = n, C = n.CenterDip.Value }).ToArray();
+			var candidates = _navById.Values.Where(n => n.Id != currentId && n.GetCenterDip() != null)
+					.Select(n => new { Nav = n, C = n.GetCenterDip().Value }).ToArray();
 
 			Point dirVec;
 			switch (dir) {
@@ -320,7 +296,7 @@ namespace AcManager.UiObserver
 				default: dirVec = new Point(0, 0); break;
 			}
 
-			double bestCost = double.MaxValue; NavElem best = null;
+			double bestCost = double.MaxValue; NavNode best = null;
 			var cur = curCenter.Value;
 			foreach (var c in candidates) {
 				var v = new Point(c.C.X - cur.X, c.C.Y - cur.Y);

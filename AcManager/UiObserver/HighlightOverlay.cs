@@ -66,13 +66,9 @@ namespace AcManager.UiObserver {
             Height = Math.Max(0, brDip.Y - tlDip.Y);
         }
 
-        // rectsInDip: list of rectangles in DIP coordinates relative to virtual screen origin
-        public void ShowRects(IEnumerable<Rect> rectsInDip, Matrix? transformFromDeviceToDip = null) {
+        // leafRectsInDip: leaf rectangles in DIP (Orange), groupRectsInDip: group rectangles in DIP (Gray)
+        public void ShowRects(IEnumerable<Rect> leafRectsInDip, IEnumerable<Rect> groupRectsInDip = null) {
             _canvas.Children.Clear();
-            if (rectsInDip == null) {
-                if (IsVisible) Hide();
-                return;
-            }
 
             // Ensure overlay covers virtual screen in DIP coordinates
             SetWindowToVirtualScreenInDip();
@@ -82,23 +78,57 @@ namespace AcManager.UiObserver {
                 if (Application.Current?.MainWindow != null) Owner = Application.Current.MainWindow;
             } catch { }
 
-            foreach (var rectDip in rectsInDip) {
-                // Skip degenerate
-                if (double.IsNaN(rectDip.Width) || double.IsNaN(rectDip.Height)) continue;
-                if (rectDip.Width < 1.0 || rectDip.Height < 1.0) continue;
+            bool hasAny = false;
 
-                var shape = new Rectangle {
-                    Width = rectDip.Width,
-                    Height = rectDip.Height,
-                    Stroke = Brushes.Orange,
-                    StrokeThickness = 2,
-                    Fill = Brushes.Transparent,
-                    IsHitTestVisible = false
-                };
-                // rectDip is already in DIP; Left/Top are set in DIP as well
-                Canvas.SetLeft(shape, rectDip.Left - Left);
-                Canvas.SetTop(shape, rectDip.Top - Top);
-                _canvas.Children.Add(shape);
+            // Draw leaf elements in Orange
+            if (leafRectsInDip != null) {
+                foreach (var rectDip in leafRectsInDip) {
+                    // Skip degenerate
+                    if (double.IsNaN(rectDip.Width) || double.IsNaN(rectDip.Height)) continue;
+                    if (rectDip.Width < 1.0 || rectDip.Height < 1.0) continue;
+
+                    var shape = new Rectangle {
+                        Width = rectDip.Width,
+                        Height = rectDip.Height,
+                        Stroke = Brushes.Orange,
+                        StrokeThickness = 2,
+                        Fill = Brushes.Transparent,
+                        IsHitTestVisible = false
+                    };
+                    // rectDip is already in DIP; Left/Top are set in DIP as well
+                    Canvas.SetLeft(shape, rectDip.Left - Left);
+                    Canvas.SetTop(shape, rectDip.Top - Top);
+                    _canvas.Children.Add(shape);
+                    hasAny = true;
+                }
+            }
+            
+            // Draw group elements in Gray
+            if (groupRectsInDip != null) {
+                foreach (var rectDip in groupRectsInDip) {
+                    // Skip degenerate
+                    if (double.IsNaN(rectDip.Width) || double.IsNaN(rectDip.Height)) continue;
+                    if (rectDip.Width < 1.0 || rectDip.Height < 1.0) continue;
+
+                    var shape = new Rectangle {
+                        Width = rectDip.Width,
+                        Height = rectDip.Height,
+                        Stroke = Brushes.Gray,
+                        StrokeThickness = 2,
+                        Fill = Brushes.Transparent,
+                        IsHitTestVisible = false
+                    };
+                    // rectDip is already in DIP; Left/Top are set in DIP as well
+                    Canvas.SetLeft(shape, rectDip.Left - Left);
+                    Canvas.SetTop(shape, rectDip.Top - Top);
+                    _canvas.Children.Add(shape);
+                    hasAny = true;
+                }
+            }
+
+            if (!hasAny) {
+                if (IsVisible) Hide();
+                return;
             }
 
             try {

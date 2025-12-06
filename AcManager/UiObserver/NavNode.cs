@@ -1,5 +1,7 @@
+using FirstFloor.ModernUI.Windows.Controls;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
@@ -34,9 +36,9 @@ namespace AcManager.UiObserver
             typeof(RadioButton),
             
             // Input controls
-            typeof(TextBox),
-            typeof(PasswordBox),
-            typeof(RichTextBox),
+//            typeof(TextBox),
+//            typeof(PasswordBox),
+//            typeof(RichTextBox),
             
             // Selection controls
             typeof(ListBoxItem),
@@ -49,6 +51,7 @@ namespace AcManager.UiObserver
             
             // Other interactive controls
             typeof(Slider),
+            typeof(DoubleSlider),
             typeof(ScrollBar),
             typeof(TabItem),
             typeof(Expander),
@@ -61,34 +64,36 @@ namespace AcManager.UiObserver
         // Group elements - containers that can hold navigable children
         private static readonly HashSet<Type> _groupTypes = new HashSet<Type>
         {
+            typeof(ComboBox),      // Dual-role: navigable when closed
+            typeof(ContextMenu),   // Dual-role: navigable when closed
+            typeof(Menu),          // Dual-role: navigable when closed
+            typeof(Popup),         // Pure container: never directly navigable
+            typeof(ToolBar),       // Pure container: never directly navigable
+            typeof(StatusBar),     // Pure container: never directly navigable
+            typeof(TabControl),    // Pure container: never directly navigable
+            typeof(TreeView),      // Pure container: never directly navigable
+            typeof(ListBox),       // Pure container: never directly navigable
+            typeof(ListView),      // Pure container: never directly navigable
+            typeof(DataGrid),      // Pure container: never directly navigable
+        };
+        
+        // Dual-role groups - can be navigated TO when closed, act as containers when open
+        private static readonly HashSet<Type> _dualRoleGroupTypes = new HashSet<Type>
+        {
             typeof(ComboBox),
             typeof(ContextMenu),
             typeof(Menu),
-            typeof(Popup),
-            typeof(ToolBar),
-            typeof(StatusBar),
-            typeof(TabControl),
-            typeof(TreeView),
-            typeof(ListBox),
-            typeof(ListView),
-            typeof(DataGrid),
         };
         
-        // Elements that should be ignored (not navigable)
-        private static readonly HashSet<Type> _ignoredTypes = new HashSet<Type>
-        {
-            typeof(ScrollViewer),
-            typeof(Border),
-            typeof(Grid),
-            typeof(StackPanel),
-            typeof(WrapPanel),
-            typeof(DockPanel),
-            typeof(Canvas),
-            typeof(ContentPresenter),
-            typeof(ItemsPresenter),
-            typeof(Decorator),
-            typeof(Panel),
-        };
+        #endregion
+
+        #region Filtering
+        
+        /// <summary>
+        /// Global filter for excluding specific navigation paths.
+        /// Populate this with patterns to exclude certain controls from navigation.
+        /// </summary>
+        public static readonly NavPathFilter PathFilter = new NavPathFilter();
         
         #endregion
 
@@ -107,24 +112,61 @@ namespace AcManager.UiObserver
             
             var feType = fe.GetType();
             
-            // Check if this type should be ignored
-            if (IsIgnoredType(feType)) return null;
+            Debug.WriteLine($"[NavNode] Evaluating: {feType.Name} '{(string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name)}'");
             
             // Determine if this is a group or leaf
             bool isGroup = IsGroupType(feType);
+            bool isDualRoleGroup = isGroup && IsDualRoleGroupType(feType);
+            bool isLeaf = IsLeafType(feType);
             
-            // If not explicitly a group or leaf, check if it's navigable
-            if (!isGroup && !IsLeafType(feType))
+            Debug.WriteLine($"[NavNode]   -> IsGroup={isGroup}, IsDualRole={isDualRoleGroup}, IsLeaf={isLeaf}");
+            
+            // Pure whitelist: if not explicitly a group or leaf, reject it
+            if (!isGroup && !isLeaf)
             {
-                // Not a known navigable type - check if it might be a custom control
-                if (!IsLikelyNavigable(fe)) return null;
+                Debug.WriteLine($"[NavNode]   -> Not in whitelist, rejected");
+                return null;
+            }
+            
+            // General rule: A leaf cannot be inside another leaf
+            // This prevents template-internal controls from being navigable
+            // E.g., buttons inside a Slider, toggle buttons inside a ComboBox, etc.
+            if (!isGroup && HasLeafAncestor(fe, out var leafAncestor))
+            {
+                // Debug logging to help identify why controls are being skipped
+                try
+                {
+                    var skippedTypeName = feType.Name;
+                    var ancestorTypeName = leafAncestor?.GetType().Name ?? "Unknown";
+                    var skippedName = string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name;
+                    var ancestorName = string.IsNullOrEmpty(leafAncestor?.Name) ? "(unnamed)" : leafAncestor.Name;
+                    
+                    Debug.WriteLine($"[NavNode] SKIPPED: {skippedTypeName} '{skippedName}' - has leaf ancestor: {ancestorTypeName} '{ancestorName}'");
+                }
+                catch { }
+                
+                return null; // This leaf is inside another leaf's template
             }
             
             // Compute ID
             string id = computeId != null ? computeId(fe) : ComputeDefaultId(fe);
             
+            // Compute hierarchical path for debugging/filtering
+            string visualTreePath = ComputeVisualTreePath(fe);
+            
+            // Check if this path is excluded by filter rules
+            if (PathFilter.IsExcluded(visualTreePath))
+            {
+                Debug.WriteLine($"[NavNode]   -> FILTERED: Path matches exclusion rule");
+                Debug.WriteLine($"[NavNode]   -> Path: {visualTreePath}");
+                return null;
+            }
+            
+            Debug.WriteLine($"[NavNode]   -> CREATED: {feType.Name} Id={id}");
+            Debug.WriteLine($"[NavNode]   -> Path: {visualTreePath}");
+            
             // Create the node
-            return new NavNode(fe, id, isGroup);
+            return new NavNode(fe, id, isGroup, isDualRoleGroup);
         }
         
         private static bool IsLeafType(Type type)
@@ -142,8 +184,8 @@ namespace AcManager.UiObserver
             if (type.Namespace != null && type.Namespace.StartsWith("FirstFloor.ModernUI.Windows.Controls"))
             {
                 var typeName = type.Name;
-                if (typeName.Contains("Button") || typeName.Contains("Link") || 
-                    typeName.Contains("Switch") || typeName.Contains("Cell"))
+                // Only detect actual interactive controls, not layout containers
+                if (typeName.Contains("Button") || typeName.Contains("Link"))
                 {
                     return true;
                 }
@@ -176,40 +218,65 @@ namespace AcManager.UiObserver
             return false;
         }
         
-        private static bool IsIgnoredType(Type type)
+        private static bool IsDualRoleGroupType(Type type)
         {
             // Check exact type match
-            if (_ignoredTypes.Contains(type)) return true;
+            if (_dualRoleGroupTypes.Contains(type)) return true;
             
-            // Check if derives from any ignored base type
-            foreach (var ignoredType in _ignoredTypes)
+            // Check if derives from any dual-role group base type
+            foreach (var dualType in _dualRoleGroupTypes)
             {
-                if (ignoredType.IsAssignableFrom(type)) return true;
+                if (dualType.IsAssignableFrom(type)) return true;
+            }
+            
+            // Check for custom ModernUI controls that act as dual-role groups
+            if (type.Namespace != null && type.Namespace.StartsWith("FirstFloor.ModernUI.Windows.Controls"))
+            {
+                var typeName = type.Name;
+                // ModernMenu can be navigated to when closed
+                if (typeName.Contains("Menu"))
+                {
+                    return true;
+                }
             }
             
             return false;
         }
         
-        private static bool IsLikelyNavigable(FrameworkElement fe)
+        /// <summary>
+        /// Checks if this element has a leaf-type control as an ancestor in the visual tree.
+        /// This prevents nested leaves (e.g., buttons inside sliders, toggles inside comboboxes).
+        /// </summary>
+        /// <param name="fe">The element to check</param>
+        /// <param name="leafAncestor">The leaf ancestor that was found, if any</param>
+        /// <returns>True if a leaf ancestor exists</returns>
+        private static bool HasLeafAncestor(FrameworkElement fe, out FrameworkElement leafAncestor)
         {
-            // Heuristics for determining if an unknown element is likely navigable
+            leafAncestor = null;
             
-            // Has a name - might be important
-            if (!string.IsNullOrEmpty(fe.Name)) return true;
-            
-            // Has automation ID - designed for accessibility/automation
-            var automationId = System.Windows.Automation.AutomationProperties.GetAutomationId(fe);
-            if (!string.IsNullOrEmpty(automationId)) return true;
-            
-            // Is focusable - can receive keyboard focus
-            if (fe.Focusable) return true;
-            
-            // Has click handler (check if it's a Control with Command)
-            if (fe is Control control && control.IsEnabled)
+            try
             {
-                // Many custom controls might not be in our type lists but are interactive
-                return true;
+                DependencyObject current = fe;
+                while (current != null)
+                {
+                    // Move up the visual tree
+                    current = VisualTreeHelper.GetParent(current);
+                    
+                    if (current is FrameworkElement parent)
+                    {
+                        var parentType = parent.GetType();
+                        
+                        // Check if parent is a leaf - groups and unknown types are safe
+                        if (!IsGroupType(parentType) && IsLeafType(parentType))
+                        {
+                            // Found a leaf ancestor - this element should not be a separate leaf
+                            leafAncestor = parent;
+                            return true;
+                        }
+                    }
+                }
             }
+            catch { }
             
             return false;
         }
@@ -227,6 +294,47 @@ namespace AcManager.UiObserver
             
             // Fallback to type + hash (not stable across sessions, but unique)
             return $"G:{fe.GetType().Name}:{fe.GetHashCode():X8}";
+        }
+        
+        /// <summary>
+        /// Computes the hierarchical visual tree path for this element.
+        /// Format: Name:Type > ChildName:ChildType > ...
+        /// Only includes ancestors that would be NavNodes (leaves or groups), skipping layout containers.
+        /// Unnamed elements are represented as (unnamed):Type
+        /// </summary>
+        private static string ComputeVisualTreePath(FrameworkElement fe)
+        {
+            var path = new List<string>();
+            
+            try
+            {
+                DependencyObject current = fe;
+                while (current != null)
+                {
+                    if (current is FrameworkElement parent)
+                    {
+                        var parentType = parent.GetType();
+                        
+                        // Only include this element if it would be a NavNode (leaf or group)
+                        bool wouldBeNavNode = IsLeafType(parentType) || IsGroupType(parentType);
+                        
+                        if (wouldBeNavNode)
+                        {
+                            var typeName = parentType.Name;
+                            var elementName = string.IsNullOrEmpty(parent.Name) ? "(unnamed)" : parent.Name;
+                            path.Insert(0, $"{elementName}:{typeName}");
+                        }
+                    }
+                    
+                    current = VisualTreeHelper.GetParent(current);
+                }
+            }
+            catch
+            {
+                // If we can't walk the tree, return what we have
+            }
+            
+            return string.Join(" > ", path);
         }
         
         #endregion
@@ -249,8 +357,15 @@ namespace AcManager.UiObserver
         /// Determines whether this node is a group (can contain children) or a leaf (navigation target).
         /// </summary>
         public bool IsGroup { get; }
+        
+        /// <summary>
+        /// Determines whether this group can act as both a leaf (when closed) and a group (when open).
+        /// Only relevant if IsGroup is true.
+        /// Examples: ComboBox, ContextMenu (dual-role) vs ListBox, TabControl (pure containers).
+        /// </summary>
+        public bool IsDualRoleGroup { get; }
 
-        public NavNode(FrameworkElement fe, string id, bool isGroup = false)
+        public NavNode(FrameworkElement fe, string id, bool isGroup = false, bool isDualRoleGroup = false)
         {
             if (fe == null) throw new ArgumentNullException(nameof(fe));
             if (string.IsNullOrEmpty(id)) throw new ArgumentException("ID cannot be null or empty", nameof(id));
@@ -258,6 +373,7 @@ namespace AcManager.UiObserver
             VisualRef = new WeakReference<FrameworkElement>(fe);
             Id = id;
             IsGroup = isGroup;
+            IsDualRoleGroup = isDualRoleGroup;
 
             if (isGroup)
             {
@@ -333,14 +449,32 @@ namespace AcManager.UiObserver
 
             try
             {
-                // PointToScreen returns coordinates in DIP
-                var topLeft = fe.PointToScreen(new Point(0, 0));
-                var bottomRight = fe.PointToScreen(new Point(fe.ActualWidth, fe.ActualHeight));
+                // PointToScreen returns coordinates in DEVICE PIXELS, not DIP
+                // We need to transform them to DIP using the PresentationSource
+                var topLeftDevice = fe.PointToScreen(new Point(0, 0));
+                var bottomRightDevice = fe.PointToScreen(new Point(fe.ActualWidth, fe.ActualHeight));
 
-                var centerX = (topLeft.X + bottomRight.X) / 2.0;
-                var centerY = (topLeft.Y + bottomRight.Y) / 2.0;
+                // Get the transform from device pixels to DIP
+                var ps = PresentationSource.FromVisual(fe);
+                if (ps?.CompositionTarget != null)
+                {
+                    var transform = ps.CompositionTarget.TransformFromDevice;
+                    var topLeftDip = transform.Transform(topLeftDevice);
+                    var bottomRightDip = transform.Transform(bottomRightDevice);
 
-                return new Point(centerX, centerY);
+                    var centerX = (topLeftDip.X + bottomRightDip.X) / 2.0;
+                    var centerY = (topLeftDip.Y + bottomRightDip.Y) / 2.0;
+
+                    return new Point(centerX, centerY);
+                }
+                else
+                {
+                    // Fallback: no transform available, use device pixels as-is
+                    // (This shouldn't happen if IsNavigable check passed)
+                    var centerX = (topLeftDevice.X + bottomRightDevice.X) / 2.0;
+                    var centerY = (topLeftDevice.Y + bottomRightDevice.Y) / 2.0;
+                    return new Point(centerX, centerY);
+                }
             }
             catch
             {

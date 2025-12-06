@@ -11,50 +11,17 @@ using System.Windows.Threading;
 using System.Reflection;
 
 namespace AcManager.UiObserver {
-    // Helper composite key uniquely identifying a logical element within a particular root
-    internal struct CompositeKey : IEquatable<CompositeKey> {
-        public readonly FrameworkElement Root;
-        public readonly object LogicalKey;
-
-        public CompositeKey(FrameworkElement root, object logicalKey) {
-            Root = root;
-            LogicalKey = logicalKey;
-        }
-
-        public bool Equals(CompositeKey other) {
-            return ReferenceEquals(Root, other.Root) && EqualityComparer<object>.Default.Equals(LogicalKey, other.LogicalKey);
-        }
-
-        public override bool Equals(object obj) {
-            return obj is CompositeKey other && Equals(other);
-        }
-
-        public override int GetHashCode() {
-            unchecked {
-                var hash = Root != null ? RuntimeHelpersGetHashCode(Root) : 0;
-                hash = (hash * 397) ^ (LogicalKey != null ? EqualityComparer<object>.Default.GetHashCode(LogicalKey) : 0);
-                return hash;
-            }
-        }
-
-        // Use RuntimeHelpers.GetHashCode to avoid depending on overridden GetHashCode on FrameworkElement
-        private static int RuntimeHelpersGetHashCode(object o) {
-            return System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(o);
-        }
-    }
-
     // NavForest keeps per-root trees and allows incremental sync
     internal static class NavForest {
-        private static readonly ConcurrentDictionary<CompositeKey, NavElem> _byComposite = new ConcurrentDictionary<CompositeKey, NavElem>();
-        private static readonly ConcurrentDictionary<FrameworkElement, HashSet<CompositeKey>> _rootIndex = new ConcurrentDictionary<FrameworkElement, HashSet<CompositeKey>>();
-        private static readonly ConcurrentDictionary<CompositeKey, CompositeKey?> _parent = new ConcurrentDictionary<CompositeKey, CompositeKey?>();
+        // Track NavNodes by their FrameworkElement (direct reference instead of CompositeKey)
+        private static readonly ConcurrentDictionary<FrameworkElement, NavNode> _nodesByElement = new ConcurrentDictionary<FrameworkElement, NavNode>();
+        private static readonly ConcurrentDictionary<string, NavNode> _nodesById = new ConcurrentDictionary<string, NavNode>();
+        private static readonly ConcurrentDictionary<FrameworkElement, HashSet<FrameworkElement>> _rootIndex = new ConcurrentDictionary<FrameworkElement, HashSet<FrameworkElement>>();
         
         // Debouncing: track pending sync operations per root
         private static readonly ConcurrentDictionary<FrameworkElement, DispatcherOperation> _pendingSyncs = new ConcurrentDictionary<FrameworkElement, DispatcherOperation>();
         
-        private static Func<FrameworkElement, object> _getLogicalKey = null;
         private static Func<FrameworkElement, bool> _isTrulyVisible = null;
-        private static Func<FrameworkElement, string> _computeStableId = null;
 
         public static event Action<FrameworkElement> RootChanged;
 
@@ -70,12 +37,8 @@ namespace AcManager.UiObserver {
             try { o.SetValue(AttachedHandlersProperty, value); } catch { }
         }
 
-        public static void Configure(Func<FrameworkElement, object> getLogicalKey,
-                                     Func<FrameworkElement, bool> isTrulyVisible,
-                                     Func<FrameworkElement, string> computeStableId) {
-            if (getLogicalKey != null) _getLogicalKey = getLogicalKey;
+        public static void Configure(Func<FrameworkElement, bool> isTrulyVisible) {
             if (isTrulyVisible != null) _isTrulyVisible = isTrulyVisible;
-            if (computeStableId != null) _computeStableId = computeStableId;
         }
 
         // Enable automatic discovery of visual roots by listening to Loaded events.
@@ -326,7 +289,23 @@ namespace AcManager.UiObserver {
             if (root == null) return;
             
             var isNew = !_rootIndex.ContainsKey(root);
-            _rootIndex.GetOrAdd(root, _ => new HashSet<CompositeKey>());
+            _rootIndex.GetOrAdd(root, _ => new HashSet<FrameworkElement>());
+            
+            // Debug output for root registration
+            try {
+                var typeName = root.GetType().Name;
+                var elementName = string.IsNullOrEmpty(root.Name) ? "(unnamed)" : root.Name;
+                var status = isNew ? "NEW" : "existing";
+                System.Diagnostics.Debug.WriteLine($"[NavForest] RegisterRoot: {typeName} '{elementName}' ({status})");
+                
+                // Show what triggered this (call stack info)
+                if (isNew) {
+                    var ps = PresentationSource.FromVisual(root);
+                    System.Diagnostics.Debug.WriteLine($"[NavForest]   -> PresentationSource: {ps?.GetType().Name ?? "null"}");
+                    System.Diagnostics.Debug.WriteLine($"[NavForest]   -> IsLoaded: {root.IsLoaded}");
+                    System.Diagnostics.Debug.WriteLine($"[NavForest]   -> IsVisible: {root.IsVisible}");
+                }
+            } catch { }
             
             // Attach cleanup handlers once per root
             if (isNew) {
@@ -431,11 +410,12 @@ namespace AcManager.UiObserver {
             // Detach cleanup handlers
             DetachCleanupHandlers(root);
             
-            // Remove all NavElems associated with this root
+            // Remove all NavNodes associated with this root
             if (_rootIndex.TryRemove(root, out var set)) {
-                foreach (var k in set) {
-                    _byComposite.TryRemove(k, out var _);
-                    _parent.TryRemove(k, out var _);
+                foreach (var fe in set) {
+                    if (_nodesByElement.TryRemove(fe, out var node)) {
+                        _nodesById.TryRemove(node.Id, out var _);
+                    }
                 }
             }
         }
@@ -477,64 +457,124 @@ namespace AcManager.UiObserver {
             }
 
             try {
-                var candidateMap = new Dictionary<object, Tuple<FrameworkElement, int>>();
-                BuildCandidateMap(root, candidateMap);
+                var typeName = root.GetType().Name;
+                var elementName = string.IsNullOrEmpty(root.Name) ? "(unnamed)" : root.Name;
+                System.Diagnostics.Debug.WriteLine($"[NavForest] SyncRoot START: {typeName} '{elementName}'");
+                
+                var newElements = new HashSet<FrameworkElement>();
+                
+                // Scan visual tree and create NavNodes using the factory
+                ScanVisualTree(root, newElements);
 
-                var newKeys = new HashSet<CompositeKey>();
+                System.Diagnostics.Debug.WriteLine($"[NavForest] SyncRoot END: {typeName} '{elementName}' - found {newElements.Count} elements");
 
-                foreach (var kv in candidateMap) {
-                    var logicalKey = kv.Key;
-                    var fe = kv.Value.Item1;
-                    var id = _computeStableId != null ? _computeStableId(fe) : DefaultComputeStableId(fe);
-                    var composite = new CompositeKey(root, logicalKey);
-                    var nav = new NavElem(fe, logicalKey, id);
-                    _byComposite.AddOrUpdate(composite, nav, (k, old) => nav);
-                    newKeys.Add(composite);
-                }
-
-                _rootIndex.AddOrUpdate(root, newKeys, (k, old) => {
-                    old.Clear();
-                    foreach (var kk in newKeys) old.Add(kk);
-                    return old;
-                });
-
-                // Update parent links
-                foreach (var composite in newKeys) {
-                    if (!_byComposite.TryGetValue(composite, out var nav)) continue;
-                    if (!nav.TryGetVisual(out var fe)) continue;
-                    var parentLogical = FindParentLogicalKeyWithinRoot(fe, root);
-                    if (parentLogical == null || EqualityComparer<object>.Default.Equals(parentLogical, composite.LogicalKey)) {
-                        _parent[composite] = null;
-                    } else {
-                        var parentComposite = new CompositeKey(root, parentLogical);
-                        if (newKeys.Contains(parentComposite)) _parent[composite] = parentComposite; else _parent[composite] = null;
+                _rootIndex.AddOrUpdate(root, newElements, (k, old) => {
+                    // Remove old nodes that are no longer in the tree
+                    foreach (var oldFe in old) {
+                        if (!newElements.Contains(oldFe)) {
+                            if (_nodesByElement.TryRemove(oldFe, out var oldNode)) {
+                                _nodesById.TryRemove(oldNode.Id, out var _);
+                            }
+                        }
                     }
-                }
-
-                PruneAndUpdateBoundsForRoot(root);
+                    return newElements;
+                });
 
                 try { RootChanged?.Invoke(root); } catch { }
             } catch { }
         }
+        
+        private static void ScanVisualTree(FrameworkElement root, HashSet<FrameworkElement> discoveredElements) {
+            if (root == null) return;
+
+            // Capture root's PresentationSource once to avoid mixing visuals from other roots.
+            PresentationSource psRoot = null;
+            try { psRoot = PresentationSource.FromVisual(root); } catch { psRoot = null; }
+
+            var visited = new HashSet<DependencyObject>();
+            var stack = new Stack<DependencyObject>();
+            stack.Push(root);
+            visited.Add(root);
+
+            while (stack.Count > 0) {
+                var node = stack.Pop();
+
+                if (node is FrameworkElement fe) {
+                    // Skip if not visible
+                    if (_isTrulyVisible != null && !_isTrulyVisible(fe)) {
+                        continue;
+                    }
+
+                    // Ensure the visual is connected to a PresentationSource
+                    PresentationSource psFe = null;
+                    try {
+                        psFe = PresentationSource.FromVisual(fe);
+                        if (psFe == null) continue; // disconnected visual
+                        
+                        // IMPORTANT: Any element with its own PresentationSource is a navigation group boundary.
+                        // This includes:
+                        // - Popup content (has separate HwndSource)
+                        // - Dialog overlays with separate HwndSource (Grid-based dialogs)
+                        // - Any other element that serves as a PresentationSource root
+                        //
+                        // Check if this element IS the root visual of its PresentationSource.
+                        // If so, treat it as a navigation group (unless it's the root we're currently scanning).
+                        bool isOwnPresentationSourceRoot = false;
+                        try {
+                            isOwnPresentationSourceRoot = object.ReferenceEquals(psFe.RootVisual, fe);
+                        } catch { }
+                        
+                        // If element has different PresentationSource than root, register it as a separate root
+                        if (psRoot != null && !object.ReferenceEquals(psFe, psRoot)) {
+                            RegisterRoot(fe);
+                            continue; // Don't scan this subtree now - it will be scanned as its own root
+                        }
+                        
+                        // If element IS a PresentationSource root (and not the root we're scanning),
+                        // also register it as a group boundary
+                        if (isOwnPresentationSourceRoot && !object.ReferenceEquals(fe, root)) {
+                            RegisterRoot(fe);
+                            continue; // Don't scan this subtree now - it will be scanned as its own root
+                        }
+                    } catch { continue; }
+
+                    // Try to create a NavNode - returns null if element type should be ignored
+                    var navNode = NavNode.CreateNavNode(fe);
+                    if (navNode != null) {
+                        _nodesByElement.AddOrUpdate(fe, navNode, (k, old) => navNode);
+                        _nodesById.AddOrUpdate(navNode.Id, navNode, (k, old) => navNode);
+                        discoveredElements.Add(fe);
+                    }
+                }
+
+                // Continue traversing visual tree
+                int visualCount = 0;
+                try { visualCount = VisualTreeHelper.GetChildrenCount(node); } catch { visualCount = 0; }
+                for (int i = 0; i < visualCount; i++) {
+                    try {
+                        var child = VisualTreeHelper.GetChild(node, i);
+                        if (child == null) continue;
+                        if (!visited.Contains(child)) {
+                          visited.Add(child);
+                          stack.Push(child);
+                        }
+                    } catch { }
+                }
+            }
+        }
 
         // Handler invoked when common popup-like controls open (ContextMenu, MenuItem submenu).
-        // Attempts to register the popup's visual root so it will be scanned.
         private static void OnAnyPopupOpened(object sender, RoutedEventArgs e) {
             try {
                 if (sender == null) return;
-
-                // The actual popup visual may be created after this event fires. Schedule a short delayed scan
-                // of current PresentationSources to discover newly created popup roots and register them.
-                try {
-                    var dispatcher = (sender as DispatcherObject)?.Dispatcher ?? Application.Current?.Dispatcher;
-                    if (dispatcher != null) {
-                        dispatcher.BeginInvoke(new Action(() => {
-                            try { RegisterNewPresentationSourceRoots(); } catch { }
-                        }), DispatcherPriority.ApplicationIdle);
-                    } else {
-                        RegisterNewPresentationSourceRoots();
-                    }
-                } catch { }
+                var dispatcher = (sender as DispatcherObject)?.Dispatcher ?? Application.Current?.Dispatcher;
+                if (dispatcher != null) {
+                    dispatcher.BeginInvoke(new Action(() => {
+                        try { RegisterNewPresentationSourceRoots(); } catch { }
+                    }), DispatcherPriority.ApplicationIdle);
+                } else {
+                    RegisterNewPresentationSourceRoots();
+                }
             } catch { }
         }
 
@@ -554,146 +594,6 @@ namespace AcManager.UiObserver {
             } catch { }
         }
 
-        private static void BuildCandidateMap(FrameworkElement root, Dictionary<object, Tuple<FrameworkElement, int>> candidateMap) {
-            if (root == null) return;
-
-            // Capture root's PresentationSource once to avoid mixing visuals from other roots.
-            PresentationSource psRoot = null;
-            try { psRoot = PresentationSource.FromVisual(root); } catch { psRoot = null; }
-
-            var visited = new HashSet<DependencyObject>();
-            var stack = new Stack<Tuple<DependencyObject, int>>();
-            stack.Push(Tuple.Create((DependencyObject)root, 0));
-            visited.Add(root);
-
-            while (stack.Count > 0) {
-                var tup = stack.Pop();
-                var node = tup.Item1;
-                var depth = tup.Item2;
-
-                if (node is FrameworkElement fe) {
-                    try {
-                        // Skip visuals that are not actually visible according to provided predicate.
-                        if (_isTrulyVisible != null && !_isTrulyVisible(fe)) goto skipAdd;
-                    } catch { goto skipAdd; }
-
-                    // Ensure the visual is connected to a PresentationSource and belongs to the same presentation root.
-                    try {
-                        var psFe = PresentationSource.FromVisual(fe);
-                        if (psFe == null) goto skipAdd; // disconnected visual
-                        if (psRoot != null && !object.ReferenceEquals(psFe, psRoot)) goto skipAdd; // different root (popup/tooltip/etc.)
-                    } catch { goto skipAdd; }
-
-                    object logicalKey = null;
-                    try { logicalKey = _getLogicalKey != null ? _getLogicalKey(fe) : DefaultGetLogicalKey(fe); } catch { logicalKey = null; }
-
-                    if (logicalKey != null) {
-                        if (candidateMap.TryGetValue(logicalKey, out var existing)) {
-                            if (depth < existing.Item2) candidateMap[logicalKey] = Tuple.Create(fe, depth);
-                        } else {
-                            candidateMap[logicalKey] = Tuple.Create(fe, depth);
-                        }
-                    }
-                }
-
-                skipAdd:;
-
-                int visualCount = 0;
-                try { visualCount = VisualTreeHelper.GetChildrenCount(node); } catch { visualCount = 0; }
-                for (int i = 0; i < visualCount; i++) {
-                    try {
-                        var child = VisualTreeHelper.GetChild(node, i);
-                        if (child == null) continue;
-                        if (!visited.Contains(child)) {
-                          visited.Add(child);
-                          stack.Push(Tuple.Create(child, depth + 1));
-                        }
-                    } catch { }
-                }
-
-                // NOTE: intentionally do NOT traverse the logical tree. We only care about visuals connected to a PresentationSource.
-                // LogicalTree traversal was producing disconnected/non-visual candidates that lack PresentationSource and produce
-                // invalid screen coordinates. Removing logical traversal ensures we only discover elements that are actually in the visual tree.
-            }
-        }
-
-        // Walk up parents to find nearest different logical key (within the same root)
-        private static object FindParentLogicalKeyWithinRoot(FrameworkElement fe, FrameworkElement root) {
-            if (fe == null || root == null) return null;
-            object childKey = null;
-            try { childKey = _getLogicalKey != null ? _getLogicalKey(fe) : DefaultGetLogicalKey(fe); } catch { childKey = null; }
-
-            DependencyObject cur = fe;
-            while (cur != null) {
-                if (ReferenceEquals(cur, root)) break;
-
-                DependencyObject next = null;
-                if (cur is FrameworkElement f && f.Parent != null) next = f.Parent; else {
-                    try { next = VisualTreeHelper.GetParent(cur); } catch { next = null; }
-                }
-
-                if (next == null) break;
-
-                if (next is FrameworkElement pf) {
-                    object pKey = null;
-                    try { pKey = _getLogicalKey != null ? _getLogicalKey(pf) : DefaultGetLogicalKey(pf); } catch { pKey = null; }
-                    if (pKey != null && !EqualityComparer<object>.Default.Equals(pKey, childKey)) return pKey;
-                }
-
-                cur = next;
-            }
-
-            return null;
-        }
-
-        private static bool IsDescendantOf(FrameworkElement candidate, FrameworkElement root) {
-            if (candidate == null || root == null) return false;
-            DependencyObject cur = candidate;
-            while (cur != null) {
-                if (object.ReferenceEquals(cur, root)) return true;
-                try { cur = VisualTreeHelper.GetParent(cur); } catch { break; }
-            }
-            return false;
-        }
-
-        private static void PruneAndUpdateBoundsForRoot(FrameworkElement root) {
-            if (root == null) return;
-            if (!_rootIndex.TryGetValue(root, out var set)) return;
-
-            var toRemove = new List<CompositeKey>();
-            foreach (var composite in set.ToArray()) {
-                if (!_byComposite.TryGetValue(composite, out var nav)) { toRemove.Add(composite); continue; }
-                if (!nav.TryGetVisual(out var fe)) { toRemove.Add(composite); continue; }
-                if (!IsDescendantOf(fe, root)) { toRemove.Add(composite); continue; }
-                try {
-                    if (_isTrulyVisible != null && !_isTrulyVisible(fe)) { toRemove.Add(composite); continue; }
-                } catch { }
-
-                try { nav.UpdateBounds(); } catch { }
-            }
-
-            foreach (var k in toRemove) {
-                set.Remove(k);
-                _byComposite.TryRemove(k, out var _);
-                _parent.TryRemove(k, out var _);
-            }
-        }
-
-        private static object DefaultGetLogicalKey(FrameworkElement fe) {
-            if (fe == null) return null;
-            if (fe.TemplatedParent != null) return fe.TemplatedParent;
-            var dc = fe.DataContext;
-            if (dc != null && !(dc is string) && !(dc.GetType().IsPrimitive)) return Tuple.Create((object)"DC", dc);
-            try {
-                DependencyObject current = fe;
-                while (current != null) {
-                    if (current is FrameworkElement f && f.Parent != null) return f;
-                    current = LogicalTreeHelper.GetParent(current);
-                }
-            } catch { }
-            return fe;
-        }
-
         private static bool DefaultIsTrulyVisible(FrameworkElement fe) {
             if (fe == null) return false;
             DependencyObject cur = fe;
@@ -706,22 +606,18 @@ namespace AcManager.UiObserver {
             return fe.IsVisible && fe.IsLoaded;
         }
 
-        private static string DefaultComputeStableId(FrameworkElement fe) {
-            if (fe == null) return null;
-            var auto = System.Windows.Automation.AutomationProperties.GetAutomationId(fe);
-            if (!string.IsNullOrEmpty(auto)) return "A:" + auto;
-            if (!string.IsNullOrEmpty(fe.Name)) return "N:" + fe.Name;
-            return string.Format("G:{0}:{1:X8}", fe.GetType().Name, fe.GetHashCode());
-        }
-
-        public static IReadOnlyCollection<NavElem> GetNavElemsForRoot(FrameworkElement root) {
-            if (root == null) return new NavElem[0];
-            if (!_rootIndex.TryGetValue(root, out var set)) return new NavElem[0];
-            var list = new List<NavElem>();
-            foreach (var composite in set.ToArray()) {
-                if (_byComposite.TryGetValue(composite, out var nav)) list.Add(nav);
+        public static IReadOnlyCollection<NavNode> GetNavNodesForRoot(FrameworkElement root) {
+            if (root == null) return new NavNode[0];
+            if (!_rootIndex.TryGetValue(root, out var set)) return new NavNode[0];
+            var list = new List<NavNode>();
+            foreach (var fe in set.ToArray()) {
+                if (_nodesByElement.TryGetValue(fe, out var nav)) list.Add(nav);
             }
             return list;
+        }
+        
+        public static IEnumerable<NavNode> GetAllNavNodes() {
+            return _nodesByElement.Values.ToArray();
         }
     }
 }

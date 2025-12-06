@@ -972,6 +972,7 @@
     <Compile Include="UiObserver\NavForest.cs" />
     <Compile Include="UiObserver\NavMapper.cs" />
     <Compile Include="UiObserver\NavNode.cs" />
+    <Compile Include="UiObserver\NavPathFilter.cs" />
     <Compile Include="UiObserver\UiObserver.cs" />
     <Compile Include="UiObserver\UiObserverPipeClient.cs" />
     <Compile Include="UserControls\AdditionalContentEntryTemplateSelector.cs" />
