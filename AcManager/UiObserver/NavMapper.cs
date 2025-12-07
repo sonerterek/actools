@@ -4,7 +4,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Windows;
 using System.Windows.Media;
-using System.Windows.Media.Media3D;
 using System.Windows.Threading;
 using System.Windows.Documents;
 using System.Windows.Input;
@@ -54,27 +53,6 @@ namespace AcManager.UiObserver
 						}
 					}
 				}), DispatcherPriority.ApplicationIdle);
-			}
-		}
-
-		public static void DebugDumpNavNodes()
-		{
-			return;
-			System.Diagnostics.Debug.WriteLine($"NavMapper.DebugDumpNavNodes: count={_navById.Count}");
-			foreach (var kv in _navById.ToArray()) {
-				var nav = kv.Value;
-				try {
-					if (!nav.TryGetVisual(out var fe)) {
-						System.Diagnostics.Debug.WriteLine($"NavNode Id={nav.Id} Visual=GONE");
-						continue;
-					}
-
-					var type = nav.IsGroup ? "Group" : "Leaf";
-					var navigable = nav.IsNavigable ? "Navigable" : "NotNavigable";
-					System.Diagnostics.Debug.WriteLine($"NavNode Id={nav.Id} Type={type} {navigable} Element={fe.GetType().Name}");
-				} catch (Exception ex) {
-					System.Diagnostics.Debug.WriteLine($"DebugDumpNavNodes: exception for id={kv.Key}: {ex.Message}");
-				}
 			}
 		}
 
@@ -152,8 +130,6 @@ namespace AcManager.UiObserver
 				_highlightingShown = false;
 				return;
 			}
-
-			DebugDumpNavNodes();
 
 			Debug.WriteLine("\n========== NavMapper: Highlight Rectangles ==========");
 

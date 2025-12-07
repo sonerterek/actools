@@ -31,9 +31,8 @@ namespace AcManager {
         public AppUi([NotNull] Application application) {
             _application = application ?? throw new ArgumentNullException(nameof(application));
 
-            // Initialize UI observer only if pipe name was passed via command line
-            var pipe = AppArguments.Get(AppFlag.UiObserverPipe);
-            AcManager.UiObserver.UiObserver.Initialize(pipe);
+            // Initialize navigation mapper
+            AcManager.UiObserver.NavMapper.Initialize();
 
             // Extra close-if-nothing-shown timer just to be sure
             if (_application.Dispatcher != null) {

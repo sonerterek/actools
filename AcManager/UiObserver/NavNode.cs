@@ -45,11 +45,6 @@ namespace AcManager.UiObserver
             typeof(CheckBox),
             typeof(RadioButton),
             
-            // Input controls
-//            typeof(TextBox),
-//            typeof(PasswordBox),
-//            typeof(RichTextBox),
-            
             // Selection controls
             typeof(ListBoxItem),
             typeof(ListViewItem),
