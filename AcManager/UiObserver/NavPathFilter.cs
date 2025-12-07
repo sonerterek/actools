@@ -127,9 +127,12 @@ namespace AcManager.UiObserver
             
             private bool MatchesRecursive(string[] pathNodes, int pathIndex, int segmentIndex)
             {
-                // If we've matched all segments, success
+                // If we've matched all segments, check if we've also consumed all path nodes
                 if (segmentIndex >= _segments.Count)
-                    return true;
+                {
+                    // Success only if we've consumed the entire path (exact match)
+                    return pathIndex >= pathNodes.Length;
+                }
                 
                 // If we've run out of path nodes but still have segments to match, fail
                 if (pathIndex >= pathNodes.Length)

@@ -23,6 +23,16 @@ namespace AcManager.UiObserver
     /// </summary>
     internal class NavNode : INavNode, INavLeaf, INavGroup
     {
+        #region Debug Configuration
+        
+        /// <summary>
+        /// Enable verbose debug output for NavNode creation and evaluation.
+        /// Set to false in production to reduce debug spam.
+        /// </summary>
+        private const bool VERBOSE_DEBUG = false;
+        
+        #endregion
+
         #region Type Classification
         
         // Leaf elements - actual navigation targets (buttons, inputs, items, etc.)
@@ -112,19 +122,28 @@ namespace AcManager.UiObserver
             
             var feType = fe.GetType();
             
-            Debug.WriteLine($"[NavNode] Evaluating: {feType.Name} '{(string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name)}'");
+            if (VERBOSE_DEBUG)
+            {
+                Debug.WriteLine($"[NavNode] Evaluating: {feType.Name} '{(string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name)}'");
+            }
             
             // Determine if this is a group or leaf
             bool isGroup = IsGroupType(feType);
             bool isDualRoleGroup = isGroup && IsDualRoleGroupType(feType);
             bool isLeaf = IsLeafType(feType);
             
-            Debug.WriteLine($"[NavNode]   -> IsGroup={isGroup}, IsDualRole={isDualRoleGroup}, IsLeaf={isLeaf}");
+            if (VERBOSE_DEBUG)
+            {
+                Debug.WriteLine($"[NavNode]   -> IsGroup={isGroup}, IsDualRole={isDualRoleGroup}, IsLeaf={isLeaf}");
+            }
             
             // Pure whitelist: if not explicitly a group or leaf, reject it
             if (!isGroup && !isLeaf)
             {
-                Debug.WriteLine($"[NavNode]   -> Not in whitelist, rejected");
+                if (VERBOSE_DEBUG)
+                {
+                    Debug.WriteLine($"[NavNode]   -> Not in whitelist, rejected");
+                }
                 return null;
             }
             
@@ -133,17 +152,20 @@ namespace AcManager.UiObserver
             // E.g., buttons inside a Slider, toggle buttons inside a ComboBox, etc.
             if (!isGroup && HasLeafAncestor(fe, out var leafAncestor))
             {
-                // Debug logging to help identify why controls are being skipped
-                try
+                if (VERBOSE_DEBUG)
                 {
-                    var skippedTypeName = feType.Name;
-                    var ancestorTypeName = leafAncestor?.GetType().Name ?? "Unknown";
-                    var skippedName = string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name;
-                    var ancestorName = string.IsNullOrEmpty(leafAncestor?.Name) ? "(unnamed)" : leafAncestor.Name;
-                    
-                    Debug.WriteLine($"[NavNode] SKIPPED: {skippedTypeName} '{skippedName}' - has leaf ancestor: {ancestorTypeName} '{ancestorName}'");
+                    // Debug logging to help identify why controls are being skipped
+                    try
+                    {
+                        var skippedTypeName = feType.Name;
+                        var ancestorTypeName = leafAncestor?.GetType().Name ?? "Unknown";
+                        var skippedName = string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name;
+                        var ancestorName = string.IsNullOrEmpty(leafAncestor?.Name) ? "(unnamed)" : leafAncestor.Name;
+                        
+                        Debug.WriteLine($"[NavNode] SKIPPED: {skippedTypeName} '{skippedName}' - has leaf ancestor: {ancestorTypeName} '{ancestorName}'");
+                    }
+                    catch { }
                 }
-                catch { }
                 
                 return null; // This leaf is inside another leaf's template
             }
@@ -151,19 +173,25 @@ namespace AcManager.UiObserver
             // Compute ID
             string id = computeId != null ? computeId(fe) : ComputeDefaultId(fe);
             
-            // Compute hierarchical path for debugging/filtering
-            string visualTreePath = ComputeVisualTreePath(fe);
+            // Compute hierarchical path for filtering (same format as NavMapper uses)
+            string hierarchicalPath = GetHierarchicalPath(fe);
             
             // Check if this path is excluded by filter rules
-            if (PathFilter.IsExcluded(visualTreePath))
+            if (PathFilter.IsExcluded(hierarchicalPath))
             {
-                Debug.WriteLine($"[NavNode]   -> FILTERED: Path matches exclusion rule");
-                Debug.WriteLine($"[NavNode]   -> Path: {visualTreePath}");
+                if (VERBOSE_DEBUG)
+                {
+                    Debug.WriteLine($"[NavNode]   -> FILTERED: Path matches exclusion rule");
+                    Debug.WriteLine($"[NavNode]   -> Path: {hierarchicalPath}");
+                }
                 return null;
             }
             
-            Debug.WriteLine($"[NavNode]   -> CREATED: {feType.Name} Id={id}");
-            Debug.WriteLine($"[NavNode]   -> Path: {visualTreePath}");
+            if (VERBOSE_DEBUG)
+            {
+                Debug.WriteLine($"[NavNode]   -> CREATED: {feType.Name} Id={id}");
+                Debug.WriteLine($"[NavNode]   -> Path: {hierarchicalPath}");
+            }
             
             // Create the node
             return new NavNode(fe, id, isGroup, isDualRoleGroup);
@@ -297,42 +325,30 @@ namespace AcManager.UiObserver
         }
         
         /// <summary>
-        /// Computes the hierarchical visual tree path for this element.
+        /// Gets the hierarchical path of an element in the visual tree.
         /// Format: Name:Type > ChildName:ChildType > ...
-        /// Only includes ancestors that would be NavNodes (leaves or groups), skipping layout containers.
-        /// Unnamed elements are represented as (unnamed):Type
+        /// This matches the format used by NavMapper for consistency.
         /// </summary>
-        private static string ComputeVisualTreePath(FrameworkElement fe)
+        public static string GetHierarchicalPath(FrameworkElement fe)
         {
             var path = new List<string>();
             
-            try
-            {
+            try {
                 DependencyObject current = fe;
-                while (current != null)
-                {
-                    if (current is FrameworkElement parent)
-                    {
-                        var parentType = parent.GetType();
-                        
-                        // Only include this element if it would be a NavNode (leaf or group)
-                        bool wouldBeNavNode = IsLeafType(parentType) || IsGroupType(parentType);
-                        
-                        if (wouldBeNavNode)
-                        {
-                            var typeName = parentType.Name;
-                            var elementName = string.IsNullOrEmpty(parent.Name) ? "(unnamed)" : parent.Name;
-                            path.Insert(0, $"{elementName}:{typeName}");
-                        }
+                while (current != null) {
+                    if (current is FrameworkElement parent) {
+                        var typeName = parent.GetType().Name;
+                        var elementName = string.IsNullOrEmpty(parent.Name) ? "(unnamed)" : parent.Name;
+                        path.Insert(0, $"{elementName}:{typeName}");
                     }
                     
-                    current = VisualTreeHelper.GetParent(current);
+                    try {
+                        current = VisualTreeHelper.GetParent(current);
+                    } catch {
+                        break;
+                    }
                 }
-            }
-            catch
-            {
-                // If we can't walk the tree, return what we have
-            }
+            } catch { }
             
             return string.Join(" > ", path);
         }

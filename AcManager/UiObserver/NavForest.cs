@@ -15,6 +15,10 @@ namespace AcManager.UiObserver {
     /// NavForest maintains one NavTree per PresentationSource.
     /// Each NavTree is an isolated navigation domain for keyboard navigation.
     /// Supports incremental subtree rescanning for dynamic content changes.
+    /// 
+    /// Uses dual-path NavNode discovery:
+    /// 1. Visual Tree scanning - catches XAML-declared elements and template internals
+    /// 2. Per-element Loaded events - catches dynamically loaded/lazy-loaded content
     /// </summary>
     internal static class NavForest {
         // Track NavNodes by their FrameworkElement
@@ -96,8 +100,9 @@ namespace AcManager.UiObserver {
                         return;
                     }
                     
-                    // For other elements in window, just attach change handlers
+                    // For other elements in window: attach handlers AND try creating NavNode (dual-path)
                     AttachSubtreeChangeHandlers(fe);
+                    TryCreateNavNodeForElement(fe);
                     return;
                 }
                 
@@ -115,8 +120,9 @@ namespace AcManager.UiObserver {
                     
                     // Not a PS root - check if PS is already tracked
                     if (_presentationSourceRoots.ContainsKey(ps)) {
-                        // PS already tracked - just attach handlers
+                        // PS already tracked: attach handlers AND try creating NavNode (dual-path)
                         AttachSubtreeChangeHandlers(fe);
+                        TryCreateNavNodeForElement(fe);
                         return;
                     }
                     
@@ -134,6 +140,61 @@ namespace AcManager.UiObserver {
                         RegisterRoot(fe);
                     }
                 } catch { }
+            } catch { }
+        }
+
+        /// <summary>
+        /// Dual-path discovery: Try to create a NavNode for a dynamically loaded element.
+        /// This catches elements that are added after the initial Visual Tree scan.
+        /// If element is NavNode-worthy and its PresentationSource root is tracked, add it to that tree.
+        /// </summary>
+        private static void TryCreateNavNodeForElement(FrameworkElement fe) {
+            if (fe == null) return;
+            
+            try {
+                // Skip if already tracked
+                if (_nodesByElement.ContainsKey(fe)) return;
+                
+                // Check if element is visible
+                if (_isTrulyVisible != null && !_isTrulyVisible(fe)) return;
+                
+                // Get PresentationSource
+                var ps = PresentationSource.FromVisual(fe);
+                if (ps == null) return; // Not connected
+                
+                // Find the NavTree root for this PresentationSource
+                if (!_presentationSourceRoots.TryGetValue(ps, out var navTreeRoot)) {
+                    // PS not tracked - this shouldn't happen, but be defensive
+                    return;
+                }
+                
+                // Check if we're in the same PresentationSource as the root
+                var psRoot = PresentationSource.FromVisual(navTreeRoot);
+                if (!object.ReferenceEquals(ps, psRoot)) {
+                    // Different PresentationSource - element belongs to a different tree
+                    return;
+                }
+                
+                // Try to create NavNode for this element
+                var navNode = NavNode.CreateNavNode(fe);
+                if (navNode != null) {
+                    // Add to tracking dictionaries
+                    if (_nodesByElement.TryAdd(fe, navNode)) {
+                        _nodesById.TryAdd(navNode.Id, navNode);
+                        
+                        // Add to root's element set (thread-safe)
+                        if (_rootIndex.TryGetValue(navTreeRoot, out var elementSet)) {
+                            lock (elementSet) {
+                                elementSet.Add(fe);
+                            }
+                            
+                            // Notify that tree changed
+                            try { RootChanged?.Invoke(navTreeRoot); } catch { }
+                            
+                            System.Diagnostics.Debug.WriteLine($"[NavForest] Dynamic NavNode added: {fe.GetType().Name} '{navNode.Id}'");
+                        }
+                    }
+                }
             } catch { }
         }
 
@@ -200,17 +261,8 @@ namespace AcManager.UiObserver {
                         try { RescanSubtree(tc); } catch { }
                     };
                     
-                    // Handle virtualized/delayed container generation
-                    try {
-                        var gen = tc.ItemContainerGenerator;
-                        gen.StatusChanged += (s, e) => {
-                            try {
-                                if (gen.Status == GeneratorStatus.ContainersGenerated) {
-                                    RescanSubtree(tc);
-                                }
-                            } catch { }
-                        };
-                    } catch { }
+                    // Note: No ItemContainerGenerator.StatusChanged handler needed
+                    // Dual-path discovery via Loaded events catches virtualized items automatically
                 }
             } catch { }
             

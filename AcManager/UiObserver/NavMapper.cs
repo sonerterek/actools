@@ -31,6 +31,8 @@ namespace AcManager.UiObserver
 			if (_initialized) return;
 			_initialized = true;
 
+			NavNode.PathFilter.AddExcludeRule("Window:MainWindow > WindowBorder:Border > (unnamed):AdornerDecorator > (unnamed):Cell > (unnamed):Cell > (unnamed):AdornerDecorator > LayoutRoot:DockPanel > (unnamed):DockPanel > PART_Menu:ModernMenu");
+
 			// configure NavForest with helpers
 			NavForest.Configure(IsTrulyVisible);
 			NavForest.RootChanged += OnRootChanged;
@@ -136,6 +138,13 @@ namespace AcManager.UiObserver
 			}
 		}
 
+		private class DebugRectInfo
+		{
+			public Rect Rect { get; set; }
+			public string DebugLine { get; set; }
+			public bool IsGroup { get; set; }
+		}
+
 		private static void ToggleHighlighting()
 		{
 			if (_highlightingShown) {
@@ -146,19 +155,35 @@ namespace AcManager.UiObserver
 
 			DebugDumpNavNodes();
 
+			Debug.WriteLine("\n========== NavMapper: Highlight Rectangles ==========");
+
 			var leafRects = new List<Rect>();
 			var groupRects = new List<Rect>();
+			var allDebugInfo = new List<DebugRectInfo>();
+			int skippedCount = 0;
 			
 			foreach (var node in NavForest.GetAllNavNodes()) {
-				if (!node.IsNavigable) continue;
+				if (!node.IsNavigable) {
+					skippedCount++;
+					continue;
+				}
 				
 				var center = node.GetCenterDip();
-				if (!center.HasValue) continue;
+				if (!center.HasValue) {
+					skippedCount++;
+					continue;
+				}
 				
-				if (!node.TryGetVisual(out var fe)) continue;
+				if (!node.TryGetVisual(out var fe)) {
+					skippedCount++;
+					continue;
+				}
 				
 				try {
-					if (!fe.IsLoaded || !fe.IsVisible) continue;
+					if (!fe.IsLoaded || !fe.IsVisible) {
+						skippedCount++;
+						continue;
+					}
 					
 					// PointToScreen returns DEVICE PIXELS, need to transform to DIP
 					Point tlDevice, brDevice;
@@ -166,6 +191,7 @@ namespace AcManager.UiObserver
 						tlDevice = fe.PointToScreen(new Point(0, 0));
 						brDevice = fe.PointToScreen(new Point(fe.ActualWidth, fe.ActualHeight));
 					} catch {
+						skippedCount++;
 						continue; // cannot compute screen points for this element now
 					}
 
@@ -188,34 +214,84 @@ namespace AcManager.UiObserver
 					var y2 = Math.Max(tlDip.Y, brDip.Y);
 					var rectDip = new Rect(new Point(x1, y1), new Point(x2, y2));
 
-					if (double.IsNaN(rectDip.Width) || double.IsNaN(rectDip.Height)) continue;
-					if (rectDip.Width < 1.0 || rectDip.Height < 1.0) continue;
+					if (double.IsNaN(rectDip.Width) || double.IsNaN(rectDip.Height)) {
+						skippedCount++;
+						continue;
+					}
+					if (rectDip.Width < 1.0 || rectDip.Height < 1.0) {
+						skippedCount++;
+						continue;
+					}
 					
-					// Color based on current navigable state and type:
-					// - Pure leaf (not a group): Orange (always navigable)
-					// - Dual-role group (closed): Orange (navigable as leaf when closed)
-					// - Dual-role group (open): Gray (acting as container when open)
-					// - Pure container group: Gray (always just a container, never directly navigable)
+					// Get hierarchical path for this element
+					string hierarchicalPath = NavNode.GetHierarchicalPath(fe);
+					
+					// Determine role and color
 					bool shouldBeGray = false;
+					string roleDescription = "";
 					
 					if (node.IsGroup) {
 						if (node.IsDualRoleGroup) {
-							// Dual-role: gray only when open, orange when closed
-							shouldBeGray = (node as INavGroup)?.IsOpen == true;
+							var isOpen = (node as INavGroup)?.IsOpen == true;
+							shouldBeGray = isOpen;
+							roleDescription = isOpen ? "DualGroup(OPEN)" : "DualGroup(CLOSED)";
 						} else {
-							// Pure container: always gray
 							shouldBeGray = true;
+							roleDescription = "PureGroup";
 						}
+					} else {
+						roleDescription = "Leaf";
 					}
-					// else: pure leaf, not gray (orange)
+					
+					var typeName = fe.GetType().Name;
+					var elementName = string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name;
+					var navId = node.Id;
+					
+					// Build debug line (will be numbered after sorting)
+					var colorTag = shouldBeGray ? "GRAY" : "LEAF";
+					var debugLine = $"{typeName,-20} | {elementName,-20} | {roleDescription,-18} | {navId,-30} | ({rectDip.Left,7:F1}, {rectDip.Top,7:F1}) {rectDip.Width,6:F1}x{rectDip.Height,6:F1} | {hierarchicalPath}";
+					
+					allDebugInfo.Add(new DebugRectInfo { 
+						Rect = rectDip, 
+						DebugLine = debugLine,
+						IsGroup = shouldBeGray
+					});
 					
 					if (shouldBeGray) {
 						groupRects.Add(rectDip);
 					} else {
 						leafRects.Add(rectDip);
 					}
-				} catch { /* ignore per-element errors */ }
+				} catch (Exception ex) { 
+					Debug.WriteLine($"[ERROR] Processing node {node.Id}: {ex.Message}");
+					skippedCount++;
+				}
 			}
+
+			// Sort all rectangles by hierarchical path (last column)
+			allDebugInfo.Sort((a, b) => {
+				var pathA = a.DebugLine.Substring(a.DebugLine.LastIndexOf('|') + 1).Trim();
+				var pathB = b.DebugLine.Substring(b.DebugLine.LastIndexOf('|') + 1).Trim();
+				return string.Compare(pathA, pathB, StringComparison.Ordinal);
+			});
+
+			// Output sorted rectangles (mixed leaves and groups)
+			Debug.WriteLine("");
+			int leafCount = 0;
+			int groupCount = 0;
+			
+			for (int i = 0; i < allDebugInfo.Count; i++) {
+				var info = allDebugInfo[i];
+				if (info.IsGroup) {
+					groupCount++;
+					Debug.WriteLine($"[GRAY] #{i + 1,-3} | {info.DebugLine}");
+				} else {
+					leafCount++;
+					Debug.WriteLine($"[LEAF] #{i + 1,-3} | {info.DebugLine}");
+				}
+			}
+
+			Debug.WriteLine($"\n========== Summary: {leafCount} leaves, {groupCount} groups, {skippedCount} skipped ==========\n");
 
 			try {
 				if (_overlay == null) _overlay = new HighlightOverlay();
@@ -225,7 +301,9 @@ namespace AcManager.UiObserver
 				// Show both leaf and group rects with different colors
 				_overlay.ShowRects(leafRects, groupRects);
 				_highlightingShown = true;
-			} catch { }
+			} catch (Exception ex) {
+				Debug.WriteLine($"[ERROR] Showing overlay: {ex.Message}");
+			}
 		}
 
 		private static void ClearHighlighting()

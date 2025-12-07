@@ -7,6 +7,7 @@ using System.Windows.Shapes;
 
 namespace AcManager.UiObserver {
     // Lightweight topmost transparent overlay that draws a list of rectangles (in device-independent pixels DIP).
+    // This is a debug visualization tool: show once, then clear. No continuous updates needed.
     internal class HighlightOverlay : Window {
         private readonly Canvas _canvas;
 
@@ -29,8 +30,7 @@ namespace AcManager.UiObserver {
                 }
             } catch { }
 
-            // Cover the virtual screen in DIP coordinates. SystemParameters often reports device (physical) pixels,
-            // so convert them to DIP using a PresentationSource transform if available.
+            // Cover the virtual screen in DIP coordinates
             SetWindowToVirtualScreenInDip();
 
             _canvas = new Canvas { IsHitTestVisible = false, Background = Brushes.Transparent };
@@ -66,7 +66,11 @@ namespace AcManager.UiObserver {
             Height = Math.Max(0, brDip.Y - tlDip.Y);
         }
 
-        // leafRectsInDip: leaf rectangles in DIP (Orange), groupRectsInDip: group rectangles in DIP (Gray)
+        /// <summary>
+        /// Shows rectangles for debug visualization. This is a one-time snapshot.
+        /// leafRectsInDip: leaf rectangles in DIP (Orange, inset by 2px to be visible inside groups)
+        /// groupRectsInDip: group rectangles in DIP (Gray, full size)
+        /// </summary>
         public void ShowRects(IEnumerable<Rect> leafRectsInDip, IEnumerable<Rect> groupRectsInDip = null) {
             _canvas.Children.Clear();
 
@@ -80,30 +84,42 @@ namespace AcManager.UiObserver {
 
             bool hasAny = false;
 
-            // Draw leaf elements in Orange
+            // Draw leaf elements in Orange with 2px inset so they're visible inside group boundaries
             if (leafRectsInDip != null) {
                 foreach (var rectDip in leafRectsInDip) {
                     // Skip degenerate
                     if (double.IsNaN(rectDip.Width) || double.IsNaN(rectDip.Height)) continue;
                     if (rectDip.Width < 1.0 || rectDip.Height < 1.0) continue;
 
+                    // Inset by 2 DIP pixels on all sides so leaf boundaries are visible inside groups
+                    const double inset = 2.0;
+                    var insetRect = new Rect(
+                        rectDip.Left + inset,
+                        rectDip.Top + inset,
+                        Math.Max(0, rectDip.Width - inset * 2),
+                        Math.Max(0, rectDip.Height - inset * 2)
+                    );
+
+                    // Skip if inset makes it too small
+                    if (insetRect.Width < 1.0 || insetRect.Height < 1.0) continue;
+
                     var shape = new Rectangle {
-                        Width = rectDip.Width,
-                        Height = rectDip.Height,
+                        Width = insetRect.Width,
+                        Height = insetRect.Height,
                         Stroke = Brushes.Orange,
                         StrokeThickness = 2,
                         Fill = Brushes.Transparent,
                         IsHitTestVisible = false
                     };
-                    // rectDip is already in DIP; Left/Top are set in DIP as well
-                    Canvas.SetLeft(shape, rectDip.Left - Left);
-                    Canvas.SetTop(shape, rectDip.Top - Top);
+                    // Position using inset coordinates
+                    Canvas.SetLeft(shape, insetRect.Left - Left);
+                    Canvas.SetTop(shape, insetRect.Top - Top);
                     _canvas.Children.Add(shape);
                     hasAny = true;
                 }
             }
             
-            // Draw group elements in Gray
+            // Draw group elements in Gray at full size (no inset)
             if (groupRectsInDip != null) {
                 foreach (var rectDip in groupRectsInDip) {
                     // Skip degenerate
