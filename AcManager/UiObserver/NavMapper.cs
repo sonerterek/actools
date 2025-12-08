@@ -45,7 +45,8 @@ namespace AcManager.UiObserver
 			if (_initialized) return;
 			_initialized = true;
 
-			NavNode.PathFilter.AddExcludeRule("Window:MainWindow > WindowBorder:Border > (unnamed):AdornerDecorator > (unnamed):Cell > (unnamed):Cell > (unnamed):AdornerDecorator > LayoutRoot:DockPanel > (unnamed):DockPanel > PART_Menu:ModernMenu");
+			// Initialize navigation rules - these control which UI elements are navigable and how they're classified
+			InitializeNavigationRules();
 
 			// configure NavForest with helpers
 			NavForest.Configure(IsTrulyVisible);
@@ -73,6 +74,52 @@ namespace AcManager.UiObserver
 					// Initialize overlay after main window is ready
 					EnsureOverlay();
 				}), DispatcherPriority.ApplicationIdle);
+			}
+		}
+		
+		private static void InitializeNavigationRules()
+		{
+			// Define navigation rules for Content Manager
+			// These rules control which UI elements are navigable and how they're classified
+			var exampleRules = new[] {
+				// ===================================================================
+				// Exclusion Rules - Skip these elements from keyboard navigation
+				// ===================================================================
+				
+				"# Exclude main menu internals (too many nested controls)",
+				"EXCLUDE: Window:MainWindow > ** > PART_Menu:ModernMenu",
+				
+				"# Exclude toolbar buttons (toolbar itself is navigable)",
+				"EXCLUDE: ** > MainToolbar:ToolBar > *:Button",
+				
+				"# Exclude header decorations",
+				"EXCLUDE: Window:MainWindow > HeaderPanel:Border > **",
+				
+				// ===================================================================
+				// Classification Rules - Override default type-based behavior
+				// ===================================================================
+				
+				"# Example: Make a Border act as a navigation group",
+				"# CLASSIFY: ** > SettingsPanel:Border => role=group; modal=false",
+				
+				"# Example: Make ComboBox non-modal (allow background navigation)",
+				"# CLASSIFY: ** > QuickFilter:ComboBox => modal=false",
+				
+				"# Example: Force StackPanel to be a group",
+				"# CLASSIFY: *** > CarFilters:StackPanel => role=group; modal=false",
+			};
+
+			var rules = new[] {
+				"EXCLUDE: Window:MainWindow > WindowBorder:Border > (unnamed):AdornerDecorator > (unnamed):Cell > (unnamed):Cell > (unnamed):AdornerDecorator > LayoutRoot:DockPanel > (unnamed):DockPanel > PART_Menu:ModernMenu",
+			};
+
+			try
+			{
+				NavNode.PathFilter.ParseRules(rules);
+			}
+			catch (Exception ex)
+			{
+				Debug.WriteLine($"[NavMapper] Failed to initialize navigation rules: {ex}");
 			}
 		}
 
@@ -878,8 +925,9 @@ namespace AcManager.UiObserver
 			int skippedCount = 0;
 			
 			foreach (var node in NavForest.GetAllNavNodes()) {
-				// Use IsNavigableForSelection to determine if this node is actually a navigation target
-				if (!IsNavigableForSelection(node)) {
+				// Use IsNavigable (basic validity) instead of IsNavigableForSelection (navigation-specific filtering)
+				// This allows us to see ALL nodes including pure groups in the debug overlay
+				if (!node.IsNavigable) {
 					skippedCount++;
 					continue;
 				}
@@ -942,21 +990,21 @@ namespace AcManager.UiObserver
 					// Get hierarchical path for this element
 					string hierarchicalPath = NavNode.GetHierarchicalPath(fe);
 					
-					// Determine role and color
+					// Determine role and color based on actual node properties
 					bool shouldBeGray = false;
 					string roleDescription = "";
 					
 					if (node.IsGroup) {
 						if (node.IsDualRoleGroup) {
 							var isOpen = (node as INavGroup)?.IsOpen == true;
-							shouldBeGray = isOpen;
+							shouldBeGray = isOpen; // Dual-role groups: gray when open
 							roleDescription = isOpen ? "DualGroup(OPEN)" : "DualGroup(CLOSED)";
 						} else {
-							shouldBeGray = true;
+							shouldBeGray = true; // Pure groups: always gray
 							roleDescription = "PureGroup";
 						}
 					} else {
-						roleDescription = "Leaf";
+						roleDescription = "Leaf"; // Leaves: never gray
 					}
 					
 					var typeName = fe.GetType().Name;

@@ -6,31 +6,181 @@ using System.Text.RegularExpressions;
 namespace AcManager.UiObserver
 {
     /// <summary>
-    /// Filters navigation nodes based on hierarchical path patterns.
+    /// Navigation node roles - determines how a node is treated during navigation.
+    /// </summary>
+    internal enum NavRole
+    {
+        Undefined,      // Use type-based detection (fallback)
+        Leaf,           // Force as navigation leaf (selectable target)
+        Group,          // Force as pure group (container, not selectable)
+        DualGroup       // Force as dual-role group (ComboBox-like behavior)
+    }
+
+    /// <summary>
+    /// Classification override for a navigation node.
+    /// Applied when hierarchical path matches a classification rule.
+    /// </summary>
+    internal class NavNodeClassification
+    {
+        /// <summary>Override the role for THIS element.</summary>
+        public NavRole Role { get; set; } = NavRole.Undefined;
+        
+        /// <summary>Override modal behavior for THIS element.</summary>
+        public bool? IsModal { get; set; }
+        
+        /// <summary>Priority for rule application (higher = applied first).</summary>
+        public int Priority { get; set; }
+        
+        // Factory methods for common cases
+        public static NavNodeClassification AsLeaf() => new NavNodeClassification { Role = NavRole.Leaf };
+        public static NavNodeClassification AsGroup(bool? modal = null) => new NavNodeClassification { Role = NavRole.Group, IsModal = modal };
+        public static NavNodeClassification AsDualGroup(bool? modal = null) => new NavNodeClassification { Role = NavRole.DualGroup, IsModal = modal };
+        public static NavNodeClassification WithModality(bool isModal) => new NavNodeClassification { IsModal = isModal };
+    }
+
+    /// <summary>
+    /// Filters and classifies navigation nodes based on hierarchical path patterns.
     /// 
     /// Pattern syntax:
     /// - Name:Type         - Match specific name and type
-    /// - *:Type            - Match any name with specific type
-    /// - Name:*            - Match specific name with any type
-    /// - *                 - Match any name and type (equivalent to *:*)
-    /// - Name >> Child     - Match Child at any depth under Name
-    /// - Name > Child      - Match Child as direct child of Name
-    /// - * >> Target       - Match Target at any depth
+    /// - *                 - Match any single element (name or type)
+    /// - **                - Match 0+ elements (any depth including current level)
+    /// - ***               - Match 1+ elements (at least one ancestor away)
+    /// - > separator       - Parent-child relationship
+    /// 
+    /// Rule types:
+    /// EXCLUDE: pattern              - Skip this element from navigation
+    /// CLASSIFY: pattern => props    - Override element classification
+    /// 
+    /// Classification properties (semicolon-separated):
+    /// - role=leaf|group|dual
+    /// - modal=true|false
+    /// - priority=number
     /// 
     /// Examples:
-    /// - "QuickDrive:QuickDrive >> *:CheckBox"          -> All CheckBoxes anywhere under QuickDrive
-    /// - "QuickDrive:QuickDrive > *:CheckBox"           -> Only direct CheckBox children of QuickDrive
-    /// - "*:Expander > *:Button"                        -> Buttons directly inside any Expander
-    /// - "Settings:Grid >> SaveButton:Button"           -> SaveButton at any depth under Settings
-    /// - "* >> UserPresetsControl:* >> *:CheckBox"      -> CheckBoxes inside UserPresetsControl (at any depth on both sides)
+    /// EXCLUDE: Window:MainWindow > ** > PART_Menu:ModernMenu
+    /// CLASSIFY: ** > SettingsPanel:Border => role=group; modal=false
+    /// CLASSIFY: *** > QuickFilter:ComboBox => modal=false
     /// </summary>
     internal class NavPathFilter
     {
-        private readonly List<FilterRule> _excludeRules = new List<FilterRule>();
+        private readonly List<ExcludeRule> _excludeRules = new List<ExcludeRule>();
+        private readonly List<ClassificationRule> _classificationRules = new List<ClassificationRule>();
+        
+        /// <summary>
+        /// Parse and register multiple rules from string array.
+        /// Each line is one rule. Comments start with #.
+        /// </summary>
+        public void ParseRules(string[] rules)
+        {
+            if (rules == null) return;
+            
+            int lineNumber = 0;
+            foreach (var line in rules)
+            {
+                lineNumber++;
+                try
+                {
+                    ParseSingleRule(line);
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"[NavPathFilter] Error parsing rule at line {lineNumber}: {ex.Message}");
+                    System.Diagnostics.Debug.WriteLine($"[NavPathFilter]   Rule: {line}");
+                }
+            }
+        }
+        
+        /// <summary>
+        /// Parse a single rule line.
+        /// </summary>
+        private void ParseSingleRule(string line)
+        {
+            if (string.IsNullOrWhiteSpace(line)) return;
+            
+            var trimmed = line.Trim();
+            
+            // Skip comments
+            if (trimmed.StartsWith("#")) return;
+            
+            if (trimmed.StartsWith("EXCLUDE:", StringComparison.OrdinalIgnoreCase))
+            {
+                var pattern = trimmed.Substring(8).Trim();
+                if (!string.IsNullOrEmpty(pattern))
+                {
+                    AddExcludeRule(pattern);
+                }
+            }
+            else if (trimmed.StartsWith("CLASSIFY:", StringComparison.OrdinalIgnoreCase))
+            {
+                var remainder = trimmed.Substring(9).Trim();
+                var parts = remainder.Split(new[] { "=>" }, 2, StringSplitOptions.None);
+                
+                if (parts.Length == 2)
+                {
+                    var pattern = parts[0].Trim();
+                    var classificationStr = parts[1].Trim();
+                    
+                    if (!string.IsNullOrEmpty(pattern) && !string.IsNullOrEmpty(classificationStr))
+                    {
+                        var classification = ParseClassification(classificationStr);
+                        AddClassificationRule(pattern, classification);
+                    }
+                }
+            }
+        }
+        
+        /// <summary>
+        /// Parse classification properties string.
+        /// Format: "role=group; modal=false; priority=10"
+        /// </summary>
+        private NavNodeClassification ParseClassification(string classificationStr)
+        {
+            var result = new NavNodeClassification();
+            
+            // Split by semicolon
+            var properties = classificationStr.Split(';');
+            foreach (var prop in properties)
+            {
+                var trimmed = prop.Trim();
+                if (string.IsNullOrEmpty(trimmed)) continue;
+                
+                var kvp = trimmed.Split('=');
+                if (kvp.Length != 2) continue;
+                
+                var key = kvp[0].Trim().ToLowerInvariant();
+                var value = kvp[1].Trim();
+                
+                switch (key)
+                {
+                    case "role":
+                        if (Enum.TryParse<NavRole>(value, true, out var role))
+                        {
+                            result.Role = role;
+                        }
+                        break;
+                    
+                    case "modal":
+                        if (bool.TryParse(value, out var modal))
+                        {
+                            result.IsModal = modal;
+                        }
+                        break;
+                    
+                    case "priority":
+                        if (int.TryParse(value, out var priority))
+                        {
+                            result.Priority = priority;
+                        }
+                        break;
+                }
+            }
+            
+            return result;
+        }
         
         /// <summary>
         /// Add a path pattern to exclude from navigation.
-        /// Nodes matching this pattern will not be navigable.
         /// </summary>
         public void AddExcludeRule(string pattern)
         {
@@ -38,25 +188,53 @@ namespace AcManager.UiObserver
             
             try
             {
-                var rule = FilterRule.Parse(pattern);
+                var rule = ExcludeRule.Parse(pattern);
                 _excludeRules.Add(rule);
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[NavPathFilter] Failed to parse pattern '{pattern}': {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"[NavPathFilter] Failed to parse exclude pattern '{pattern}': {ex.Message}");
             }
         }
         
         /// <summary>
-        /// Checks if a given visual tree path should be excluded from navigation.
+        /// Add a classification rule for path overrides.
         /// </summary>
-        public bool IsExcluded(string visualTreePath)
+        public void AddClassificationRule(string pattern, NavNodeClassification classification)
         {
-            if (string.IsNullOrWhiteSpace(visualTreePath)) return false;
+            if (string.IsNullOrWhiteSpace(pattern) || classification == null) return;
+            
+            try
+            {
+                var rule = ClassificationRule.Parse(pattern, classification);
+                
+                // Insert sorted by priority (higher priority first)
+                int insertIndex = _classificationRules.FindIndex(r => r.Classification.Priority < classification.Priority);
+                if (insertIndex < 0)
+                {
+                    _classificationRules.Add(rule);
+                }
+                else
+                {
+                    _classificationRules.Insert(insertIndex, rule);
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[NavPathFilter] Failed to parse classification pattern '{pattern}': {ex.Message}");
+            }
+        }
+        
+        /// <summary>
+        /// Checks if a given hierarchical path should be excluded from navigation.
+        /// </summary>
+        public bool IsExcluded(string hierarchicalPath)
+        {
+            if (string.IsNullOrWhiteSpace(hierarchicalPath)) return false;
             
             foreach (var rule in _excludeRules)
             {
-                if (rule.Matches(visualTreePath))
+                if (rule.Matches(hierarchicalPath))
                     return true;
             }
             
@@ -64,139 +242,253 @@ namespace AcManager.UiObserver
         }
         
         /// <summary>
-        /// Represents a parsed filter rule with segments and depth operators.
+        /// Get classification override for a given hierarchical path.
+        /// Returns null if no matching classification rule found.
+        /// Returns the highest-priority matching rule if multiple match.
         /// </summary>
-        private class FilterRule
+        public NavNodeClassification GetClassification(string hierarchicalPath)
+        {
+            if (string.IsNullOrWhiteSpace(hierarchicalPath)) return null;
+            
+            // Rules are already sorted by priority
+            foreach (var rule in _classificationRules)
+            {
+                if (rule.Matches(hierarchicalPath))
+                    return rule.Classification;
+            }
+            
+            return null;
+        }
+        
+        /// <summary>
+        /// Represents an exclusion rule with pattern matching.
+        /// </summary>
+        private class ExcludeRule
         {
             private readonly List<Segment> _segments;
             
-            private FilterRule(List<Segment> segments)
+            private ExcludeRule(List<Segment> segments)
             {
                 _segments = segments;
             }
             
-            public static FilterRule Parse(string pattern)
+            public static ExcludeRule Parse(string pattern)
             {
-                var segments = new List<Segment>();
-                
-                // Split by >> (any depth) or > (direct child)
-                // We need to preserve the separator type
-                var parts = Regex.Split(pattern, @"(\s*>>\s*|\s*>\s*)");
-                
-                bool expectSegment = true;
-                DepthMode nextDepth = DepthMode.Direct;
-                
-                foreach (var part in parts)
-                {
-                    var trimmed = part.Trim();
-                    if (string.IsNullOrEmpty(trimmed)) continue;
-                    
-                    if (trimmed == ">>")
-                    {
-                        nextDepth = DepthMode.AnyDepth;
-                        expectSegment = true;
-                    }
-                    else if (trimmed == ">")
-                    {
-                        nextDepth = DepthMode.Direct;
-                        expectSegment = true;
-                    }
-                    else if (expectSegment)
-                    {
-                        segments.Add(new Segment(trimmed, nextDepth));
-                        expectSegment = false;
-                        nextDepth = DepthMode.Direct; // Reset to direct for next segment
-                    }
-                }
-                
-                if (segments.Count == 0)
-                    throw new ArgumentException("Pattern must contain at least one segment");
-                
-                return new FilterRule(segments);
+                var segments = ParsePattern(pattern);
+                return new ExcludeRule(segments);
             }
             
-            public bool Matches(string visualTreePath)
+            public bool Matches(string hierarchicalPath)
             {
-                if (string.IsNullOrWhiteSpace(visualTreePath)) return false;
-                
-                // Split the path into node segments
-                var pathNodes = visualTreePath.Split(new[] { " > " }, StringSplitOptions.RemoveEmptyEntries);
-                
-                return MatchesRecursive(pathNodes, 0, 0);
-            }
-            
-            private bool MatchesRecursive(string[] pathNodes, int pathIndex, int segmentIndex)
-            {
-                // If we've matched all segments, check if we've also consumed all path nodes
-                if (segmentIndex >= _segments.Count)
-                {
-                    // Success only if we've consumed the entire path (exact match)
-                    return pathIndex >= pathNodes.Length;
-                }
-                
-                // If we've run out of path nodes but still have segments to match, fail
-                if (pathIndex >= pathNodes.Length)
-                    return false;
-                
-                var segment = _segments[segmentIndex];
-                var currentNode = pathNodes[pathIndex];
-                
-                // Check if current node matches the segment
-                bool nodeMatches = segment.MatchesNode(currentNode);
-                
-                if (segment.Depth == DepthMode.AnyDepth)
-                {
-                    // Try matching at current position
-                    if (nodeMatches && MatchesRecursive(pathNodes, pathIndex + 1, segmentIndex + 1))
-                        return true;
-                    
-                    // Try skipping this node (any depth means we can skip multiple levels)
-                    if (MatchesRecursive(pathNodes, pathIndex + 1, segmentIndex))
-                        return true;
-                    
-                    return false;
-                }
-                else // Direct child
-                {
-                    // Must match at this exact position
-                    if (!nodeMatches)
-                        return false;
-                    
-                    return MatchesRecursive(pathNodes, pathIndex + 1, segmentIndex + 1);
-                }
+                return MatchesPath(hierarchicalPath, _segments);
             }
         }
         
         /// <summary>
-        /// Represents a single segment in a filter pattern (Name:Type).
+        /// Represents a classification rule with pattern matching and classification override.
         /// </summary>
-        private class Segment
+        private class ClassificationRule
         {
-            private readonly string _namePattern;
-            private readonly string _typePattern;
-            public DepthMode Depth { get; }
+            private readonly List<Segment> _segments;
+            public NavNodeClassification Classification { get; }
             
-            public Segment(string pattern, DepthMode depth)
+            private ClassificationRule(List<Segment> segments, NavNodeClassification classification)
             {
-                Depth = depth;
+                _segments = segments;
+                Classification = classification;
+            }
+            
+            public static ClassificationRule Parse(string pattern, NavNodeClassification classification)
+            {
+                var segments = ParsePattern(pattern);
+                return new ClassificationRule(segments, classification);
+            }
+            
+            public bool Matches(string hierarchicalPath)
+            {
+                return MatchesPath(hierarchicalPath, _segments);
+            }
+        }
+        
+        /// <summary>
+        /// Parse a pattern string into segments.
+        /// Handles *, **, ***, and Name:Type syntax.
+        /// </summary>
+        private static List<Segment> ParsePattern(string pattern)
+        {
+            var segments = new List<Segment>();
+            
+            // Split by '>' separator
+            var parts = pattern.Split(new[] { '>' }, StringSplitOptions.None);
+            
+            foreach (var part in parts)
+            {
+                var trimmed = part.Trim();
+                if (string.IsNullOrEmpty(trimmed)) continue;
                 
-                // Parse Name:Type or just Type or just Name
-                var colonIndex = pattern.IndexOf(':');
-                if (colonIndex >= 0)
+                // Check for depth wildcards
+                DepthMode depth;
+                if (trimmed == "***")
                 {
-                    _namePattern = pattern.Substring(0, colonIndex).Trim();
-                    _typePattern = pattern.Substring(colonIndex + 1).Trim();
+                    depth = DepthMode.OneOrMore;
+                    segments.Add(new Segment("*", "*", depth));
+                }
+                else if (trimmed == "**")
+                {
+                    depth = DepthMode.ZeroOrMore;
+                    segments.Add(new Segment("*", "*", depth));
                 }
                 else
                 {
-                    // If no colon, treat as name pattern with wildcard type
-                    _namePattern = pattern.Trim();
-                    _typePattern = "*";
+                    depth = DepthMode.Exact;
+                    
+                    // Parse Name:Type
+                    var colonIndex = trimmed.IndexOf(':');
+                    if (colonIndex >= 0)
+                    {
+                        var name = trimmed.Substring(0, colonIndex).Trim();
+                        var type = trimmed.Substring(colonIndex + 1).Trim();
+                        segments.Add(new Segment(
+                            string.IsNullOrEmpty(name) ? "*" : name,
+                            string.IsNullOrEmpty(type) ? "*" : type,
+                            depth
+                        ));
+                    }
+                    else
+                    {
+                        // No colon - treat as wildcard match for both
+                        if (trimmed == "*")
+                        {
+                            segments.Add(new Segment("*", "*", depth));
+                        }
+                        else
+                        {
+                            // Treat as name with wildcard type
+                            segments.Add(new Segment(trimmed, "*", depth));
+                        }
+                    }
                 }
+            }
+            
+            if (segments.Count == 0)
+                throw new ArgumentException("Pattern must contain at least one segment");
+            
+            return segments;
+        }
+        
+        /// <summary>
+        /// Match a hierarchical path against a list of pattern segments.
+        /// </summary>
+        private static bool MatchesPath(string hierarchicalPath, List<Segment> segments)
+        {
+            if (string.IsNullOrWhiteSpace(hierarchicalPath)) return false;
+            
+            // Split path into nodes
+            var pathNodes = hierarchicalPath.Split(new[] { " > " }, StringSplitOptions.RemoveEmptyEntries);
+            
+            return MatchesRecursive(pathNodes, 0, segments, 0);
+        }
+        
+        /// <summary>
+        /// Recursive pattern matching algorithm.
+        /// Handles **, *** depth wildcards and exact last-segment matching.
+        /// </summary>
+        private static bool MatchesRecursive(string[] pathNodes, int pathIndex, List<Segment> segments, int segmentIndex)
+        {
+            // All segments consumed?
+            if (segmentIndex >= segments.Count)
+            {
+                // Success: all path nodes must also be consumed (exact match)
+                return pathIndex >= pathNodes.Length;
+            }
+            
+            // Path exhausted but segments remain?
+            if (pathIndex >= pathNodes.Length)
+            {
+                // Only succeed if remaining segments are all ** (zero-or-more)
+                for (int i = segmentIndex; i < segments.Count; i++)
+                {
+                    if (segments[i].Depth != DepthMode.ZeroOrMore)
+                        return false;
+                }
+                return true;
+            }
+            
+            var segment = segments[segmentIndex];
+            var currentNode = pathNodes[pathIndex];
+            bool isLastSegment = (segmentIndex == segments.Count - 1);
+            
+            switch (segment.Depth)
+            {
+                case DepthMode.Exact:
+                    // Must match at this exact position
+                    if (!segment.MatchesNode(currentNode))
+                        return false;
+                    
+                    // If this is the last segment, we must also be at the last path node
+                    if (isLastSegment && pathIndex != pathNodes.Length - 1)
+                        return false;
+                    
+                    return MatchesRecursive(pathNodes, pathIndex + 1, segments, segmentIndex + 1);
                 
-                // Empty patterns become wildcards
-                if (string.IsNullOrEmpty(_namePattern)) _namePattern = "*";
-                if (string.IsNullOrEmpty(_typePattern)) _typePattern = "*";
+                case DepthMode.ZeroOrMore: // **
+                    // Try matching at current position
+                    if (segment.MatchesNode(currentNode))
+                    {
+                        // Try consuming this segment (greedy match)
+                        if (MatchesRecursive(pathNodes, pathIndex + 1, segments, segmentIndex + 1))
+                            return true;
+                    }
+                    
+                    // Try skipping current path node (zero-or-more allows skipping)
+                    if (MatchesRecursive(pathNodes, pathIndex + 1, segments, segmentIndex))
+                        return true;
+                    
+                    // Try moving to next segment without consuming path node
+                    // (this handles ** matching zero elements)
+                    if (MatchesRecursive(pathNodes, pathIndex, segments, segmentIndex + 1))
+                        return true;
+                    
+                    return false;
+                
+                case DepthMode.OneOrMore: // ***
+                    // Must skip at least one node before trying to match
+                    // Try skipping current node
+                    if (MatchesRecursive(pathNodes, pathIndex + 1, segments, segmentIndex))
+                        return true;
+                    
+                    // After skipping at least one, try to match (convert to ** behavior)
+                    var modifiedSegments = new List<Segment>(segments);
+                    modifiedSegments[segmentIndex] = new Segment(segment.NamePattern, segment.TypePattern, DepthMode.ZeroOrMore);
+                    
+                    // Must skip at least one node
+                    if (pathIndex + 1 < pathNodes.Length)
+                    {
+                        if (MatchesRecursive(pathNodes, pathIndex + 1, modifiedSegments, segmentIndex))
+                            return true;
+                    }
+                    
+                    return false;
+                
+                default:
+                    return false;
+            }
+        }
+        
+        /// <summary>
+        /// Represents a single segment in a pattern (Name:Type with depth mode).
+        /// </summary>
+        private class Segment
+        {
+            public string NamePattern { get; }
+            public string TypePattern { get; }
+            public DepthMode Depth { get; }
+            
+            public Segment(string namePattern, string typePattern, DepthMode depth)
+            {
+                NamePattern = namePattern ?? "*";
+                TypePattern = typePattern ?? "*";
+                Depth = depth;
             }
             
             public bool MatchesNode(string node)
@@ -208,8 +500,8 @@ namespace AcManager.UiObserver
                 var nodeName = node.Substring(0, colonIndex);
                 var nodeType = node.Substring(colonIndex + 1);
                 
-                bool nameMatches = MatchesPattern(_namePattern, nodeName);
-                bool typeMatches = MatchesPattern(_typePattern, nodeType);
+                bool nameMatches = MatchesPattern(NamePattern, nodeName);
+                bool typeMatches = MatchesPattern(TypePattern, nodeType);
                 
                 return nameMatches && typeMatches;
             }
@@ -218,16 +510,16 @@ namespace AcManager.UiObserver
             {
                 if (pattern == "*") return true;
                 
-                // For now, simple exact match (case-insensitive)
-                // Could be extended to support glob patterns like "Button*" etc.
+                // Exact match (case-insensitive)
                 return string.Equals(pattern, value, StringComparison.OrdinalIgnoreCase);
             }
         }
         
         private enum DepthMode
         {
-            Direct,      // > (immediate child)
-            AnyDepth     // >> (any descendant)
+            Exact,        // No wildcard - must match at this position
+            ZeroOrMore,   // ** - match 0+ elements (any depth including current)
+            OneOrMore     // *** - match 1+ elements (at least one ancestor away)
         }
     }
 }

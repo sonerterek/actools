@@ -1,3 +1,4 @@
+using AcManager.Pages.Dialogs;
 using FirstFloor.ModernUI.Windows.Controls;
 using System;
 using System.Collections.Generic;
@@ -62,6 +63,8 @@ namespace AcManager.UiObserver
             typeof(TabItem),
             typeof(Expander),
             typeof(GroupBox),
+
+            typeof(SelectCarDialog),
             
             // Custom controls (FirstFloor.ModernUI)
             // Note: These will be checked by name/namespace since types may not be available
