@@ -171,7 +171,7 @@ namespace AcManager.UiObserver
 		{
 			if (string.IsNullOrEmpty(id)) return false;
 			if (!_navById.TryGetValue(id, out var node)) return false;
-			if (!node.IsNavigable) return false;
+			if (!IsNavigableForSelection(node)) return false;
 
 			// TODO: Adjust group stack to match node's context
 			// For now, just set focus
@@ -216,11 +216,10 @@ namespace AcManager.UiObserver
 				return;
 			}
 			
-			// Verify this is a leaf node before accepting focus
+			// Verify this is a valid navigation target (leaf or closed dual-role group)
 			if (_navById.TryGetValue(nodeId, out var node)) {
-				// Only accept focus for leaf nodes
-				if (node.IsGroup) {
-					Debug.WriteLine($"[NavMapper] Ignoring focus on group node: {nodeId}");
+				if (!IsNavigableForSelection(node)) {
+					Debug.WriteLine($"[NavMapper] Ignoring focus on non-selectable node: {nodeId} (IsGroup={node.IsGroup}, IsDualRole={node.IsDualRoleGroup})");
 					return;
 				}
 			}
@@ -398,8 +397,8 @@ namespace AcManager.UiObserver
 				Debug.WriteLine($"[NavMapper] Auto-exiting group: {groupId}");
 				try { GroupExited?.Invoke(groupId); } catch { }
 
-				// Return focus to the group itself
-				if (_navById.TryGetValue(groupId, out var node) && node.IsNavigable) {
+				// Return focus to the group itself (if it's now a valid navigation target)
+				if (_navById.TryGetValue(groupId, out var node) && IsNavigableForSelection(node)) {
 					// Lock focus tracking when auto-exiting groups
 					_suppressFocusTracking = true;
 					try {
@@ -483,24 +482,110 @@ namespace AcManager.UiObserver
 			var curCenter = current.GetCenterDip();
 			if (!curCenter.HasValue) return null;
 
-			// 1. Determine search scope
-			var candidates = GetCandidatesInScope();
-			if (candidates.Count == 0) return null;
+			// Determine the search scope (respects modal group boundaries)
+			var allCandidates = GetCandidatesInScope();
+			if (allCandidates.Count == 0) return null;
 
-			// 2. Get direction vector
+			// Get direction vector
 			var dirVector = GetDirectionVector(dir);
 
-			// 3. Filter and score candidates
-			var validCandidates = new List<ScoredCandidate>();
-			var cur = curCenter.Value;
+			// PASS 1: Try to find best candidate within the same non-modal group
+			// This keeps navigation contained within logical groupings (TabControl, ListBox, etc.)
+			var sameGroupBest = FindBestInCandidates(
+				current, 
+				curCenter.Value, 
+				dir, 
+				dirVector, 
+				allCandidates.Where(c => AreInSameNonModalGroup(current, c)).ToList()
+			);
 
-			foreach (var candidate in candidates) {
+			if (sameGroupBest != null)
+			{
+				Debug.WriteLine($"[NavMapper] Found candidate in same group: {sameGroupBest.Id}");
+				return sameGroupBest;
+			}
+
+			// PASS 2: No candidates in same group - search across all groups
+			// This allows navigation to jump between different containers
+			var crossGroupBest = FindBestInCandidates(current, curCenter.Value, dir, dirVector, allCandidates);
+
+			if (crossGroupBest != null)
+			{
+				Debug.WriteLine($"[NavMapper] Found candidate across groups: {crossGroupBest.Id}");
+			}
+			else
+			{
+				Debug.WriteLine($"[NavMapper] No candidates found in direction {dir}");
+			}
+
+			return crossGroupBest;
+		}
+
+		/// <summary>
+		/// Checks if two nodes are in the same non-modal group.
+		/// Returns true if they share a common non-modal group ancestor.
+		/// Returns false if they're separated by a modal group or have no common non-modal group.
+		/// </summary>
+		private static bool AreInSameNonModalGroup(NavNode a, NavNode b)
+		{
+			// Find the closest non-modal group ancestor for each node
+			var groupA = FindClosestNonModalGroup(a);
+			var groupB = FindClosestNonModalGroup(b);
+
+			// If either has no non-modal group, they're not in the same group
+			if (groupA == null || groupB == null) return false;
+
+			// They're in the same group if they share the same non-modal group ancestor
+			return groupA.Id == groupB.Id;
+		}
+
+		/// <summary>
+		/// Finds the closest non-modal group ancestor of a node.
+		/// Stops searching when encountering a modal group (which acts as a boundary).
+		/// Returns null if no non-modal group is found.
+		/// </summary>
+		private static NavNode FindClosestNonModalGroup(NavNode node)
+		{
+			var current = node.Parent;
+			while (current != null)
+			{
+				if (current is NavNode parentNode && parentNode.IsGroup)
+				{
+					// Stop at modal groups - they act as boundaries
+					if (parentNode.IsModal) return null;
+					
+					// Found a non-modal group
+					return parentNode;
+				}
+				current = current.Parent;
+			}
+			return null;
+		}
+
+		/// <summary>
+		/// Finds the best navigation candidate from a list of candidates in a given direction.
+		/// Uses distance and alignment scoring to determine the best match.
+		/// </summary>
+		private static NavNode FindBestInCandidates(
+			NavNode current,
+			Point currentCenter,
+			NavDirection dir,
+			Point dirVector,
+			List<NavNode> candidates)
+		{
+			if (candidates.Count == 0) return null;
+
+			var validCandidates = new List<ScoredCandidate>();
+
+			foreach (var candidate in candidates)
+			{
 				if (candidate.Id == current.Id) continue;
+				
 				var candidateCenter = candidate.GetCenterDip();
 				if (!candidateCenter.HasValue) continue;
 
 				var c = candidateCenter.Value;
-				var v = new Point(c.X - cur.X, c.Y - cur.Y);
+				var v = new Point(c.X - currentCenter.X, c.Y - currentCenter.Y);
 				var len = Math.Sqrt(v.X * v.X + v.Y * v.Y);
 				if (len < double.Epsilon) continue;
 
@@ -517,12 +602,14 @@ namespace AcManager.UiObserver
 				var cost = baseCost;
 
 				// Bonus: same immediate parent group (-30%)
-				if (HaveSameImmediateParent(current, candidate)) {
+				if (HaveSameImmediateParent(current, candidate))
+				{
 					cost *= 0.7;
 				}
 
 				// Bonus: well-aligned on primary axis (-20%)
-				if (IsWellAligned(cur, c, dir)) {
+				if (IsWellAligned(currentCenter, c, dir))
+				{
 					cost *= 0.8;
 				}
 
@@ -531,7 +618,7 @@ namespace AcManager.UiObserver
 
 			if (validCandidates.Count == 0) return null;
 
-			// Return best candidate
+			// Return best candidate (lowest cost)
 			return validCandidates.OrderBy(sc => sc.Cost).First().Node;
 		}
 
@@ -541,20 +628,53 @@ namespace AcManager.UiObserver
 			public double Cost { get; set; }
 		}
 
+		/// <summary>
+		/// Determines if a node is navigable for selection purposes.
+		/// 
+		/// Basic rule: Leaves are always navigable (if IsNavigable passes)
+		/// Special rule for groups:
+		/// - Pure groups (ListBox, TabControl): NEVER navigable for selection
+		/// - Dual-role groups (ComboBox, ContextMenu): Only navigable when CLOSED
+		/// 
+		/// This keeps the navigation layer (NavMapper) responsible for dual-role logic,
+		/// while the node layer (NavNode) only handles basic visibility/validity.
+		/// </summary>
+		private static bool IsNavigableForSelection(NavNode node)
+		{
+			// Basic validity check (alive, visible, has bounds, etc.)
+			if (!node.IsNavigable) return false;
+			
+			if (node.IsGroup)
+			{
+				// Pure groups: never navigable for selection
+				// (their children are navigable, not the group itself)
+				if (!node.IsDualRoleGroup) return false;
+				
+				// Dual-role groups: only navigable when closed
+				// When closed: act as leaves (user navigates TO them)
+				// When open: act as groups (user navigates WITHIN them)
+				var group = node as INavGroup;
+				return group != null && !group.IsOpen;
+			}
+			
+			// Leaves: always navigable
+			return true;
+		}
+
 		private static List<NavNode> GetCandidatesInScope()
 		{
 			if (_activeGroupStack.Count == 0) {
 				// Root context: all navigable nodes not inside modal groups
 				return _navById.Values
-					.Where(n => n.IsNavigable && !IsInsideModalGroup(n))
+					.Where(n => IsNavigableForSelection(n) && !IsInsideModalGroup(n))
 					.ToList();
 			} else {
 				// Modal group context: only descendants of active group
 				var groupId = _activeGroupStack.Peek();
 				if (_navById.TryGetValue(groupId, out var groupNode) && groupNode is INavGroup group) {
 					return GetAllDescendants(group)
-						.Where(n => n.IsNavigable)
 						.OfType<NavNode>()
+						.Where(n => IsNavigableForSelection(n))
 						.ToList();
 				}
 				return new List<NavNode>();
@@ -758,7 +878,8 @@ namespace AcManager.UiObserver
 			int skippedCount = 0;
 			
 			foreach (var node in NavForest.GetAllNavNodes()) {
-				if (!node.IsNavigable) {
+				// Use IsNavigableForSelection to determine if this node is actually a navigation target
+				if (!IsNavigableForSelection(node)) {
 					skippedCount++;
 					continue;
 				}

@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -182,18 +183,33 @@ namespace AcManager.UiObserver
                 return null;
             }
             
-            if (VERBOSE_DEBUG)
-            {
-                Debug.WriteLine($"[NavNode]   -> CREATED: {feType.Name} Id={id}");
-                Debug.WriteLine($"[NavNode]   -> Path: {hierarchicalPath}");
-            }
-            
             // Determine if this element type creates a modal navigation context
             bool isModal = IsModalType(feType);
             
             if (VERBOSE_DEBUG && isModal)
             {
                 Debug.WriteLine($"[NavNode]   -> MODAL TYPE (blocks background navigation)");
+            }
+            
+            // VALIDATION: Check for non-modal group nesting under another non-modal group
+            // This validates our navigation rule: only modal groups should nest under each other
+            if (isGroup && !isModal)
+            {
+                // Walk up the visual tree to find ancestor NavNodes that are already discovered
+                var nonModalParent = FindNonModalGroupAncestorNode(fe, out var modalBlocker);
+                
+                if (nonModalParent != null)
+                {
+                    // Found a non-modal group ancestor before any modal group
+                    // This violates our navigation rule!
+                    ReportNonModalNesting(fe, feType, id, hierarchicalPath, nonModalParent, modalBlocker);
+                }
+            }
+            
+            if (VERBOSE_DEBUG)
+            {
+                Debug.WriteLine($"[NavNode]   -> CREATED: {feType.Name} Id={id}");
+                Debug.WriteLine($"[NavNode]   -> Path: {hierarchicalPath}");
             }
             
             // Create the node
@@ -587,18 +603,20 @@ namespace AcManager.UiObserver
         /// <summary>
         /// Checks if this node is currently navigable.
         /// 
-        /// For groups: not navigable when open (children are navigable instead).
-        /// For all nodes: must have alive element, be loaded, visible, and have valid presentation source.
-        /// Parent (if any) must also be navigable.
+        /// This only checks basic validity:
+        /// - Element is alive (WeakReference valid)
+        /// - Element is loaded and visible
+        /// - Element has valid presentation source
+        /// - Element has reasonable size
+        /// - Parent (if any) is navigable
+        /// 
+        /// Note: For groups, additional logic in NavMapper determines actual navigability
+        /// based on IsOpen state and dual-role behavior.
         /// </summary>
         public bool IsNavigable
         {
             get
             {
-                // Groups are not navigable when open (their children are)
-                if (IsGroup && _isOpen)
-                    return false;
-
                 // Parent must be navigable (hierarchical check)
                 if (Parent != null && !Parent.IsNavigable)
                     return false;
@@ -799,6 +817,148 @@ namespace AcManager.UiObserver
             var navigable = IsNavigable ? "Navigable" : "NotNavigable";
             var focus = HasFocus ? "Focused" : "";
             return $"{type} {Id} {state} {navigable} {focus}".Trim();
+        }
+        
+        /// <summary>
+        /// Walks up the visual tree to find if there's a non-modal NavGroup ancestor
+        /// that has already been discovered, before encountering a modal NavGroup.
+        /// Uses NavForest's tracking dictionary to avoid re-evaluating types.
+        /// </summary>
+        /// <param name="fe">The element to check</param>
+        /// <param name="modalBlocker">The first modal group NavNode encountered (if any)</param>
+        /// <returns>The non-modal group NavNode ancestor if found, null otherwise</returns>
+        private static NavNode FindNonModalGroupAncestorNode(FrameworkElement fe, out NavNode modalBlocker)
+        {
+            modalBlocker = null;
+            
+            try
+            {
+                DependencyObject current = fe;
+                while (current != null)
+                {
+                    // Move up the visual tree
+                    try
+                    {
+                        current = VisualTreeHelper.GetParent(current);
+                    }
+                    catch
+                    {
+                        break;
+                    }
+                    
+                    if (current is FrameworkElement parent)
+                    {
+                        // Check if this parent has an already-discovered NavNode
+                        // Use NavForest's tracking dictionary (consistent with _nodesByElement, _nodesById)
+                        if (NavForest.TryGetNavNode(parent, out var parentNode))
+                        {
+                            // Found a NavNode - check if it's a group
+                            if (parentNode.IsGroup)
+                            {
+                                if (parentNode.IsModal)
+                                {
+                                    // Found a modal group - this acts as a barrier
+                                    // Non-modal groups CAN nest under modal groups
+                                    modalBlocker = parentNode;
+                                    return null; // No violation
+                                }
+                                else
+                                {
+                                    // Found a non-modal group ancestor - this is a violation!
+                                    return parentNode;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+            
+            return null; // No non-modal group ancestor found
+        }
+        
+        /// <summary>
+        /// Outputs detailed debug information about non-modal group nesting violation.
+        /// </summary>
+        private static void ReportNonModalNesting(
+            FrameworkElement childFe,
+            Type childType,
+            string childId,
+            string childPath,
+            NavNode parentNode,
+            NavNode modalBlocker)
+        {
+            Debug.WriteLine("");
+            Debug.WriteLine("???????????????????????????????????????????????????????????????????????????????");
+            Debug.WriteLine("? ??  NON-MODAL GROUP NESTING DETECTED");
+            Debug.WriteLine("???????????????????????????????????????????????????????????????????????????????");
+            
+            // Child information
+            try
+            {
+                var childTypeName = childType.Name;
+                var childName = string.IsNullOrEmpty(childFe.Name) ? "(unnamed)" : childFe.Name;
+                
+                Debug.WriteLine("? CHILD (Non-Modal Group):");
+                Debug.WriteLine($"?   Type: {childTypeName}");
+                Debug.WriteLine($"?   Name: {childName}");
+                Debug.WriteLine($"?   Would-be NavNode ID: {childId}");
+                Debug.WriteLine($"?   Path: {childPath}");
+            }
+            catch { }
+            
+            Debug.WriteLine("???????????????????????????????????????????????????????????????????????????????");
+            
+            // Parent information (from already-discovered NavNode)
+            try
+            {
+                if (parentNode.TryGetVisual(out var parentFe))
+                {
+                    var parentType = parentFe.GetType();
+                    var parentTypeName = parentType.Name;
+                    var parentName = string.IsNullOrEmpty(parentFe.Name) ? "(unnamed)" : parentFe.Name;
+                    var parentPath = GetHierarchicalPath(parentFe);
+                    
+                    Debug.WriteLine("? PARENT (Non-Modal Group - Already Discovered):");
+                    Debug.WriteLine($"?   Type: {parentTypeName}");
+                    Debug.WriteLine($"?   Name: {parentName}");
+                    Debug.WriteLine($"?   NavNode ID: {parentNode.Id}");
+                    Debug.WriteLine($"?   IsDualRoleGroup: {parentNode.IsDualRoleGroup}");
+                    Debug.WriteLine($"?   Path: {parentPath}");
+                }
+            }
+            catch { }
+            
+            // Modal blocker information (if any - shouldn't be in violation case)
+            if (modalBlocker != null)
+            {
+                Debug.WriteLine("???????????????????????????????????????????????????????????????????????????????");
+                try
+                {
+                    if (modalBlocker.TryGetVisual(out var blockerFe))
+                    {
+                        var blockerType = blockerFe.GetType();
+                        var blockerTypeName = blockerType.Name;
+                        var blockerName = string.IsNullOrEmpty(blockerFe.Name) ? "(unnamed)" : blockerFe.Name;
+                        
+                        Debug.WriteLine("? NOTE: Modal Blocker Found (shouldn't see this in violation):");
+                        Debug.WriteLine($"?   Type: {blockerTypeName}");
+                        Debug.WriteLine($"?   Name: {blockerName}");
+                        Debug.WriteLine($"?   NavNode ID: {modalBlocker.Id}");
+                    }
+                }
+                catch { }
+            }
+            
+            Debug.WriteLine("???????????????????????????????????????????????????????????????????????????????");
+            Debug.WriteLine("? RECOMMENDATION:");
+            Debug.WriteLine("?   One of these should be added to an exception list or reclassified:");
+            Debug.WriteLine("?   • Remove CHILD from _groupTypes if it shouldn't be a group");
+            Debug.WriteLine("?   • Remove PARENT from _groupTypes if it shouldn't be a group");
+            Debug.WriteLine("?   • Add to PathFilter.AddExcludeRule() if one shouldn't be navigable");
+            Debug.WriteLine("?   • Make one of them modal if the nesting is intentional");
+            Debug.WriteLine("???????????????????????????????????????????????????????????????????????????????");
+            Debug.WriteLine("");
         }
     }
 }

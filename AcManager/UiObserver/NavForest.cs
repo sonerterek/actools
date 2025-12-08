@@ -825,5 +825,20 @@ namespace AcManager.UiObserver {
         public static IEnumerable<NavNode> GetAllNavNodes() {
             return _nodesByElement.Values.ToArray();
         }
+        
+        /// <summary>
+        /// Tries to get an already-discovered NavNode for a given FrameworkElement.
+        /// Used by NavNode validation during creation to check for non-modal group nesting.
+        /// </summary>
+        /// <param name="fe">The FrameworkElement to look up</param>
+        /// <param name="node">The discovered NavNode if found</param>
+        /// <returns>True if a NavNode was found for this element, false otherwise</returns>
+        public static bool TryGetNavNode(FrameworkElement fe, out NavNode node) {
+            if (fe != null) {
+                return _nodesByElement.TryGetValue(fe, out node);
+            }
+            node = null;
+            return false;
+        }
     }
 }
