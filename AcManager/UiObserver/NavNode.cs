@@ -64,8 +64,6 @@ namespace AcManager.UiObserver
             typeof(Expander),
             typeof(GroupBox),
 
-            typeof(SelectCarDialog),
-            
             // Custom controls (FirstFloor.ModernUI)
             // Note: These will be checked by name/namespace since types may not be available
         };
@@ -84,7 +82,7 @@ namespace AcManager.UiObserver
             typeof(ListBox),       // Pure container: never directly navigable
             typeof(ListView),      // Pure container: never directly navigable
             typeof(DataGrid),      // Pure container: never directly navigable
-        };
+		};
         
         // Dual-role groups - can be navigated TO when closed, act as containers when open
         private static readonly HashSet<Type> _dualRoleGroupTypes = new HashSet<Type>
@@ -126,34 +124,75 @@ namespace AcManager.UiObserver
                 Debug.WriteLine($"[NavNode] Evaluating: {feType.Name} '{(string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name)}'");
             }
             
-            // Determine if this is a group or leaf
+            // Step 1: Perform type-based detection (baseline detection)
             bool isGroup = IsGroupType(feType);
             bool isDualRoleGroup = isGroup && IsDualRoleGroupType(feType);
             bool isLeaf = IsLeafType(feType);
             
             if (VERBOSE_DEBUG)
             {
-                Debug.WriteLine($"[NavNode]   -> IsGroup={isGroup}, IsDualRole={isDualRoleGroup}, IsLeaf={isLeaf}");
+                Debug.WriteLine($"[NavNode]   -> Type-based: IsGroup={isGroup}, IsDualRole={isDualRoleGroup}, IsLeaf={isLeaf}");
             }
             
-            // Pure whitelist: if not explicitly a group or leaf, reject it
+            // Step 2: Compute hierarchical path early (needed for both exclusion and classification)
+            string hierarchicalPath = GetHierarchicalPath(fe);
+            
+            // Step 3: Check for classification overrides BEFORE whitelist check
+            // This allows CLASSIFY rules to bring non-whitelisted types into the system
+            var classification = PathFilter.GetClassification(hierarchicalPath);
+            if (classification != null)
+            {
+                if (VERBOSE_DEBUG)
+                {
+                    Debug.WriteLine($"[NavNode]   -> Classification rule matched: Role={classification.Role}, Modal={classification.IsModal}");
+                }
+                
+                // Apply role overrides
+                if (classification.Role != NavRole.Undefined)
+                {
+                    switch (classification.Role)
+                    {
+                        case NavRole.Leaf:
+                            isGroup = false;
+                            isDualRoleGroup = false;
+                            isLeaf = true;
+                            break;
+                        
+                        case NavRole.Group:
+                            isGroup = true;
+                            isDualRoleGroup = false;
+                            isLeaf = false;
+                            break;
+                        
+                        case NavRole.DualGroup:
+                            isGroup = true;
+                            isDualRoleGroup = true;
+                            isLeaf = false;
+                            break;
+                    }
+                    
+                    if (VERBOSE_DEBUG)
+                    {
+                        Debug.WriteLine($"[NavNode]   -> After classification: IsGroup={isGroup}, IsDualRole={isDualRoleGroup}, IsLeaf={isLeaf}");
+                    }
+                }
+            }
+            
+            // Step 4: Whitelist check (now uses potentially overridden values)
             if (!isGroup && !isLeaf)
             {
                 if (VERBOSE_DEBUG)
                 {
-                    Debug.WriteLine($"[NavNode]   -> Not in whitelist, rejected");
+                    Debug.WriteLine($"[NavNode]   -> Not in whitelist (and no classification override), rejected");
                 }
                 return null;
             }
             
-            // General rule: A leaf cannot be inside another leaf
-            // This prevents template-internal controls from being navigable
-            // E.g., buttons inside a Slider, toggle buttons inside a ComboBox, etc.
+            // Step 5: Check for nested leaf constraint
             if (!isGroup && HasLeafAncestor(fe, out var leafAncestor))
             {
                 if (VERBOSE_DEBUG)
                 {
-                    // Debug logging to help identify why controls are being skipped
                     try
                     {
                         var skippedTypeName = feType.Name;
@@ -166,16 +205,13 @@ namespace AcManager.UiObserver
                     catch { }
                 }
                 
-                return null; // This leaf is inside another leaf's template
+                return null;
             }
             
-            // Compute ID
+            // Step 6: Compute ID
             string id = computeId != null ? computeId(fe) : ComputeDefaultId(fe);
             
-            // Compute hierarchical path for filtering (same format as NavMapper uses)
-            string hierarchicalPath = GetHierarchicalPath(fe);
-            
-            // Check if this path is excluded by filter rules
+            // Step 7: Check exclusion rules
             if (PathFilter.IsExcluded(hierarchicalPath))
             {
                 if (VERBOSE_DEBUG)
@@ -186,25 +222,32 @@ namespace AcManager.UiObserver
                 return null;
             }
             
-            // Determine if this element type creates a modal navigation context
+            // Step 8: Determine modal behavior (type-based baseline)
             bool isModal = IsModalType(feType);
+            
+            // Step 9: Apply modal override from classification (if specified)
+            if (classification?.IsModal.HasValue == true)
+            {
+                isModal = classification.IsModal.Value;
+                
+                if (VERBOSE_DEBUG)
+                {
+                    Debug.WriteLine($"[NavNode]   -> Modal overridden by classification: {isModal}");
+                }
+            }
             
             if (VERBOSE_DEBUG && isModal)
             {
                 Debug.WriteLine($"[NavNode]   -> MODAL TYPE (blocks background navigation)");
             }
             
-            // VALIDATION: Check for non-modal group nesting under another non-modal group
-            // This validates our navigation rule: only modal groups should nest under each other
+            // Step 10: Validation - Check for non-modal group nesting
             if (isGroup && !isModal)
             {
-                // Walk up the visual tree to find ancestor NavNodes that are already discovered
                 var nonModalParent = FindNonModalGroupAncestorNode(fe, out var modalBlocker);
                 
                 if (nonModalParent != null)
                 {
-                    // Found a non-modal group ancestor before any modal group
-                    // This violates our navigation rule!
                     ReportNonModalNesting(fe, feType, id, hierarchicalPath, nonModalParent, modalBlocker);
                 }
             }
@@ -212,10 +255,11 @@ namespace AcManager.UiObserver
             if (VERBOSE_DEBUG)
             {
                 Debug.WriteLine($"[NavNode]   -> CREATED: {feType.Name} Id={id}");
+                Debug.WriteLine($"[NavNode]   -> Final: IsGroup={isGroup}, IsDualRole={isDualRoleGroup}, IsModal={isModal}");
                 Debug.WriteLine($"[NavNode]   -> Path: {hierarchicalPath}");
             }
             
-            // Create the node
+            // Step 11: Create the node with final values
             return new NavNode(fe, id, isGroup, isDualRoleGroup, isModal);
         }
         

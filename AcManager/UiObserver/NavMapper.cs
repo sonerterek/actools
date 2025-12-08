@@ -111,6 +111,8 @@ namespace AcManager.UiObserver
 
 			var rules = new[] {
 				"EXCLUDE: Window:MainWindow > WindowBorder:Border > (unnamed):AdornerDecorator > (unnamed):Cell > (unnamed):Cell > (unnamed):AdornerDecorator > LayoutRoot:DockPanel > (unnamed):DockPanel > PART_Menu:ModernMenu",
+				"CLASSIFY: ** > *:SelectCarDialog => role=group; modal=true",
+				"EXCLUDE: ** > *:HistoricalTextBox",
 			};
 
 			try
@@ -1011,12 +1013,12 @@ namespace AcManager.UiObserver
 					var elementName = string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name;
 					var navId = node.Id;
 					
-					// Detect modal window for this node
-					var modalTag = node.IsModal ? " [MODAL]" : "";
+					// Modal flag as separate column (fixed width for alignment)
+					var modalTag = node.IsModal ? "MODAL" : "";
 					
-					// Build debug line (will be numbered after sorting)
+					// Build debug line with modal as a separate fixed-width column
 					var colorTag = shouldBeGray ? "GRAY" : "LEAF";
-					var debugLine = $"{typeName,-20} | {elementName,-20} | {roleDescription,-18} | {navId,-30} | ({rectDip.Left,7:F1}, {rectDip.Top,7:F1}) {rectDip.Width,6:F1}x{rectDip.Height,6:F1}{modalTag} | {hierarchicalPath}";
+					var debugLine = $"{typeName,-20} | {elementName,-20} | {roleDescription,-18} | {modalTag,-6} | {navId,-30} | ({rectDip.Left,7:F1}, {rectDip.Top,7:F1}) {rectDip.Width,6:F1}x{rectDip.Height,6:F1} | {hierarchicalPath}";
 
 					allDebugInfo.Add(new DebugRectInfo { 
 						Rect = rectDip, 
