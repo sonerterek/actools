@@ -40,6 +40,7 @@ namespace AcManager.UiObserver {
         private static Func<FrameworkElement, bool> _isTrulyVisible = null;
 
         public static event Action<FrameworkElement> RootChanged;
+        public static event Action<string> FocusedNodeChanged; // nodeId
 
         // Attached flag to avoid subscribing handlers multiple times on the same element
         private static readonly DependencyProperty AttachedHandlersProperty = DependencyProperty.RegisterAttached(
@@ -65,6 +66,10 @@ namespace AcManager.UiObserver {
                 EventManager.RegisterClassHandler(typeof(FrameworkElement), FrameworkElement.LoadedEvent,
                         new RoutedEventHandler(OnAnyElementLoaded), true);
                 
+                // Listen for focus changes to synchronize with NavMapper
+                EventManager.RegisterClassHandler(typeof(UIElement), UIElement.GotFocusEvent,
+                        new RoutedEventHandler(OnAnyElementGotFocus), true);
+                
                 // Listen for popup open events to ensure new PresentationSources are registered
                 try {
                     EventManager.RegisterClassHandler(typeof(ContextMenu), ContextMenu.OpenedEvent,
@@ -75,6 +80,139 @@ namespace AcManager.UiObserver {
                             new RoutedEventHandler(OnAnyPopupOpened), true);
                 } catch { }
             } catch { }
+        }
+
+        private static void OnAnyElementGotFocus(object sender, RoutedEventArgs e) {
+            try {
+                var fe = sender as FrameworkElement;
+                if (fe == null) return;
+
+                // Try to find the appropriate NavNode for this focused element
+                // The focused element might be:
+                // 1. The exact element we have a NavNode for
+                // 2. A child of the element we have a NavNode for (e.g., TextBox inside Button template)
+                // 3. A parent of the element we have a NavNode for (less common but possible)
+                
+                NavNode navNode = FindNavNodeForFocusedElement(fe);
+                
+                if (navNode != null && navNode.IsNavigable) {
+                    // IMPORTANT: Only focus leaf nodes, never groups
+                    if (!navNode.IsGroup || !navNode.IsNavigable) {
+                        try {
+                            FocusedNodeChanged?.Invoke(navNode.Id);
+                        } catch { }
+                    }
+                }
+            } catch { }
+        }
+
+        /// <summary>
+        /// Finds the appropriate NavNode for a focused element by searching:
+        /// 1. The element itself
+        /// 2. Up the visual tree (focused element is a child of our NavNode element)
+        /// 3. Down the visual tree (focused element is a parent, we need to find the leaf NavNode)
+        /// </summary>
+        private static NavNode FindNavNodeForFocusedElement(FrameworkElement focusedElement) {
+            if (focusedElement == null) return null;
+
+            // 1. Check if we have a direct NavNode for this element
+            if (_nodesByElement.TryGetValue(focusedElement, out var directNode)) {
+                // Make sure it's a leaf node (not a group)
+                if (!directNode.IsGroup) {
+                    return directNode;
+                }
+            }
+
+            // 2. Walk UP the visual tree to find a NavNode
+            // This handles cases where WPF focuses a child element (e.g., TextBox in Button template)
+            var current = focusedElement;
+            while (current != null) {
+                if (_nodesByElement.TryGetValue(current, out var ancestorNode)) {
+                    // Found a NavNode - make sure it's a leaf
+                    if (!ancestorNode.IsGroup) {
+                        return ancestorNode;
+                    }
+                }
+
+                try {
+                    current = VisualTreeHelper.GetParent(current) as FrameworkElement;
+                } catch {
+                    break;
+                }
+            }
+
+            // 3. Walk DOWN the visual tree to find a leaf NavNode
+            // This handles cases where we focused a container but should focus its leaf child
+            var leafNode = FindLeafNavNodeInSubtree(focusedElement);
+            if (leafNode != null) {
+                return leafNode;
+            }
+
+            // 4. If still not found, try to create a NavNode for the focused element
+            // This catches dynamically created elements that weren't in the initial scan
+            var newNode = NavNode.CreateNavNode(focusedElement);
+            if (newNode != null && !newNode.IsGroup) {
+                if (_nodesByElement.TryAdd(focusedElement, newNode)) {
+                    _nodesById.TryAdd(newNode.Id, newNode);
+                    
+                    // Try to add to appropriate root's element set
+                    try {
+                        var ps = PresentationSource.FromVisual(focusedElement);
+                        if (ps != null && _presentationSourceRoots.TryGetValue(ps, out var navTreeRoot)) {
+                            if (_rootIndex.TryGetValue(navTreeRoot, out var elementSet)) {
+                                lock (elementSet) {
+                                    elementSet.Add(focusedElement);
+                                }
+                            }
+                        }
+                    } catch { }
+                    
+                    return newNode;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Searches the visual subtree for the first leaf NavNode.
+        /// Returns null if no leaf NavNode is found.
+        /// </summary>
+        private static NavNode FindLeafNavNodeInSubtree(DependencyObject root) {
+            if (root == null) return null;
+
+            var queue = new Queue<DependencyObject>();
+            queue.Enqueue(root);
+
+            while (queue.Count > 0) {
+                var current = queue.Dequeue();
+
+                if (current is FrameworkElement fe) {
+                    if (_nodesByElement.TryGetValue(fe, out var node)) {
+                        // Found a NavNode - check if it's a leaf
+                        if (!node.IsGroup && node.IsNavigable) {
+                            return node;
+                        }
+                        // If it's a group, don't search its children (they should already be NavNodes)
+                        if (node.IsGroup) {
+                            continue;
+                        }
+                    }
+                }
+
+                // Continue searching children
+                try {
+                    var childCount = VisualTreeHelper.GetChildrenCount(current);
+                    for (int i = 0; i < childCount; i++) {
+                        var child = VisualTreeHelper.GetChild(current, i);
+                        if (child != null) {
+                            queue.Enqueue(child);
+                        }
+                    }
+                } catch { }
+            }
+
+            return null;
         }
 
         private static void OnAnyElementLoaded(object sender, RoutedEventArgs e) {

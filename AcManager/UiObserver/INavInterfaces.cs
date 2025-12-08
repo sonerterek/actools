@@ -42,6 +42,15 @@ namespace AcManager.UiObserver
         /// Returns false if the element has been garbage collected.
         /// </summary>
         bool TryGetVisual(out FrameworkElement fe);
+
+        /// <summary>
+        /// Activates this navigation node (performs its default action).
+        /// For leaf nodes: clicks buttons, toggles checkboxes, selects items, etc.
+        /// For closed dual-role groups: opens the group (ComboBox, ContextMenu).
+        /// For open dual-role groups: no-op (children handle activation).
+        /// Returns true if activation succeeded, false otherwise.
+        /// </summary>
+        bool Activate();
     }
 
     /// <summary>
@@ -68,7 +77,7 @@ namespace AcManager.UiObserver
         /// Whether this group is currently open (active context).
         /// When true, children are navigable; when false, the group itself is navigable.
         /// </summary>
-        bool IsOpen { get; }
+        bool IsOpen { get; set; }
 
         /// <summary>
         /// Gets all navigable children of this group.
@@ -87,5 +96,12 @@ namespace AcManager.UiObserver
         /// Used for periodic cleanup to prevent memory leaks.
         /// </summary>
         void PruneDeadChildren();
+
+        /// <summary>
+        /// Closes this group if it's a dual-role group (ComboBox, ContextMenu).
+        /// For pure container groups, this is a no-op.
+        /// Returns true if the group was closed successfully, false otherwise.
+        /// </summary>
+        bool Close();
     }
 }

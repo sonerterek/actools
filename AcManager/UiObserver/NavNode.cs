@@ -188,8 +188,16 @@ namespace AcManager.UiObserver
                 Debug.WriteLine($"[NavNode]   -> Path: {hierarchicalPath}");
             }
             
+            // Determine if this element type creates a modal navigation context
+            bool isModal = IsModalType(feType);
+            
+            if (VERBOSE_DEBUG && isModal)
+            {
+                Debug.WriteLine($"[NavNode]   -> MODAL TYPE (blocks background navigation)");
+            }
+            
             // Create the node
-            return new NavNode(fe, id, isGroup, isDualRoleGroup);
+            return new NavNode(fe, id, isGroup, isDualRoleGroup, isModal);
         }
         
         private static bool IsLeafType(Type type)
@@ -204,7 +212,7 @@ namespace AcManager.UiObserver
             }
             
             // Check for custom ModernUI controls (by namespace)
-            if (type.Namespace != null && type.Namespace.StartsWith("FirstFloor.ModernUI.Windows.Controls"))
+            if (type.Namespace != null && type.Namespace.StartsWith("FirstFloor.ModernUI_WINDOWS.Controls"))
             {
                 var typeName = type.Name;
                 // Only detect actual interactive controls, not layout containers
@@ -229,7 +237,7 @@ namespace AcManager.UiObserver
             }
             
             // Check for custom ModernUI controls that act as groups
-            if (type.Namespace != null && type.Namespace.StartsWith("FirstFloor.ModernUI.Windows.Controls"))
+            if (type.Namespace != null && type.Namespace.StartsWith("FirstFloor.ModernUI_WINDOWS.Controls"))
             {
                 var typeName = type.Name;
                 if (typeName.Contains("Menu") || typeName.Contains("Tab") || typeName.Contains("Frame"))
@@ -253,7 +261,7 @@ namespace AcManager.UiObserver
             }
             
             // Check for custom ModernUI controls that act as dual-role groups
-            if (type.Namespace != null && type.Namespace.StartsWith("FirstFloor.ModernUI.Windows.Controls"))
+            if (type.Namespace != null && type.Namespace.StartsWith("FirstFloor.ModernUI_WINDOWS.Controls"))
             {
                 var typeName = type.Name;
                 // ModernMenu can be navigated to when closed
@@ -304,147 +312,48 @@ namespace AcManager.UiObserver
             return false;
         }
         
-        private static string ComputeDefaultId(FrameworkElement fe)
+        /// <summary>
+        /// Determines if this element type creates a modal navigation context.
+        /// Modal elements block access to parent/background elements during navigation.
+        /// This is based on element type and navigation behavior, not WPF's ShowDialog.
+        /// </summary>
+        /// <param name="feType">The type of the element to check</param>
+        /// <returns>True if element creates a modal navigation context</returns>
+        private static bool IsModalType(Type feType)
         {
-            // Try AutomationId first (most stable)
-            var automationId = System.Windows.Automation.AutomationProperties.GetAutomationId(fe);
-            if (!string.IsNullOrEmpty(automationId))
-                return $"A:{automationId}";
+            // Modal types: elements that create exclusive navigation contexts
+            // When open, these block access to background/parent elements
             
-            // Try Name (stable if set)
-            if (!string.IsNullOrEmpty(fe.Name))
-                return $"N:{fe.Name}";
-            
-            // Fallback to type + hash (not stable across sessions, but unique)
-            return $"G:{fe.GetType().Name}:{fe.GetHashCode():X8}";
-        }
-        
-        /// <summary>
-        /// Gets the hierarchical path of an element in the visual tree.
-        /// Format: Name:Type > ChildName:ChildType > ...
-        /// This matches the format used by NavMapper for consistency.
-        /// </summary>
-        public static string GetHierarchicalPath(FrameworkElement fe)
-        {
-            var path = new List<string>();
-            
-            try {
-                DependencyObject current = fe;
-                while (current != null) {
-                    if (current is FrameworkElement parent) {
-                        var typeName = parent.GetType().Name;
-                        var elementName = string.IsNullOrEmpty(parent.Name) ? "(unnamed)" : parent.Name;
-                        path.Insert(0, $"{elementName}:{typeName}");
-                    }
-                    
-                    try {
-                        current = VisualTreeHelper.GetParent(current);
-                    } catch {
-                        break;
-                    }
-                }
-            } catch { }
-            
-            return string.Join(" > ", path);
-        }
-        
-        #endregion
-
-        public WeakReference<FrameworkElement> VisualRef { get; }
-        public string Id { get; }
-        public INavNode Parent { get; set; }
-        
-        /// <summary>
-        /// Whether this node currently has focus in the navigation system.
-        /// Only one node should have focus at a time within a navigation context.
-        /// </summary>
-        public bool HasFocus { get; set; }
-
-        // Group-specific state (only used if IsGroup = true)
-        private List<WeakReference<INavNode>> _children;
-        private bool _isOpen;
-
-        /// <summary>
-        /// Determines whether this node is a group (can contain children) or a leaf (navigation target).
-        /// </summary>
-        public bool IsGroup { get; }
-        
-        /// <summary>
-        /// Determines whether this group can act as both a leaf (when closed) and a group (when open).
-        /// Only relevant if IsGroup is true.
-        /// Examples: ComboBox, ContextMenu (dual-role) vs ListBox, TabControl (pure containers).
-        /// </summary>
-        public bool IsDualRoleGroup { get; }
-
-        public NavNode(FrameworkElement fe, string id, bool isGroup = false, bool isDualRoleGroup = false)
-        {
-            if (fe == null) throw new ArgumentNullException(nameof(fe));
-            if (string.IsNullOrEmpty(id)) throw new ArgumentException("ID cannot be null or empty", nameof(id));
-
-            VisualRef = new WeakReference<FrameworkElement>(fe);
-            Id = id;
-            IsGroup = isGroup;
-            IsDualRoleGroup = isDualRoleGroup;
-
-            if (isGroup)
-            {
-                _children = new List<WeakReference<INavNode>>();
-                _isOpen = false;
-            }
-        }
-
-        public bool TryGetVisual(out FrameworkElement fe)
-        {
-            return VisualRef.TryGetTarget(out fe);
-        }
-
-        /// <summary>
-        /// Checks if this node is currently navigable.
-        /// 
-        /// For groups: not navigable when open (children are navigable instead).
-        /// For all nodes: must have alive element, be loaded, visible, and have valid presentation source.
-        /// Parent (if any) must also be navigable.
-        /// </summary>
-        public bool IsNavigable
-        {
-            get
-            {
-                // Groups are not navigable when open (their children are)
-                if (IsGroup && _isOpen)
-                    return false;
-
-                // Parent must be navigable (hierarchical check)
-                if (Parent != null && !Parent.IsNavigable)
-                    return false;
-
-                // Element must be alive
-                if (!TryGetVisual(out var fe))
-                    return false;
-
-                // Element must be loaded and visible
-                if (!fe.IsLoaded || !fe.IsVisible)
-                    return false;
-
-                // Element must be connected to a presentation source
-                try
-                {
-                    var ps = PresentationSource.FromVisual(fe);
-                    if (ps == null)
-                        return false;
-                }
-                catch
-                {
-                    return false;
-                }
-
-                // Element should have reasonable size
-                if (fe.ActualWidth < 1.0 || fe.ActualHeight < 1.0)
-                    return false;
-
+            // Popups and their contents are always modal
+            if (typeof(Popup).IsAssignableFrom(feType))
                 return true;
-            }
+            
+            // ContextMenu creates modal context when open
+            if (typeof(ContextMenu).IsAssignableFrom(feType))
+                return true;
+            
+            // ComboBox dropdown creates modal context when open (dual-role + modal)
+            if (typeof(ComboBox).IsAssignableFrom(feType))
+                return true;
+            
+            // Menu creates modal context for its items
+            if (typeof(Menu).IsAssignableFrom(feType))
+                return true;
+            
+            // Separate Windows are inherently modal for navigation purposes
+            // (each window is its own navigation scope)
+            if (typeof(Window).IsAssignableFrom(feType))
+                return true;
+            
+            // Non-modal types (even though they're groups):
+            // - ListBox, ListView, TreeView: freely navigate through items
+            // - TabControl: tabs don't block background navigation
+            // - ToolBar, StatusBar: always accessible
+            // - DataGrid: cell navigation doesn't create modal context
+            
+            return false;
         }
-
+        
         /// <summary>
         /// Computes the center point of this node in device-independent pixels (DIP).
         /// Returns null if element is not navigable or bounds cannot be computed.
@@ -507,7 +416,7 @@ namespace AcManager.UiObserver
                     throw new InvalidOperationException($"Cannot access IsOpen on non-group node {Id}");
                 return _isOpen;
             }
-            internal set
+            set
             {
                 if (!IsGroup)
                     throw new InvalidOperationException($"Cannot set IsOpen on non-group node {Id}");
@@ -571,6 +480,317 @@ namespace AcManager.UiObserver
         }
 
         #endregion
+
+        public WeakReference<FrameworkElement> VisualRef { get; }
+        public string Id { get; }
+        public INavNode Parent { get; set; }
+        
+        /// <summary>
+        /// Whether this node currently has focus in the navigation system.
+        /// Only one node should have focus at a time within a navigation context.
+        /// </summary>
+        public bool HasFocus { get; set; }
+
+        // Group-specific state (only used if IsGroup = true)
+        private List<WeakReference<INavNode>> _children;
+        private bool _isOpen;
+
+        /// <summary>
+        /// Determines whether this node is a group (can contain children) or a leaf (navigation target).
+        /// </summary>
+        public bool IsGroup { get; }
+        
+        /// <summary>
+        /// Determines whether this group can act as both a leaf (when closed) and a group (when open).
+        /// Only relevant if IsGroup is true.
+        /// Examples: ComboBox, ContextMenu (dual-role) vs ListBox, TabControl (pure containers).
+        /// </summary>
+        public bool IsDualRoleGroup { get; }
+        
+        /// <summary>
+        /// Determines whether this node creates a modal navigation context.
+        /// Modal nodes block access to their parent/background elements during navigation.
+        /// Examples: ComboBox dropdown (when open), Popup, ContextMenu, separate Window.
+        /// Non-modal: ListBox, TabControl, TreeView (navigation flows freely through them).
+        /// </summary>
+        public bool IsModal { get; }
+
+        public NavNode(FrameworkElement fe, string id, bool isGroup = false, bool isDualRoleGroup = false, bool isModal = false)
+        {
+            if (fe == null) throw new ArgumentNullException(nameof(fe));
+            if (string.IsNullOrEmpty(id)) throw new ArgumentException("ID cannot be null or empty", nameof(id));
+
+            VisualRef = new WeakReference<FrameworkElement>(fe);
+            Id = id;
+            IsGroup = isGroup;
+            IsDualRoleGroup = isDualRoleGroup;
+            IsModal = isModal;
+
+            if (isGroup)
+            {
+                _children = new List<WeakReference<INavNode>>();
+                _isOpen = false;
+            }
+        }
+        
+        private static string ComputeDefaultId(FrameworkElement fe)
+        {
+            // Try AutomationId first (most stable)
+            var automationId = System.Windows.Automation.AutomationProperties.GetAutomationId(fe);
+            if (!string.IsNullOrEmpty(automationId))
+                return $"A:{automationId}";
+            
+            // Try Name (stable if set)
+            if (!string.IsNullOrEmpty(fe.Name))
+                return $"N:{fe.Name}";
+            
+            // Fallback to type + hash (not stable across sessions, but unique)
+            return $"G:{fe.GetType().Name}:{fe.GetHashCode():X8}";
+        }
+        
+        /// <summary>
+        /// Gets the hierarchical path of an element in the visual tree.
+        /// Format: Name:Type > ChildName:ChildType > ...
+        /// This matches the format used by NavMapper for consistency.
+        /// </summary>
+        public static string GetHierarchicalPath(FrameworkElement fe)
+        {
+            var path = new List<string>();
+            
+            try {
+                DependencyObject current = fe;
+                while (current != null) {
+                    if (current is FrameworkElement parent) {
+                        var typeName = parent.GetType().Name;
+                        var elementName = string.IsNullOrEmpty(parent.Name) ? "(unnamed)" : parent.Name;
+                        path.Insert(0, $"{elementName}:{typeName}");
+                    }
+                    
+                    try {
+                        current = VisualTreeHelper.GetParent(current);
+                    } catch {
+                        break;
+                    }
+                }
+            } catch { }
+            
+            return string.Join(" > ", path);
+        }
+        
+        #endregion
+
+        public bool TryGetVisual(out FrameworkElement fe)
+        {
+            return VisualRef.TryGetTarget(out fe);
+        }
+
+        /// <summary>
+        /// Checks if this node is currently navigable.
+        /// 
+        /// For groups: not navigable when open (children are navigable instead).
+        /// For all nodes: must have alive element, be loaded, visible, and have valid presentation source.
+        /// Parent (if any) must also be navigable.
+        /// </summary>
+        public bool IsNavigable
+        {
+            get
+            {
+                // Groups are not navigable when open (their children are)
+                if (IsGroup && _isOpen)
+                    return false;
+
+                // Parent must be navigable (hierarchical check)
+                if (Parent != null && !Parent.IsNavigable)
+                    return false;
+
+                // Element must be alive
+                if (!TryGetVisual(out var fe))
+                    return false;
+
+                // Element must be loaded and visible
+                if (!fe.IsLoaded || !fe.IsVisible)
+                    return false;
+
+                // Element must be connected to a presentation source
+                try
+                {
+                    var ps = PresentationSource.FromVisual(fe);
+                    if (ps == null)
+                        return false;
+                }
+                catch
+                {
+                    return false;
+                }
+
+                // Element should have reasonable size
+                if (fe.ActualWidth < 1.0 || fe.ActualHeight < 1.0)
+                    return false;
+
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// Activates this navigation node by performing its default action.
+        /// Behavior depends on the control type and current state:
+        /// 
+        /// Dual-role groups (ComboBox, ContextMenu):
+        ///   - When closed: opens the group
+        ///   - When open: no-op (children handle their own activation)
+        /// 
+        /// Leaf controls:
+        ///   - Button/RepeatButton: raises Click event
+        ///   - ToggleButton/CheckBox/RadioButton: toggles IsChecked
+        ///   - MenuItem: raises Click event
+        ///   - ListBoxItem/ComboBoxItem/TreeViewItem: selects the item
+        ///   - TabItem: selects the tab
+        ///   - Expander: toggles IsExpanded
+        ///   - Default: tries to set WPF focus
+        /// </summary>
+        /// <returns>True if activation succeeded, false if node is not navigable or action failed</returns>
+        public bool Activate()
+        {
+            // Get the underlying visual element
+            if (!TryGetVisual(out var fe)) {
+                return false;
+            }
+
+            // Dual-role groups: open if closed
+            if (IsDualRoleGroup && IsGroup) {
+                if (!IsOpen) {
+                    return TryOpenGroup(fe);
+                }
+                // Group is open - children handle activation, not the group itself
+                return false;
+            }
+
+            // Leaf controls: perform type-specific activation
+            try {
+                // Buttons
+                if (fe is Button btn) {
+                    btn.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    return true;
+                }
+                
+                if (fe is RepeatButton repeatBtn) {
+                    repeatBtn.RaiseEvent(new RoutedEventArgs(RepeatButton.ClickEvent));
+                    return true;
+                }
+                
+                // Toggle controls
+                if (fe is ToggleButton toggle) {
+                    toggle.IsChecked = !toggle.IsChecked;
+                    return true;
+                }
+                
+                // Menu items
+                if (fe is MenuItem menuItem) {
+                    menuItem.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                    return true;
+                }
+                
+                // Selectable items
+                if (fe is ListBoxItem listBoxItem) {
+                    listBoxItem.IsSelected = true;
+                    return true;
+                }
+                
+                if (fe is ComboBoxItem comboBoxItem) {
+                    comboBoxItem.IsSelected = true;
+                    return true;
+                }
+                
+                if (fe is TreeViewItem treeViewItem) {
+                    treeViewItem.IsSelected = true;
+                    return true;
+                }
+                
+                // Tab selection
+                if (fe is TabItem tabItem) {
+                    tabItem.IsSelected = true;
+                    return true;
+                }
+                
+                // Expander toggle
+                if (fe is Expander expander) {
+                    expander.IsExpanded = !expander.IsExpanded;
+                    return true;
+                }
+                
+                // Fallback: try to focus the element
+                return fe.Focus();
+            } catch {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Attempts to open a dual-role group (ComboBox, ContextMenu).
+        /// </summary>
+        private bool TryOpenGroup(FrameworkElement fe)
+        {
+            try {
+                if (fe is ComboBox comboBox) {
+                    comboBox.IsDropDownOpen = true;
+                    return true;
+                }
+                
+                if (fe is ContextMenu contextMenu) {
+                    contextMenu.IsOpen = true;
+                    return true;
+                }
+                
+                // Menu is a bit more complex - need to open the first MenuItem
+                if (fe is Menu menu) {
+                    // Try to find and open the first menu item
+                    var firstItem = menu.Items.OfType<MenuItem>().FirstOrDefault();
+                    if (firstItem != null) {
+                        firstItem.IsSubmenuOpen = true;
+                        return true;
+                    }
+                }
+            } catch { }
+            
+            return false;
+        }
+
+        /// <summary>
+        /// Closes this group if it's a dual-role group.
+        /// Returns true if successfully closed, false otherwise.
+        /// </summary>
+        public bool Close()
+        {
+            if (!IsGroup || !IsDualRoleGroup) {
+                return false; // Not a closeable group
+            }
+
+            if (!TryGetVisual(out var fe)) {
+                return false;
+            }
+
+            try {
+                if (fe is ComboBox comboBox) {
+                    comboBox.IsDropDownOpen = false;
+                    return true;
+                }
+                
+                if (fe is ContextMenu contextMenu) {
+                    contextMenu.IsOpen = false;
+                    return true;
+                }
+                
+                if (fe is Menu menu) {
+                    // Close all open menu items
+                    foreach (MenuItem item in menu.Items.OfType<MenuItem>()) {
+                        item.IsSubmenuOpen = false;
+                    }
+                    return true;
+                }
+            } catch { }
+
+            return false;
+        }
 
         public override string ToString()
         {

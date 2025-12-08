@@ -6,10 +6,15 @@ using System.Windows.Media;
 using System.Windows.Shapes;
 
 namespace AcManager.UiObserver {
-    // Lightweight topmost transparent overlay that draws a list of rectangles (in device-independent pixels DIP).
-    // This is a debug visualization tool: show once, then clear. No continuous updates needed.
+    /// <summary>
+    /// Persistent topmost transparent overlay for navigation feedback.
+    /// - Always shows the focused node with a highlighted rectangle
+    /// - Can toggle debug mode to show all navigable elements
+    /// </summary>
     internal class HighlightOverlay : Window {
         private readonly Canvas _canvas;
+        private Rectangle _focusRect;
+        private readonly List<Shape> _debugShapes = new List<Shape>();
 
         public HighlightOverlay() {
             AllowsTransparency = true;
@@ -35,6 +40,16 @@ namespace AcManager.UiObserver {
 
             _canvas = new Canvas { IsHitTestVisible = false, Background = Brushes.Transparent };
             Content = _canvas;
+
+            // Create the persistent focus rectangle (initially hidden)
+            _focusRect = new Rectangle {
+                Stroke = new SolidColorBrush(Color.FromArgb(255, 0, 120, 215)), // Windows blue
+                StrokeThickness = 3,
+                Fill = Brushes.Transparent,
+                IsHitTestVisible = false,
+                Visibility = Visibility.Collapsed
+            };
+            _canvas.Children.Add(_focusRect);
         }
 
         // Convert system virtual screen values (usually in device pixels) to DIP and assign to window bounds.
@@ -67,22 +82,51 @@ namespace AcManager.UiObserver {
         }
 
         /// <summary>
-        /// Shows rectangles for debug visualization. This is a one-time snapshot.
+        /// Shows the focused node rectangle at the specified position.
+        /// </summary>
+        /// <param name="rectDip">Rectangle in DIP coordinates for the focused node</param>
+        public void ShowFocusRect(Rect rectDip) {
+            // Ensure overlay is shown and positioned correctly
+            EnsureVisible();
+
+            // Skip degenerate rects
+            if (double.IsNaN(rectDip.Width) || double.IsNaN(rectDip.Height) || 
+                rectDip.Width < 1.0 || rectDip.Height < 1.0) {
+                HideFocusRect();
+                return;
+            }
+
+            _focusRect.Width = rectDip.Width;
+            _focusRect.Height = rectDip.Height;
+            Canvas.SetLeft(_focusRect, rectDip.Left - Left);
+            Canvas.SetTop(_focusRect, rectDip.Top - Top);
+            _focusRect.Visibility = Visibility.Visible;
+        }
+
+        /// <summary>
+        /// Hides the focused node rectangle.
+        /// </summary>
+        public void HideFocusRect() {
+            _focusRect.Visibility = Visibility.Collapsed;
+            
+            // If no debug shapes are shown, hide the overlay window
+            if (_debugShapes.Count == 0) {
+                try { if (IsVisible) Hide(); } catch { }
+            }
+        }
+
+        /// <summary>
+        /// Shows debug rectangles for all navigable elements.
         /// leafRectsInDip: leaf rectangles in DIP (Orange, inset by 2px to be visible inside groups)
         /// groupRectsInDip: group rectangles in DIP (Gray, full size)
         /// </summary>
-        public void ShowRects(IEnumerable<Rect> leafRectsInDip, IEnumerable<Rect> groupRectsInDip = null) {
-            _canvas.Children.Clear();
+        public void ShowDebugRects(IEnumerable<Rect> leafRectsInDip, IEnumerable<Rect> groupRectsInDip = null) {
+            // Clear any existing debug shapes
+            ClearDebugRects();
 
             // Ensure overlay covers virtual screen in DIP coordinates
             SetWindowToVirtualScreenInDip();
-
-            // If possible, keep Owner set to main window so overlay inherits the same DPI context
-            try {
-                if (Application.Current?.MainWindow != null) Owner = Application.Current.MainWindow;
-            } catch { }
-
-            bool hasAny = false;
+            EnsureVisible();
 
             // Draw leaf elements in Orange with 2px inset so they're visible inside group boundaries
             if (leafRectsInDip != null) {
@@ -111,11 +155,10 @@ namespace AcManager.UiObserver {
                         Fill = Brushes.Transparent,
                         IsHitTestVisible = false
                     };
-                    // Position using inset coordinates
                     Canvas.SetLeft(shape, insetRect.Left - Left);
                     Canvas.SetTop(shape, insetRect.Top - Top);
                     _canvas.Children.Add(shape);
-                    hasAny = true;
+                    _debugShapes.Add(shape);
                 }
             }
             
@@ -134,28 +177,54 @@ namespace AcManager.UiObserver {
                         Fill = Brushes.Transparent,
                         IsHitTestVisible = false
                     };
-                    // rectDip is already in DIP; Left/Top are set in DIP as well
                     Canvas.SetLeft(shape, rectDip.Left - Left);
                     Canvas.SetTop(shape, rectDip.Top - Top);
                     _canvas.Children.Add(shape);
-                    hasAny = true;
+                    _debugShapes.Add(shape);
                 }
             }
+        }
 
-            if (!hasAny) {
-                if (IsVisible) Hide();
-                return;
+        /// <summary>
+        /// Clears all debug rectangles (keeps focus rectangle visible if shown).
+        /// </summary>
+        public void ClearDebugRects() {
+            foreach (var shape in _debugShapes) {
+                _canvas.Children.Remove(shape);
             }
+            _debugShapes.Clear();
+            
+            // If no focus rect is shown, hide the overlay
+            if (_focusRect.Visibility == Visibility.Collapsed) {
+                try { if (IsVisible) Hide(); } catch { }
+            }
+        }
 
+        /// <summary>
+        /// Ensures the overlay window is visible.
+        /// </summary>
+        private void EnsureVisible() {
             try {
                 Topmost = true;
                 if (!IsVisible) Show();
             } catch { }
         }
 
+        /// <summary>
+        /// Legacy method for backward compatibility - shows debug rects.
+        /// </summary>
+        [Obsolete("Use ShowDebugRects instead")]
+        public void ShowRects(IEnumerable<Rect> leafRectsInDip, IEnumerable<Rect> groupRectsInDip = null) {
+            ShowDebugRects(leafRectsInDip, groupRectsInDip);
+        }
+
+        /// <summary>
+        /// Legacy method for backward compatibility - clears debug rects and hides focus rect.
+        /// </summary>
+        [Obsolete("Use ClearDebugRects or HideFocusRect instead")]
         public void HideOverlay() {
-            _canvas.Children.Clear();
-            try { if (IsVisible) Hide(); } catch { }
+            ClearDebugRects();
+            HideFocusRect();
         }
     }
 }
