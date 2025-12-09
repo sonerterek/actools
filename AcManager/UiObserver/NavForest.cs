@@ -31,9 +31,6 @@ namespace AcManager.UiObserver {
         // Track NavNodes by their FrameworkElement (TRUE source of truth)
         private static readonly ConcurrentDictionary<FrameworkElement, NavNode> _nodesByElement = new ConcurrentDictionary<FrameworkElement, NavNode>();
         
-        // Track NavNodes by their HierarchicalPath for efficient lookups (secondary index)
-        private static readonly ConcurrentDictionary<string, NavNode> _nodesByPath = new ConcurrentDictionary<string, NavNode>();
-        
         // Map each PresentationSource to its NavTree root element
         private static readonly ConcurrentDictionary<PresentationSource, FrameworkElement> _presentationSourceRoots = 
             new ConcurrentDictionary<PresentationSource, FrameworkElement>();
@@ -209,24 +206,11 @@ namespace AcManager.UiObserver {
                 var navNode = NavNode.CreateNavNode(fe);
                 if (navNode != null) {
                     if (_nodesByElement.TryAdd(fe, navNode)) {
-                        // Build HierarchicalId from visual tree
-                        navNode.HierarchicalId = BuildHierarchicalId(fe);
+                        // Compute HierarchicalPath from full visual tree (for PathFilter)
+                        navNode.HierarchicalPath = ComputeHierarchicalPath(fe);
                         
-                        // Add to path-based index with collision detection
-                        if (!_nodesByPath.TryAdd(navNode.HierarchicalPath, navNode)) {
-                            // COLLISION DETECTED! This should never happen if HierarchicalPath is truly unique.
-                            var existing = _nodesByPath[navNode.HierarchicalPath];
-                            Debug.Assert(false, 
-                                $"HierarchicalPath COLLISION:\n" +
-                                $"  Path: {navNode.HierarchicalPath}\n" +
-                                $"  New node: {fe.GetType().Name} (HashCode: {fe.GetHashCode()})\n" +
-                                $"  Existing node: {(existing.TryGetVisual(out var existingFe) ? existingFe.GetType().Name : "DEAD")} " +
-                                $"(HashCode: {(existing.TryGetVisual(out var existingFe2) ? existingFe2.GetHashCode().ToString() : "N/A")})\n" +
-                                $"This indicates HierarchicalPath is not unique!");
-                            
-                            // In release mode, overwrite with new node (last one wins)
-                            _nodesByPath[navNode.HierarchicalPath] = navNode;
-                        }
+                        // Build Parent/Children relationships
+                        LinkToParent(navNode, fe);
                         
                         if (_rootIndex.TryGetValue(navTreeRoot, out var elementSet)) {
                             lock (elementSet) {
@@ -247,44 +231,67 @@ namespace AcManager.UiObserver {
         }
 
         /// <summary>
-        /// Builds HierarchicalId by walking up the FULL visual tree to the root.
-        /// Returns array of "Name:Type" strings from root to this element.
-        /// Format: ["WindowName:Window", "PanelName:StackPanel", "ButtonName:Button"]
-        /// 
-        /// IMPORTANT: This includes ALL FrameworkElements in the path, not just those with NavNodes.
-        /// This ensures truly unique paths even during initial discovery.
+        /// Links a newly-created NavNode to its parent in the navigation tree.
+        /// Walks up the visual tree to find the first parent NavNode and establishes bidirectional link.
         /// </summary>
-        private static string[] BuildHierarchicalId(FrameworkElement fe) {
-            var ids = new List<string>();
-            
+        /// <param name="childNode">The newly-created NavNode to link</param>
+        /// <param name="childFe">The FrameworkElement for the child node</param>
+        private static void LinkToParent(NavNode childNode, FrameworkElement childFe) {
+            if (childNode == null || childFe == null) return;
+
             try {
-                DependencyObject current = fe;
+                DependencyObject current = childFe;
                 
-                // Walk up the ENTIRE visual tree, not just NavNode parents
+                // Walk up visual tree to find first parent NavNode
                 while (current != null) {
-                    if (current is FrameworkElement currentFe) {
-                        // Add every FrameworkElement to the path, regardless of whether it has a NavNode
-                        var name = string.IsNullOrEmpty(currentFe.Name) ? "(unnamed)" : currentFe.Name;
-                        var type = currentFe.GetType().Name;
-                        ids.Insert(0, $"{name}:{type}");
-                    }
-                    
                     try {
                         current = VisualTreeHelper.GetParent(current);
                     } catch {
                         break;
                     }
+
+                    if (current is FrameworkElement parentFe && _nodesByElement.TryGetValue(parentFe, out var parentNode)) {
+                        // Found parent NavNode - establish bidirectional link
+                        childNode.Parent = new WeakReference<NavNode>(parentNode);
+                        parentNode.Children.Add(new WeakReference<NavNode>(childNode));
+                        
+                        Debug.WriteLine($"[NavForest] Linked {childNode.SimpleName} -> parent: {parentNode.SimpleName}");
+                        return;
+                    }
                 }
-            } catch { }
-            
-            // If visual tree walk failed completely, use this element's Name:Type
-            if (ids.Count == 0) {
-                var name = string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name;
-                var type = fe.GetType().Name;
-                ids.Add($"{name}:{type}");
+                
+                // No parent found - this is a root node
+                Debug.WriteLine($"[NavForest] Root node: {childNode.SimpleName} (no parent)");
+            } catch (Exception ex) {
+                Debug.WriteLine($"[NavForest] Error linking parent for {childNode.SimpleName}: {ex.Message}");
             }
-            
-            return ids.ToArray();
+        }
+
+        /// <summary>
+        /// Unlinks a NavNode from its parent and children before removal.
+        /// Cleans up bidirectional references to prevent memory leaks.
+        /// </summary>
+        /// <param name="node">The NavNode to unlink</param>
+        private static void UnlinkNode(NavNode node) {
+            if (node == null) return;
+
+            try {
+                // Remove from parent's children list
+                if (node.Parent != null && node.Parent.TryGetTarget(out var parent)) {
+                    parent.Children.RemoveAll(wr => {
+                        if (!wr.TryGetTarget(out var child)) return true; // Dead reference
+                        return ReferenceEquals(child, node);
+                    });
+                }
+
+                // Clear node's parent reference
+                node.Parent = null;
+
+                // Clear node's children list (they'll update their own parents as needed)
+                node.Children.Clear();
+            } catch (Exception ex) {
+                Debug.WriteLine($"[NavForest] Error unlinking {node.SimpleName}: {ex.Message}");
+            }
         }
 
         private static void AttachSubtreeChangeHandlers(FrameworkElement fe) {
@@ -459,6 +466,9 @@ namespace AcManager.UiObserver {
             if (_rootIndex.TryRemove(root, out var set)) {
                 foreach (var fe in set) {
                     if (_nodesByElement.TryRemove(fe, out var node)) {
+                        // ? NEW: Clean up Parent/Children links
+                        UnlinkNode(node);
+                        
                         // Handle modal tracking for removed node
                         HandleRemovedNodeModalTracking(node);
                         
@@ -522,8 +532,8 @@ namespace AcManager.UiObserver {
                     foreach (var oldFe in old) {
                         if (!newElements.Contains(oldFe)) {
                             if (_nodesByElement.TryRemove(oldFe, out var oldNode)) {
-                                // Remove from path-based index
-                                _nodesByPath.TryRemove(oldNode.HierarchicalPath, out var _);
+                                // Clean up Parent/Children links
+                                UnlinkNode(oldNode);
                                 
                                 // Handle modal tracking for removed node
                                 HandleRemovedNodeModalTracking(oldNode);
@@ -565,7 +575,7 @@ namespace AcManager.UiObserver {
                         
                         bool isOwnPresentationSourceRoot = false;
                         try {
-                            isOwnPresentationSourceRoot = object.ReferenceEquals(psFe.RootVisual, fe);
+                          isOwnPresentationSourceRoot = object.ReferenceEquals(psFe.RootVisual, fe);
                         } catch { }
                         
                         if (psRoot != null && !object.ReferenceEquals(psFe, psRoot)) {
@@ -585,22 +595,11 @@ namespace AcManager.UiObserver {
                         _nodesByElement.AddOrUpdate(fe, navNode, (k, old) => navNode);
                         discoveredElements.Add(fe);
                         
-                        // Build HierarchicalId from visual tree
-                        navNode.HierarchicalId = BuildHierarchicalId(fe);
+                        // Compute HierarchicalPath from full visual tree (for PathFilter)
+                        navNode.HierarchicalPath = ComputeHierarchicalPath(fe);
                         
-                        // Update path-based index with collision detection
-                        _nodesByPath.AddOrUpdate(navNode.HierarchicalPath, navNode, (k, old) => {
-                            // Collision during update - check if it's the same element
-                            if (old != null && old.TryGetVisual(out var oldFe) && !ReferenceEquals(oldFe, fe)) {
-                                Debug.Assert(false,
-                                    $"HierarchicalPath COLLISION during SyncRoot:\n" +
-                                    $"  Path: {navNode.HierarchicalPath}\n" +
-                                    $"  New node: {fe.GetType().Name} (HashCode: {fe.GetHashCode()})\n" +
-                                    $"  Old node: {oldFe.GetType().Name} (HashCode: {oldFe.GetHashCode()})\n" +
-                                    $"This indicates HierarchicalPath is not unique!");
-                            }
-                            return navNode; // Replace with new
-                        });
+                        // Build Parent/Children relationships
+                        LinkToParent(navNode, fe);
                         
                         if (isNewNode) {
                             try { NavNodeAdded?.Invoke(navNode); } catch { }
@@ -686,21 +685,6 @@ namespace AcManager.UiObserver {
         public static bool TryGetNavNode(FrameworkElement fe, out NavNode node) {
             if (fe != null) {
                 return _nodesByElement.TryGetValue(fe, out node);
-            }
-            node = null;
-            return false;
-        }
-
-        /// <summary>
-        /// Tries to get an already-discovered NavNode by its HierarchicalPath.
-        /// This is the UNIQUE identifier for nodes (unlike SimpleName which can collide).
-        /// </summary>
-        /// <param name="hierarchicalPath">The HierarchicalPath to look up (e.g. "Window1/TabControl/Button")</param>
-        /// <param name="node">The discovered NavNode if found</param>
-        /// <returns>True if a NavNode was found for this path, false otherwise</returns>
-        public static bool TryGetNavNodeByPath(string hierarchicalPath, out NavNode node) {
-            if (!string.IsNullOrEmpty(hierarchicalPath)) {
-                return _nodesByPath.TryGetValue(hierarchicalPath, out node);
             }
             node = null;
             return false;
@@ -848,6 +832,49 @@ namespace AcManager.UiObserver {
             } catch (Exception ex) {
                 Debug.WriteLine($"[NavForest] Error handling removal of {node.SimpleName}: {ex.Message}");
             }
+        }
+
+        #endregion
+
+        #region Computed HierarchicalPath
+
+        /// <summary>
+        /// Computes the HierarchicalPath by walking up the FULL visual tree to the root.
+        /// Returns a string in format: "WindowName:Window > PanelName:StackPanel > ButtonName:Button"
+        /// 
+        /// IMPORTANT: This includes ALL FrameworkElements in the path, not just those with NavNodes.
+        /// Used by PathFilter for pattern matching and as unique identifier for logging.
+        /// </summary>
+        private static string ComputeHierarchicalPath(FrameworkElement fe) {
+            var segments = new List<string>();
+            
+            try {
+                DependencyObject current = fe;
+                
+                // Walk up the ENTIRE visual tree
+                while (current != null) {
+                    if (current is FrameworkElement currentFe) {
+                        var name = string.IsNullOrEmpty(currentFe.Name) ? "(unnamed)" : currentFe.Name;
+                        var type = currentFe.GetType().Name;
+                        segments.Insert(0, $"{name}:{type}");
+                    }
+                    
+                    try {
+                        current = VisualTreeHelper.GetParent(current);
+                    } catch {
+                        break;
+                    }
+                }
+            } catch { }
+            
+            // If visual tree walk failed completely, use this element's Name:Type
+            if (segments.Count == 0) {
+                var name = string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name;
+                var type = fe.GetType().Name;
+                segments.Add($"{name}:{type}");
+            }
+            
+            return string.Join(" > ", segments);
         }
 
         #endregion

@@ -545,20 +545,27 @@ namespace AcManager.UiObserver
         public string SimpleName { get; }
 
         /// <summary>
-        /// Hierarchical identifier as an array of SimpleNames from root to this node.
-        /// Example: ["Window1", "TabControl", "TabItem", "Button"]
-        /// Set by NavForest during discovery. Enables O(depth) ancestor checking.
-        /// This is the TRUE unique identifier for the node.
+        /// Full hierarchical path from root to this element.
+        /// Format: "WindowName:Window > PanelName:StackPanel > ButtonName:Button"
+        /// 
+        /// Used by PathFilter for pattern matching and as unique identifier.
+        /// Computed once during creation from the full visual tree.
         /// </summary>
-        public string[] HierarchicalId { get; internal set; }
-        
+        public string HierarchicalPath { get; internal set; }
+
         /// <summary>
-        /// String representation of HierarchicalId for use as dictionary key.
-        /// Format: "Window1/TabControl/TabItem/Button"
+        /// Parent node in the navigation tree.
+        /// Null if this is a root node (Window/PresentationSource root).
+        /// Set by NavForest during discovery.
         /// </summary>
-        public string HierarchicalPath => HierarchicalId != null && HierarchicalId.Length > 0
-            ? string.Join("/", HierarchicalId)
-            : SimpleName;
+        public WeakReference<NavNode> Parent { get; internal set; }
+
+        /// <summary>
+        /// Child nodes in the navigation tree.
+        /// Empty list if this is a leaf node.
+        /// Updated by NavForest as children are discovered.
+        /// </summary>
+        public List<WeakReference<NavNode>> Children { get; } = new List<WeakReference<NavNode>>();
 
         /// <summary>
         /// Whether this node is a group (can contain children) or a leaf (navigation target).
@@ -596,8 +603,8 @@ namespace AcManager.UiObserver
             IsDualRoleGroup = isDualRoleGroup;
             IsModal = isModal;
 
-            // HierarchicalId will be set by NavForest during discovery
-            HierarchicalId = new[] { simpleName };
+            // HierarchicalPath will be set by NavForest during discovery
+            HierarchicalPath = simpleName; // Temporary default until NavForest sets the full path
         }
 
         public bool TryGetVisual(out FrameworkElement fe)

@@ -36,15 +36,15 @@ namespace AcManager.UiObserver
 		// Modal stack - managed via NavForest events
 		private static readonly List<NavNode> _activeModalStack = new List<NavNode>();
 		
-		// Focus management (store HierarchicalPath, not SimpleName!)
-		private static string _focusedNodePath;
+		// Focus management - store the actual NavNode, not the path!
+		private static NavNode _focusedNode;
 		
 		// Focus lock to prevent feedback loops
 		private static bool _suppressFocusTracking = false;
 
 		// Events
 		public static event Action NavMapUpdated;
-		public static event Action<string, string> FocusChanged; // (oldPath, newPath)
+		public static event Action<NavNode, NavNode> FocusChanged; // (oldNode, newNode)
 
 		// Highlighting overlay
 		private static HighlightOverlay _overlay;
@@ -137,12 +137,12 @@ namespace AcManager.UiObserver
 			
 			Debug.WriteLine($"[NavMapper] Node removed: {node.SimpleName} @ {node.HierarchicalPath}");
 			
-			if (_focusedNodePath == node.HierarchicalPath) {
-				_focusedNodePath = null;
+			if (ReferenceEquals(_focusedNode, node)) {
+				_focusedNode = null;
 				_overlay?.HideFocusRect();
 			}
 			
-			_activeModalStack.RemoveAll(n => n.HierarchicalPath == node.HierarchicalPath);
+			_activeModalStack.RemoveAll(n => ReferenceEquals(n, node));
 			
 			try { NavMapUpdated?.Invoke(); } catch { }
 		}
@@ -166,11 +166,9 @@ namespace AcManager.UiObserver
 			Debug.WriteLine($"[NavMapper] Modal stack depth: {_activeModalStack.Count}");
 			
 			// Clear focus if outside modal scope
-			if (_focusedNodePath != null && NavForest.TryGetNavNodeByPath(_focusedNodePath, out var focusedNode)) {
-				if (!IsInActiveModalScope(focusedNode)) {
-					_focusedNodePath = null;
-					_overlay?.HideFocusRect();
-				}
+			if (_focusedNode != null && !IsInActiveModalScope(_focusedNode)) {
+				_focusedNode = null;
+				_overlay?.HideFocusRect();
 			}
 		}
 
@@ -200,15 +198,14 @@ namespace AcManager.UiObserver
 
 		public static bool MoveInDirection(NavDirection dir)
 		{
-			if (string.IsNullOrEmpty(_focusedNodePath)) return false;
-			if (!NavForest.TryGetNavNodeByPath(_focusedNodePath, out var current)) return false;
+			if (_focusedNode == null) return false;
 
-			var best = FindBestCandidateInDirection(current, dir);
+			var best = FindBestCandidateInDirection(_focusedNode, dir);
 			if (best == null) return false;
 
 			_suppressFocusTracking = true;
 			try {
-				return SetFocus(best.HierarchicalPath);
+				return SetFocus(best);
 			} finally {
 				Application.Current?.Dispatcher.BeginInvoke(new Action(() => {
 					_suppressFocusTracking = false;
@@ -218,12 +215,11 @@ namespace AcManager.UiObserver
 
 		public static bool ActivateFocusedNode()
 		{
-			if (string.IsNullOrEmpty(_focusedNodePath)) return false;
-			if (!NavForest.TryGetNavNodeByPath(_focusedNodePath, out var node)) return false;
+			if (_focusedNode == null) return false;
 
 			_suppressFocusTracking = true;
 			try {
-				return node.Activate();
+				return _focusedNode.Activate();
 			} finally {
 				Application.Current?.Dispatcher.BeginInvoke(new Action(() => {
 					_suppressFocusTracking = false;
@@ -242,12 +238,18 @@ namespace AcManager.UiObserver
 		public static bool FocusNodeByPath(string hierarchicalPath)
 		{
 			if (string.IsNullOrEmpty(hierarchicalPath)) return false;
-			if (!NavForest.TryGetNavNodeByPath(hierarchicalPath, out var node)) return false;
+			
+			// Find node by iterating all nodes and checking HierarchicalPath
+			var node = NavForest.GetAllNavNodes().FirstOrDefault(n => n.HierarchicalPath == hierarchicalPath);
+			if (node == null) return false;
 			if (!IsNavigableForSelection(node)) return false;
-			return SetFocus(hierarchicalPath);
+			
+			return SetFocus(node);
 		}
 
-		public static string GetFocusedNodePath() => _focusedNodePath;
+		public static string GetFocusedNodePath() => _focusedNode?.HierarchicalPath;
+		
+		public static NavNode GetFocusedNode() => _focusedNode;
 		
 		public static NavNode GetActiveModal() => 
 			_activeModalStack.Count > 0 ? _activeModalStack[_activeModalStack.Count - 1] : null;
@@ -256,24 +258,25 @@ namespace AcManager.UiObserver
 			_activeModalStack.Select(n => n.HierarchicalPath).ToList();
 		// === FOCUS MANAGEMENT ===
 
-		private static bool SetFocus(string nodePath)
+		private static bool SetFocus(NavNode newNode)
 		{
-			if (_focusedNodePath == nodePath) return true;
+			if (ReferenceEquals(_focusedNode, newNode)) return true;
 
-			var oldPath = _focusedNodePath;
+			var oldNode = _focusedNode;
 			
-			if (!string.IsNullOrEmpty(oldPath) && NavForest.TryGetNavNodeByPath(oldPath, out var oldNode)) {
+			if (oldNode != null) {
 				oldNode.HasFocus = false;
 			}
 
-			if (NavForest.TryGetNavNodeByPath(nodePath, out var newNode)) {
+			if (newNode != null) {
 				newNode.HasFocus = true;
-				_focusedNodePath = nodePath;
+				_focusedNode = newNode;
 				UpdateFocusRect(newNode);
-				try { FocusChanged?.Invoke(oldPath, nodePath); } catch { }
+				try { FocusChanged?.Invoke(oldNode, newNode); } catch { }
 				return true;
 			}
 
+			_focusedNode = null;
 			return false;
 		}
 
@@ -405,13 +408,16 @@ namespace AcManager.UiObserver
 		private static bool IsDescendantOf(NavNode child, NavNode ancestor)
 		{
 			if (child == null || ancestor == null) return false;
-			if (child.HierarchicalId == null || ancestor.HierarchicalId == null) return false;
-			if (ancestor.HierarchicalId.Length >= child.HierarchicalId.Length) return false;
 			
-			for (int i = 0; i < ancestor.HierarchicalId.Length; i++) {
-				if (child.HierarchicalId[i] != ancestor.HierarchicalId[i]) return false;
+			// Walk up the Parent chain to see if we find the ancestor
+			var current = child.Parent;
+			while (current != null && current.TryGetTarget(out var parentNode))
+			{
+				if (ReferenceEquals(parentNode, ancestor)) return true;
+				current = parentNode.Parent;
 			}
-			return true;
+			
+			return false;
 		}
 
 		private static bool IsInActiveModalScope(NavNode node)
@@ -453,30 +459,33 @@ namespace AcManager.UiObserver
 
 		private static NavNode FindClosestNonModalGroup(NavNode node)
 		{
-			if (node == null || node.HierarchicalId == null || node.HierarchicalId.Length <= 1)
-				return null;
+			if (node == null) return null;
 
-			for (int i = node.HierarchicalId.Length - 2; i >= 0; i--) {
-				// Build the ancestor's HierarchicalPath from the HierarchicalId array
-				var ancestorPath = string.Join(" > ", node.HierarchicalId.Take(i + 1));
-				
-				if (NavForest.TryGetNavNodeByPath(ancestorPath, out var ancestorNode) && ancestorNode.IsGroup) {
-					if (ancestorNode.IsModal) return null;
-					return ancestorNode;
+			// Walk up the Parent chain to find first non-modal group
+			var current = node.Parent;
+			while (current != null && current.TryGetTarget(out var parentNode))
+			{
+				if (parentNode.IsGroup)
+				{
+					if (parentNode.IsModal) return null; // Hit modal boundary
+					return parentNode; // Found non-modal group
 				}
+				current = parentNode.Parent;
 			}
+			
 			return null;
 		}
 
 		private static bool HaveSameImmediateParent(NavNode a, NavNode b)
 		{
 			if (a == null || b == null) return false;
-			if (a.HierarchicalId == null || b.HierarchicalId == null) return false;
-			if (a.HierarchicalId.Length <= 1 || b.HierarchicalId.Length <= 1) return false;
+			if (a.Parent == null || b.Parent == null) return false;
 			
-			var aParentId = a.HierarchicalId[a.HierarchicalId.Length - 2];
-			var bParentId = b.HierarchicalId[b.HierarchicalId.Length - 2];
-			return aParentId == bParentId;
+			// Check if both have same parent (reference equality)
+			if (!a.Parent.TryGetTarget(out var aParent)) return false;
+			if (!b.Parent.TryGetTarget(out var bParent)) return false;
+			
+			return ReferenceEquals(aParent, bParent);
 		}
 
 		private static bool IsTrulyVisible(FrameworkElement fe)
@@ -548,12 +557,313 @@ namespace AcManager.UiObserver
 				if (content != null) NavForest.RegisterRoot(content);
 			}
 			
-			if (!string.IsNullOrEmpty(_focusedNodePath) && NavForest.TryGetNavNodeByPath(_focusedNodePath, out var focusedNode)) {
-				UpdateFocusRect(focusedNode);
+			if (_focusedNode != null) {
+				UpdateFocusRect(_focusedNode);
 			}
 		}
 
 		// === DEBUG VISUALIZATION ===
+
+		/// <summary>
+		/// Validates the consistency of all NavNodes in the forest.
+		/// Checks:
+		/// 1. Visual element is still alive and accessible
+		/// 2. Parent reference matches actual visual tree parent
+		/// 3. Children list internal consistency (no duplicates, dead refs, parent back-links)
+		/// 4. Cross-check: All NavNodes in visual subtree are reachable through tree structure
+		/// </summary>
+		private static void ValidateNodeConsistency()
+		{
+			Debug.WriteLine("\n========== NavNode Consistency Check ==========");
+			
+			var allNodes = NavForest.GetAllNavNodes().ToList();
+			Debug.WriteLine($"Total nodes to validate: {allNodes.Count}");
+			
+			int deadVisuals = 0;
+			int parentMismatches = 0;
+			int childConsistencyErrors = 0;
+			int orphanedNodes = 0;
+			int circularRefs = 0;
+			
+			foreach (var node in allNodes)
+			{
+				// Check 1: Visual element is alive
+				if (!node.TryGetVisual(out var fe))
+				{
+					deadVisuals++;
+					Debug.WriteLine($"  ? DEAD VISUAL: {node.SimpleName}");
+					Debug.WriteLine($"     Path: {node.HierarchicalPath}");
+					continue;
+				}
+				
+				// Get rectangle bounds for debug output
+				Rect? bounds = null;
+				try
+				{
+					var topLeft = fe.PointToScreen(new Point(0, 0));
+					var bottomRight = fe.PointToScreen(new Point(fe.ActualWidth, fe.ActualHeight));
+					
+					var ps = PresentationSource.FromVisual(fe);
+					if (ps?.CompositionTarget != null)
+					{
+						var transform = ps.CompositionTarget.TransformFromDevice;
+						topLeft = transform.Transform(topLeft);
+						bottomRight = transform.Transform(bottomRight);
+					}
+					
+					bounds = new Rect(
+						new Point(Math.Min(topLeft.X, bottomRight.X), Math.Min(topLeft.Y, bottomRight.Y)),
+						new Point(Math.Max(topLeft.X, bottomRight.X), Math.Max(topLeft.Y, bottomRight.Y))
+					);
+				}
+				catch { }
+				
+				// Check 2: Parent reference matches visual tree
+				if (node.Parent != null && node.Parent.TryGetTarget(out var parentNode))
+				{
+					// Walk up visual tree to find actual parent NavNode
+					NavNode actualParent = null;
+					DependencyObject current = fe;
+					
+					try
+					{
+						while (current != null)
+						{
+							current = VisualTreeHelper.GetParent(current);
+							if (current is FrameworkElement parentFe && NavForest.TryGetNavNode(parentFe, out var candidateParent))
+							{
+								actualParent = candidateParent;
+								break;
+							}
+						}
+					}
+					catch (Exception ex)
+					{
+						Debug.WriteLine($"  ??  ERROR walking visual tree for {node.SimpleName}: {ex.Message}");
+						Debug.WriteLine($"     Path: {node.HierarchicalPath}");
+						if (bounds.HasValue)
+						{
+							Debug.WriteLine($"     Bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
+						}
+					}
+					
+					if (actualParent == null)
+					{
+						parentMismatches++;
+						Debug.WriteLine($"  ? PARENT MISMATCH: {node.SimpleName}");
+						Debug.WriteLine($"     Path: {node.HierarchicalPath}");
+						if (bounds.HasValue)
+						{
+							Debug.WriteLine($"     Bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
+						}
+						Debug.WriteLine($"     Recorded Parent: {parentNode.SimpleName}");
+						Debug.WriteLine($"     Recorded Parent Path: {parentNode.HierarchicalPath}");
+						Debug.WriteLine($"     Actual Parent: NONE (visual tree has no NavNode parent)");
+					}
+					else if (!ReferenceEquals(actualParent, parentNode))
+					{
+						parentMismatches++;
+						Debug.WriteLine($"  ? PARENT MISMATCH: {node.SimpleName}");
+						Debug.WriteLine($"     Path: {node.HierarchicalPath}");
+						if (bounds.HasValue)
+						{
+							Debug.WriteLine($"     Bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
+						}
+						Debug.WriteLine($"     Recorded Parent: {parentNode.SimpleName}");
+						Debug.WriteLine($"     Recorded Parent Path: {parentNode.HierarchicalPath}");
+						Debug.WriteLine($"     Actual Parent: {actualParent.SimpleName}");
+						Debug.WriteLine($"     Actual Parent Path: {actualParent.HierarchicalPath}");
+					}
+				}
+				
+				// Check 3: Children list internal consistency
+				var recordedChildren = new List<NavNode>();
+				var deadChildRefs = 0;
+				var seenChildren = new HashSet<NavNode>();
+				
+				foreach (var childRef in node.Children)
+				{
+					if (!childRef.TryGetTarget(out var child))
+					{
+						deadChildRefs++;
+						continue;
+					}
+					
+					// Check for duplicates
+					if (seenChildren.Contains(child))
+					{
+						childConsistencyErrors++;
+						Debug.WriteLine($"  ? DUPLICATE CHILD: {node.SimpleName}");
+						Debug.WriteLine($"     Path: {node.HierarchicalPath}");
+						if (bounds.HasValue)
+						{
+							Debug.WriteLine($"     Bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
+						}
+						Debug.WriteLine($"     Duplicate child: {child.SimpleName}");
+						Debug.WriteLine($"     Duplicate child path: {child.HierarchicalPath}");
+						continue;
+					}
+					
+					seenChildren.Add(child);
+					recordedChildren.Add(child);
+					
+					// Check if child's Parent points back to this node
+					if (child.Parent == null || !child.Parent.TryGetTarget(out var childParent) || !ReferenceEquals(childParent, node))
+					{
+						childConsistencyErrors++;
+						Debug.WriteLine($"  ? CHILD PARENT MISMATCH: {node.SimpleName}");
+						Debug.WriteLine($"     Path: {node.HierarchicalPath}");
+						if (bounds.HasValue)
+						{
+							Debug.WriteLine($"     Bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
+						}
+						Debug.WriteLine($"     Child: {child.SimpleName}");
+						Debug.WriteLine($"     Child path: {child.HierarchicalPath}");
+						if (child.Parent == null)
+						{
+							Debug.WriteLine($"     Child's Parent: NULL");
+						}
+						else if (!child.Parent.TryGetTarget(out var cp))
+						{
+							Debug.WriteLine($"     Child's Parent: DEAD REFERENCE");
+						}
+						else
+						{
+							Debug.WriteLine($"     Child's Parent: {cp.SimpleName}");
+							Debug.WriteLine($"     Child's Parent path: {cp.HierarchicalPath}");
+						}
+					}
+				}
+				
+				if (deadChildRefs > 0)
+				{
+					childConsistencyErrors++;
+					Debug.WriteLine($"  ? DEAD CHILD REFERENCES: {node.SimpleName}");
+					Debug.WriteLine($"     Path: {node.HierarchicalPath}");
+					if (bounds.HasValue)
+					{
+						Debug.WriteLine($"     Bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
+					}
+					Debug.WriteLine($"     Dead references: {deadChildRefs}");
+				}
+				
+				// Check 4: Cross-check with visual tree - find all NavNode descendants
+				// Walk down visual tree recursively and verify all found NavNodes are reachable through tree structure
+				var visualTreeNavNodes = new HashSet<NavNode>();
+				var stack = new Stack<DependencyObject>();
+				stack.Push(fe);
+				
+				try
+				{
+					while (stack.Count > 0)
+					{
+						var current = stack.Pop();
+						
+						// Skip the node itself
+						if (!ReferenceEquals(current, fe) && current is FrameworkElement childFe && NavForest.TryGetNavNode(childFe, out var foundNode))
+						{
+							visualTreeNavNodes.Add(foundNode);
+						}
+						
+						// Add children to stack
+						try
+						{
+							int childCount = VisualTreeHelper.GetChildrenCount(current);
+							for (int i = 0; i < childCount; i++)
+							{
+								var visualChild = VisualTreeHelper.GetChild(current, i);
+								if (visualChild != null)
+								{
+									stack.Push(visualChild);
+								}
+							}
+						}
+						catch { }
+					}
+				}
+				catch (Exception ex)
+				{
+					Debug.WriteLine($"  ??  ERROR walking visual tree descendants for {node.SimpleName}: {ex.Message}");
+					Debug.WriteLine($"     Path: {node.HierarchicalPath}");
+					if (bounds.HasValue)
+					{
+						Debug.WriteLine($"     Bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
+					}
+				}
+				
+				// Now check if all visual tree NavNodes are reachable through tree structure
+				foreach (var visualNode in visualTreeNavNodes)
+				{
+					// Walk up Parent chain from visualNode - should eventually reach this node
+					bool reachable = false;
+					var ancestor = visualNode.Parent;
+					while (ancestor != null && ancestor.TryGetTarget(out var ancestorNode))
+					{
+						if (ReferenceEquals(ancestorNode, node))
+						{
+							reachable = true;
+							break;
+						}
+						ancestor = ancestorNode.Parent;
+					}
+					
+					if (!reachable)
+					{
+						orphanedNodes++;
+						Debug.WriteLine($"  ? ORPHANED NODE IN VISUAL TREE: {visualNode.SimpleName}");
+						Debug.WriteLine($"     Path: {visualNode.HierarchicalPath}");
+						Debug.WriteLine($"     Found in visual subtree of: {node.SimpleName}");
+						Debug.WriteLine($"     Parent node path: {node.HierarchicalPath}");
+						if (bounds.HasValue)
+						{
+							Debug.WriteLine($"     Parent node bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
+						}
+						Debug.WriteLine($"     But NOT reachable through Parent chain from this node!");
+					}
+				}
+				
+				// Check 5: No circular references
+				var visited = new HashSet<NavNode>();
+				var current2 = node.Parent;
+				while (current2 != null && current2.TryGetTarget(out var ancestor))
+				{
+					if (visited.Contains(ancestor))
+					{
+						circularRefs++;
+						Debug.WriteLine($"  ? CIRCULAR REFERENCE: {node.SimpleName} has circular parent chain!");
+						Debug.WriteLine($"     Path: {node.HierarchicalPath}");
+						if (bounds.HasValue)
+						{
+							Debug.WriteLine($"     Bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
+						}
+						Debug.WriteLine($"     Circular ancestor: {ancestor.SimpleName}");
+						Debug.WriteLine($"     Circular ancestor path: {ancestor.HierarchicalPath}");
+						break;
+					}
+					visited.Add(ancestor);
+					current2 = ancestor.Parent;
+				}
+			}
+			
+			Debug.WriteLine($"\n========== Consistency Check Results ==========");
+			Debug.WriteLine($"Total nodes: {allNodes.Count}");
+			Debug.WriteLine($"Dead visuals: {deadVisuals}");
+			Debug.WriteLine($"Parent mismatches: {parentMismatches}");
+			Debug.WriteLine($"Child consistency errors: {childConsistencyErrors} (duplicates, dead refs, back-link errors)");
+			Debug.WriteLine($"Orphaned nodes: {orphanedNodes} (in visual tree but not reachable through Parent chain)");
+			Debug.WriteLine($"Circular references: {circularRefs}");
+			
+			if (deadVisuals == 0 && parentMismatches == 0 && childConsistencyErrors == 0 && orphanedNodes == 0 && circularRefs == 0)
+			{
+				Debug.WriteLine("? All nodes are CONSISTENT with visual tree!");
+			}
+			else
+			{
+				Debug.WriteLine("??  INCONSISTENCIES DETECTED - see details above");
+			}
+			
+			Debug.WriteLine("================================================\n");
+		}
 
 		private static void ToggleHighlighting(bool filterByModalScope)
 		{
@@ -562,6 +872,9 @@ namespace AcManager.UiObserver
 				_debugMode = false;
 				return;
 			}
+
+			// ? CONSISTENCY CHECK BEFORE DISPLAYING
+			ValidateNodeConsistency();
 
 			if (filterByModalScope) {
 				Debug.WriteLine("\n========== NavMapper: Highlight Rectangles (Active Modal Scope ONLY) ==========");
@@ -656,8 +969,11 @@ namespace AcManager.UiObserver
 						// Get hierarchical path for sorting
 						var hierarchicalPath = NavNode.GetHierarchicalPath(fe);
 						
-						// Build formatted debug line
-						var debugLine = $"{typeName,-20} | {elementName,-20} | {nodeType,-18} | {modalTag,-6} | {navigable,-35}{scopeInfo,-15} | {navId,-30} | ({rect.Left,7:F1}, {rect.Top,7:F1}) {rect.Width,6:F1}x{rect.Height,6:F1} | {hierarchicalPath}";
+						// Format bounds as: (X, Y) WxH
+						var boundsStr = $"({rect.Left,7:F1}, {rect.Top,7:F1}) {rect.Width,6:F1}x{rect.Height,6:F1}";
+						
+						// Build formatted debug line with Bounds column
+						var debugLine = $"{typeName,-20} | {elementName,-20} | {nodeType,-18} | {modalTag,-6} | {navigable,-35}{scopeInfo,-15} | {boundsStr,-30} | {navId,-30} | {hierarchicalPath}";
 						
 						allDebugInfo.Add(new DebugRectInfo { 
 							Rect = rect, 
@@ -700,7 +1016,7 @@ namespace AcManager.UiObserver
 			if (filterByModalScope) {
 				Debug.WriteLine("Mode: FILTERED (Ctrl+Shift+F12) - showing only nodes in active modal scope");
 			} else {
-				Debug.WriteLine("Mode: UNFILTERED (Ctrl+Alt+F11) - showing ALL discovered nodes");
+				Debug.WriteLine("Mode: UNFILTERED (Ctrl+Shift+F11) - showing ALL discovered nodes");
 			}
 			Debug.WriteLine("=============================================================\n");
 
@@ -729,6 +1045,12 @@ namespace AcManager.UiObserver
 		// === PUBLIC QUERY API ===
 
 		public static IEnumerable<NavNode> GetAllNavNodes() => NavForest.GetAllNavNodes();
-		public static bool TryGetById(string id, out NavNode nav) => NavForest.TryGetNavNodeByPath(id, out nav);
+		
+		public static bool TryGetById(string id, out NavNode nav)
+		{
+			// Lookup by HierarchicalPath
+			nav = NavForest.GetAllNavNodes().FirstOrDefault(n => n.HierarchicalPath == id);
+			return nav != null;
+		}
 	}
 }
