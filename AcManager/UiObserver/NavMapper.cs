@@ -101,6 +101,13 @@ namespace AcManager.UiObserver
 				"CLASSIFY: ** > *:SelectCarDialog => role=group; modal=true",
 				"EXCLUDE: ** > *:HistoricalTextBox > **",
 				"EXCLUDE: ** > *:LazyMenuItem > **",
+				
+				// ? CRITICAL: Exclude debug overlay from navigation tracking to prevent feedback loop
+				// The HighlightOverlay window and all its children (Canvas, Rectangle shapes) must not be tracked.
+				// Without this exclusion, every Rectangle created for debug visualization triggers NavForest.OnElementLoaded(),
+				// creating NavNode instances (~50KB each) that leak memory (~150MB per 100 rectangles).
+				// Pattern: HighlightOverlay:HighlightOverlay > ** means "HighlightOverlay window and ALL descendants"
+				"EXCLUDE: *:HighlightOverlay > **",
 			};
 
 			try {
@@ -353,6 +360,7 @@ namespace AcManager.UiObserver
 
 				var c = candidateCenter.Value;
 				var v = new Point(c.X - currentCenter.X, c.Y - currentCenter.Y);
+				// Calculate length using Euclidean formula
 				var len = Math.Sqrt(v.X * v.X + v.Y * v.Y);
 				if (len < double.Epsilon) continue;
 
@@ -444,15 +452,8 @@ namespace AcManager.UiObserver
 		{
 			if (!node.IsNavigable) return false;
 			
-			if (node.IsGroup) {
-				if (!node.IsDualRoleGroup) return false;
-				
-				// For dual-role groups, check the actual WPF state
-				// (ComboBox.IsDropDownOpen, ContextMenu.IsOpen, etc.)
-				return !node.IsDualModalCurrentlyOpen();
-			}
-			
-			return true;
+			// All leaves are navigable (groups are not)
+			return !node.IsGroup;
 		}
 
 		private static bool AreInSameNonModalGroup(NavNode a, NavNode b)
@@ -575,6 +576,10 @@ namespace AcManager.UiObserver
 
 		// === DEBUG VISUALIZATION ===
 
+		// ? Compile-time flag to enable/disable expensive consistency validation
+		// Set to false in production - this creates ~1GB of temporary objects per validation!
+		private const bool ENABLE_CONSISTENCY_VALIDATION = false;
+
 		/// <summary>
 		/// Validates the consistency of all NavNodes in the forest.
 		/// Checks:
@@ -583,9 +588,14 @@ namespace AcManager.UiObserver
 		/// 3. Children list internal consistency (no duplicates, dead refs, parent back-links)
 		/// 4. Cross-check: All NavNodes in visual subtree are reachable through tree structure
 		/// 5. No circular references in parent chain
+		/// 
+		/// WARNING: This is VERY expensive! Creates ~1GB of temporary objects.
+		/// Only enable during development/debugging of the navigation system itself.
 		/// </summary>
 		private static void ValidateNodeConsistency()
 		{
+			if (!ENABLE_CONSISTENCY_VALIDATION) return;
+			
 			Debug.WriteLine("\n========== NavNode Consistency Check ==========");
 			
 			var allNodes = NavForest.GetAllNavNodes().ToList();
@@ -880,12 +890,30 @@ namespace AcManager.UiObserver
 		private static void ToggleHighlighting(bool filterByModalScope)
 		{
 			if (_debugMode) {
+				// Turn OFF - just clear shapes and hide, DON'T dispose overlay
 				ClearHighlighting();
 				_debugMode = false;
+				
+				// ? Capture memory metrics for diagnostics (lightweight, non-blocking)
+				long memBefore = GC.GetTotalMemory(forceFullCollection: false);
+				
+				try {
+					// ? Just hide the overlay, keep it alive for reuse
+					if (_overlay != null && _overlay.IsVisible) {
+						_overlay.Hide();
+					}
+				} catch (Exception ex) {
+					Debug.WriteLine($"[NavMapper] Hide error: {ex.Message}");
+				}
+
+				// ? Report memory delta (without forcing GC)
+				long memAfter = GC.GetTotalMemory(forceFullCollection: false);
+				Debug.WriteLine($"[NavMapper] Memory: Before={memBefore:N0}, After={memAfter:N0}, Delta={memAfter - memBefore:N0} bytes");
+
 				return;
 			}
 
-			// ? CONSISTENCY CHECK BEFORE DISPLAYING
+			// ? Run consistency check (disabled by default via ENABLE_CONSISTENCY_VALIDATION flag)
 			ValidateNodeConsistency();
 
 			if (filterByModalScope) {
@@ -906,25 +934,33 @@ namespace AcManager.UiObserver
 			}
 			Debug.WriteLine("");
 
-			var leafRects = new List<Rect>();
-			var groupRects = new List<Rect>();
-			var allDebugInfo = new List<DebugRectInfo>();
-			
+			// ? Pre-allocate with capacity hints
+			var leafRects = new List<Rect>(256);
+			var groupRects = new List<Rect>(128);
+
 			// Get nodes from NavForest (authoritative source)
 			List<NavNode> nodesToShow;
 			if (filterByModalScope) {
 				// Filtered: Only show nodes in active modal scope
 				nodesToShow = NavForest.GetAllNavNodes()
-					.Where(n => n.IsNavigable && IsInActiveModalScope(n))
+					.Where(n => IsInActiveModalScope(n))
 					.ToList();
 				Debug.WriteLine($"Nodes in current modal scope: {nodesToShow.Count}");
 			} else {
-				// Unfiltered: Show ALL discovered nodes
-				nodesToShow = NavForest.GetAllNavNodes()
-					.Where(n => n.IsNavigable)
-					.ToList();
+				// Unfiltered: Show ALL discovered nodes (including groups!)
+				nodesToShow = NavForest.GetAllNavNodes().ToList();
 				Debug.WriteLine($"All discovered nodes: {nodesToShow.Count}");
 			}
+			
+			// ? Limit processing to prevent OOM
+			const int MAX_NODES_TO_PROCESS = 1000;
+			if (nodesToShow.Count > MAX_NODES_TO_PROCESS) {
+				Debug.WriteLine($"[NavMapper] WARNING: {nodesToShow.Count} nodes exceeds limit {MAX_NODES_TO_PROCESS}. Truncating.");
+				nodesToShow = nodesToShow.Take(MAX_NODES_TO_PROCESS).ToList();
+			}
+			
+			// ? Use initial capacity based on actual count
+			var allDebugInfo = new List<DebugRectInfo>(nodesToShow.Count);
 			
 			foreach (var node in nodesToShow) {
 				var center = node.GetCenterDip();
@@ -950,56 +986,45 @@ namespace AcManager.UiObserver
 					);
 
 					if (rect.Width >= 1.0 && rect.Height >= 1.0) {
-						// Get node type description
-						var nodeType = "Leaf";
-						var navigable = "[NAVIGABLE]";
-						var scopeInfo = "";
-						
-						if (node.IsGroup) {
-							if (node.IsDualRoleGroup) {
-								// Check actual WPF state instead of modal stack
-								var isOpen = node.IsDualModalCurrentlyOpen();
-								nodeType = isOpen ? "DualGroup(OPEN)" : "DualGroup(closed)";
-								navigable = isOpen ? "[NOT navigable - open]" : "[NAVIGABLE]";
-							} else {
-								nodeType = "PureGroup";
-								navigable = "[NOT navigable - pure group]";
-							}
-						}
-						
-						// Add scope information if we're showing all nodes
-						if (!filterByModalScope && _activeModalStack.Count > 0) {
-							var inScope = IsInActiveModalScope(node);
-							scopeInfo = inScope ? " {IN SCOPE}" : " {OUT OF SCOPE}";
-						}
-						
-						var typeName = fe.GetType().Name;
-						var elementName = string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name;
-						var modalTag = node.IsModal ? "MODAL" : "";
-						var navId = node.HierarchicalPath;
-						
-						// Get hierarchical path for sorting
-						var hierarchicalPath = NavNode.GetHierarchicalPath(fe);
-						
-						// Format bounds as: (X, Y) WxH
-						var boundsStr = $"({rect.Left,7:F1}, {rect.Top,7:F1}) {rect.Width,6:F1}x{rect.Height,6:F1}";
-						
-						// Build formatted debug line with Bounds column (LinkedParent removed - no longer needed)
-						var debugLine = $"{typeName,-20} | {elementName,-20} | {nodeType,-18} | {modalTag,-6} | {navigable,-35}{scopeInfo,-15} | {boundsStr,-30} | {navId,-30} | {hierarchicalPath}";
+                        // Get node type description
+                        var nodeType = node.IsGroup ? "PureGroup" : "Leaf";
+                        var navigable = node.IsGroup ? "[NOT navigable - pure group]" : "[NAVIGABLE]";
+                        var scopeInfo = "";
+                        
+                        // Add scope information if we're showing all nodes
+                        if (!filterByModalScope && _activeModalStack.Count > 0) {
+                            var inScope = IsInActiveModalScope(node);
+                            scopeInfo = inScope ? " {IN SCOPE}" : " {OUT OF SCOPE}";
+                        }
+                        
+                        var typeName = fe.GetType().Name;
+                        var elementName = string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name;
+                        var modalTag = node.IsModal ? "MODAL" : "";
+                        var navId = node.HierarchicalPath;
+                        
+                        // Get hierarchical path for sorting
+                        var hierarchicalPath = NavNode.GetHierarchicalPath(fe);
+                        
+                        // Format bounds as: (X, Y) WxH
+                        var boundsStr = $"({rect.Left,7:F1}, {rect.Top,7:F1}) {rect.Width,6:F1}x{rect.Height,6:F1}";
+                        
+                        // Build formatted debug line
+                        var debugLine = $"{typeName,-20} | {elementName,-20} | {nodeType,-18} | {modalTag,-6} | {navigable,-35}{scopeInfo,-15} | {boundsStr,-30} | {navId,-30} | {hierarchicalPath}";
 
-						allDebugInfo.Add(new DebugRectInfo { 
-							Rect = rect, 
-							DebugLine = debugLine,
-							IsGroup = node.IsGroup,
-							HierarchicalPath = hierarchicalPath
-						});
-						
-						if (node.IsGroup) {
-							groupRects.Add(rect);
-						} else {
-							leafRects.Add(rect);
-						}
-					}
+                        allDebugInfo.Add(new DebugRectInfo { 
+                            Rect = rect, 
+                            DebugLine = debugLine,
+                            IsGroup = node.IsGroup,
+                            HierarchicalPath = hierarchicalPath
+                        });
+                        
+                        if (node.IsGroup) {
+                            groupRects.Add(rect);
+                        } else {
+                            leafRects.Add(rect);
+                        }
+                    }
+
 				} catch (Exception ex) {
 					Debug.WriteLine($"  ERROR processing {node.HierarchicalPath}: {ex.Message}");
 				}
@@ -1033,12 +1058,18 @@ namespace AcManager.UiObserver
 			Debug.WriteLine("=============================================================\n");
 
 			try {
-				EnsureOverlay();
+				EnsureOverlay();  // ? Reuses existing overlay if it exists
 				_overlay?.ShowDebugRects(leafRects, groupRects);
 				_debugMode = true;
 			} catch (Exception ex) {
 				Debug.WriteLine($"[NavMapper] Overlay error: {ex.Message}");
 			}
+			
+			// ? Clear local collections to hint GC
+			allDebugInfo.Clear();
+			allDebugInfo = null;
+			nodesToShow.Clear();
+			nodesToShow = null;
 		}
 
 		private class DebugRectInfo

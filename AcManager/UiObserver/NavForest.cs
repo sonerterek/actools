@@ -203,11 +203,13 @@ namespace AcManager.UiObserver {
                     return;
                 }
                 
+                // ? CreateNavNode() already computes HierarchicalPath for PathFilter check
+                // No need to recompute it here!
                 var navNode = NavNode.CreateNavNode(fe);
                 if (navNode != null) {
                     if (_nodesByElement.TryAdd(fe, navNode)) {
-                        // Compute HierarchicalPath from full visual tree (for PathFilter)
-                        navNode.HierarchicalPath = ComputeHierarchicalPath(fe);
+                        // ? HierarchicalPath already set by NavNode.CreateNavNode()
+                        // (It's computed there for exclusion check and stored in the node)
                         
                         // Build Parent/Children relationships (visual tree with PlacementTarget bridging)
                         LinkToParent(navNode, fe);
@@ -602,14 +604,14 @@ namespace AcManager.UiObserver {
                         }
                     } catch { continue; }
 
+                    // ? CreateNavNode() already computes HierarchicalPath for PathFilter check
                     var navNode = NavNode.CreateNavNode(fe);
                     if (navNode != null) {
                         var isNewNode = !_nodesByElement.ContainsKey(fe);
                         _nodesByElement.AddOrUpdate(fe, navNode, (k, old) => navNode);
                         discoveredElements.Add(fe);
                         
-                        // Compute HierarchicalPath from full visual tree (for PathFilter)
-                        navNode.HierarchicalPath = ComputeHierarchicalPath(fe);
+                        // ? HierarchicalPath already set by NavNode.CreateNavNode()
                         
                         // Build Parent/Children relationships (visual tree with PlacementTarget bridging)
                         LinkToParent(navNode, fe);
@@ -718,34 +720,30 @@ namespace AcManager.UiObserver {
         /// <summary>
         /// Tracks modal state changes when a new NavNode is discovered.
         /// 
-        /// For pure modal groups (Window, Popup):
+        /// For pure modal groups (Window, Popup, PopupRoot):
         ///   - Existence = active ? emit ModalGroupOpened immediately
-        /// 
-        /// For dual-role modal groups (ComboBox, ContextMenu, Menu):
-        ///   - Wire up WPF events (DropDownOpened/Closed, Opened/Closed, SubmenuOpened/Closed)
-        ///   - Emit ModalGroupOpened/Closed based on actual WPF state changes
         /// 
         /// For leaf nodes or non-modal nodes:
         ///   - No modal tracking needed
+        ///   
+        /// ? NEW: ComboBox, Menu, ContextMenu are just LEAVES!
+        /// We don't track their open/close state.
+        /// When they open, WPF creates a PopupRoot which we detect as a modal.
         /// </summary>
         private static void TrackModalStateForNewNode(NavNode node) {
             if (node == null) return;
 
             try {
-                // CASE 1: Pure modal group (Window, Popup) - existence = active
-                if (node.IsModal && node.IsGroup && !node.IsDualRoleGroup) {
+                // CASE 1: Pure modal group (Window, Popup, PopupRoot) - existence = active
+                if (node.IsModal && node.IsGroup) {
                     Debug.WriteLine($"[NavForest] Pure modal activated: {node.SimpleName}");
                     try { ModalGroupOpened?.Invoke(node); } catch { }
                     return;
                 }
 
-                // CASE 2: Dual-role modal group - wire up WPF events
-                if (node.IsModal && node.IsGroup && node.IsDualRoleGroup) {
-                    AttachDualModalEventListeners(node);
-                    return;
-                }
-
-                // CASE 3: Non-modal nodes - no tracking needed
+                // CASE 2: Leaf nodes - no modal tracking
+                // ComboBox, Menu, ContextMenu are just leaves that happen to open popups
+                // The PopupRoot that appears is the actual modal
 
             } catch (Exception ex) {
                 Debug.WriteLine($"[NavForest] Error tracking modal for {node.SimpleName}: {ex.Message}");
@@ -753,102 +751,18 @@ namespace AcManager.UiObserver {
         }
 
         /// <summary>
-        /// Attaches WPF event listeners to dual-role modal groups to detect open/close events.
-        /// This is the ONLY reliable way to know when ComboBox/ContextMenu/Menu opens or closes.
-        /// Only attaches handlers once per element to prevent memory leaks.
-        /// </summary>
-        private static void AttachDualModalEventListeners(NavNode node) {
-            if (node == null || !node.TryGetVisual(out var fe)) return;
-
-            try {
-                // ? Only attach event handlers once per element!
-                lock (_elementsWithModalHandlers) {
-                    if (_elementsWithModalHandlers.Contains(fe)) {
-                        Debug.WriteLine($"[NavForest] Skipping {node.SimpleName} - handlers already attached");
-                        return;
-                    }
-                    _elementsWithModalHandlers.Add(fe);
-                }
-
-                if (fe is ComboBox comboBox) {
-                    Debug.WriteLine($"[NavForest] Wiring ComboBox events: {node.SimpleName}");
-                    
-                    comboBox.DropDownOpened += (s, e) => {
-                        Debug.WriteLine($"[NavForest] ComboBox OPENED: {node.SimpleName}");
-                        try { ModalGroupOpened?.Invoke(node); } catch { }
-                    };
-                    
-                    comboBox.DropDownClosed += (s, e) => {
-                        Debug.WriteLine($"[NavForest] ComboBox CLOSED: {node.SimpleName}");
-                        try { ModalGroupClosed?.Invoke(node); } catch { }
-                    };
-                    
-                    return;
-                }
-
-                if (fe is ContextMenu contextMenu) {
-                    Debug.WriteLine($"[NavForest] Wiring ContextMenu events: {node.SimpleName}");
-                    
-                    contextMenu.Opened += (s, e) => {
-                        Debug.WriteLine($"[NavForest] ContextMenu OPENED: {node.SimpleName}");
-                        try { ModalGroupOpened?.Invoke(node); } catch { }
-                    };
-                    
-                    contextMenu.Closed += (s, e) => {
-                        Debug.WriteLine($"[NavForest] ContextMenu CLOSED: {node.SimpleName}");
-                        try { ModalGroupClosed?.Invoke(node); } catch { }
-                    };
-                    
-                    return;
-                }
-
-                if (fe is Menu menu) {
-                    Debug.WriteLine($"[NavForest] Wiring Menu events: {node.SimpleName}");
-                    
-                    // Menu uses MenuItem.SubmenuOpened/Closed events
-                    foreach (MenuItem item in menu.Items.OfType<MenuItem>()) {
-                        item.SubmenuOpened += (s, e) => {
-                            if (ReferenceEquals(e.OriginalSource, item)) {
-                                Debug.WriteLine($"[NavForest] Menu OPENED: {node.SimpleName}");
-                                try { ModalGroupOpened?.Invoke(node); } catch { }
-                            }
-                        };
-                        
-                        item.SubmenuClosed += (s, e) => {
-                            if (ReferenceEquals(e.OriginalSource, item)) {
-                                Debug.WriteLine($"[NavForest] Menu CLOSED: {node.SimpleName}");
-                                try { ModalGroupClosed?.Invoke(node); } catch { }
-                            }
-                        };
-                    }
-                    
-                    return;
-                }
-
-            } catch (Exception ex) {
-                Debug.WriteLine($"[NavForest] Error attaching dual-modal events for {node.SimpleName}: {ex.Message}");
-            }
-        }
-
-        /// <summary>
         /// Handles modal tracking when a node is removed.
         /// For pure modals, emit ModalGroupClosed event.
-        /// For dual-role modals, WPF events already handle this.
         /// </summary>
         private static void HandleRemovedNodeModalTracking(NavNode node) {
             if (node == null) return;
 
             try {
                 // If this is a pure modal being removed, emit closed event
-                if (node.IsModal && node.IsGroup && !node.IsDualRoleGroup) {
+                if (node.IsModal && node.IsGroup) {
                     Debug.WriteLine($"[NavForest] Pure modal CLOSED (removed): {node.SimpleName}");
                     try { ModalGroupClosed?.Invoke(node); } catch { }
                 }
-
-                // For dual-role modals:
-                // - If they were open when removed, WPF Closed event will fire automatically
-                // - If they were already closed, no event needed
-                // - WPF event handlers are automatically cleaned up when object is GC'd
 
             } catch (Exception ex) {
                 Debug.WriteLine($"[NavForest] Error handling removal of {node.SimpleName}: {ex.Message}");

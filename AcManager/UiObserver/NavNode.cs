@@ -55,6 +55,11 @@ namespace AcManager.UiObserver
             // Menu items
             typeof(MenuItem),
             
+            // ? Menu controls (WPF Menu is a leaf that triggers dropdown, not a dual-role group)
+            typeof(Menu),
+            typeof(ContextMenu),
+            typeof(ComboBox),
+            
             // Other interactive controls
             typeof(Slider),
             typeof(DoubleSlider),
@@ -70,9 +75,6 @@ namespace AcManager.UiObserver
         // Group elements - containers that can hold navigable children
         private static readonly HashSet<Type> _groupTypes = new HashSet<Type>
         {
-            typeof(ComboBox),      // Dual-role: navigable when closed
-            typeof(ContextMenu),   // Dual-role: navigable when closed
-            typeof(Menu),          // Dual-role: navigable when closed
             typeof(Popup),         // Pure container: never directly navigable
             typeof(ToolBar),       // Pure container: never directly navigable
             typeof(StatusBar),     // Pure container: never directly navigable
@@ -82,14 +84,6 @@ namespace AcManager.UiObserver
             typeof(ListView),      // Pure container: never directly navigable
             typeof(DataGrid),      // Pure container: never directly navigable
 		};
-
-        // Dual-role groups - can be navigated TO when closed, act as containers when open
-        private static readonly HashSet<Type> _dualRoleGroupTypes = new HashSet<Type>
-        {
-            typeof(ComboBox),
-            typeof(ContextMenu),
-            typeof(Menu),
-        };
 
         #endregion
 
@@ -124,7 +118,6 @@ namespace AcManager.UiObserver
 
             // Step 1: Perform type-based detection (baseline detection)
             bool isGroup = IsGroupType(feType);
-            bool isDualRoleGroup = isGroup && IsDualRoleGroupType(feType);
             bool isLeaf = IsLeafType(feType);
 
             // ? NEW: PopupRoot is a modal group (WPF's internal container for Menu/ContextMenu dropdowns)
@@ -132,7 +125,6 @@ namespace AcManager.UiObserver
             // We detect it by type name since it's an internal WPF type
             if (feType.Name == "PopupRoot") {
                 isGroup = true;
-                isDualRoleGroup = false;
                 isLeaf = false;
                 
                 if (VERBOSE_DEBUG) {
@@ -141,7 +133,7 @@ namespace AcManager.UiObserver
             }
 
             if (VERBOSE_DEBUG) {
-                Debug.WriteLine($"[NavNode]   -> Type-based: IsGroup={isGroup}, IsDualRole={isDualRoleGroup}, IsLeaf={isLeaf}");
+                Debug.WriteLine($"[NavNode]   -> Type-based: IsGroup={isGroup}, IsLeaf={isLeaf}");
             }
 
             // Step 2: Compute hierarchical path early (needed for both exclusion and classification)
@@ -160,25 +152,23 @@ namespace AcManager.UiObserver
                     switch (classification.Role) {
                         case NavRole.Leaf:
                             isGroup = false;
-                            isDualRoleGroup = false;
                             isLeaf = true;
                             break;
 
                         case NavRole.Group:
                             isGroup = true;
-                            isDualRoleGroup = false;
                             isLeaf = false;
                             break;
 
                         case NavRole.DualGroup:
+                            // No longer supported - treat as regular group
                             isGroup = true;
-                            isDualRoleGroup = true;
                             isLeaf = false;
                             break;
                     }
 
                     if (VERBOSE_DEBUG) {
-                        Debug.WriteLine($"[NavNode]   -> After classification: IsGroup={isGroup}, IsDualRole={isDualRoleGroup}, IsLeaf={isLeaf}");
+                        Debug.WriteLine($"[NavNode]   -> After classification: IsGroup={isGroup}, IsLeaf={isLeaf}");
                     }
                 }
             }
@@ -210,12 +200,9 @@ namespace AcManager.UiObserver
             // Step 6: Compute ID
             string id = computeId != null ? computeId(fe) : ComputeDefaultId(fe);
 
-            // Step 7: Check exclusion rules
+            // Step 7: Check exclusion rules (uses hierarchicalPath computed earlier)
             if (PathFilter.IsExcluded(hierarchicalPath)) {
-                if (VERBOSE_DEBUG) {
-                    Debug.WriteLine($"[NavNode]   -> FILTERED: Path matches exclusion rule");
-                    Debug.WriteLine($"[NavNode]   -> Path: {hierarchicalPath}");
-                }
+                Debug.WriteLine($"[NavNode]   -> FILTERED: Path matches exclusion rule [{hierarchicalPath}]");
                 return null;
             }
 
@@ -255,12 +242,13 @@ namespace AcManager.UiObserver
 
             if (VERBOSE_DEBUG) {
                 Debug.WriteLine($"[NavNode]   -> CREATED: {feType.Name} Id={id}");
-                Debug.WriteLine($"[NavNode]   -> Final: IsGroup={isGroup}, IsDualRole={isDualRoleGroup}, IsModal={isModal}");
+                Debug.WriteLine($"[NavNode]   -> Final: IsGroup={isGroup}, IsModal={isModal}");
                 Debug.WriteLine($"[NavNode]   -> Path: {hierarchicalPath}");
             }
 
             // Step 11: Create the node with final values
-            return new NavNode(fe, id, isGroup, isDualRoleGroup, isModal);
+            // ? Pass hierarchicalPath to constructor so it's stored immediately
+            return new NavNode(fe, id, hierarchicalPath, isGroup, isModal);
         }
 
         private static bool IsLeafType(Type type)
@@ -297,28 +285,7 @@ namespace AcManager.UiObserver
             // Check for custom ModernUI controls that act as groups
             if (type.Namespace != null && type.Namespace.StartsWith("FirstFloor.ModernUI.Windows.Controls")) {
                 var typeName = type.Name;
-                if (typeName.Contains("Menu") || typeName.Contains("Tab") || typeName.Contains("Frame")) {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        private static bool IsDualRoleGroupType(Type type)
-        {
-            // Check exact type match
-            if (_dualRoleGroupTypes.Contains(type)) return true;
-
-            // Check if derives from any dual-role group base type
-            foreach (var dualType in _dualRoleGroupTypes) {
-                if (dualType.IsAssignableFrom(type)) return true;
-            }
-
-            // Check for custom ModernUI controls that act as dual-role groups
-            if (type.Namespace != null && type.Namespace.StartsWith("FirstFloor.ModernUI.Windows.Controls")) {
-                var typeName = type.Name;
-                if (typeName.Contains("Menu")) {
+                if (typeName.Contains("Tab") || typeName.Contains("Frame")) {
                     return true;
                 }
             }
@@ -362,41 +329,28 @@ namespace AcManager.UiObserver
         /// <summary>
         /// Determines if this element type creates a modal navigation context.
         /// Modal elements block access to parent/background elements during navigation.
-        /// This is based on element type and navigation behavior, not WPF's ShowDialog.
+        /// 
+        /// In our "observe and react" model:
+        /// - Window creates a modal scope (separate navigation context)
+        /// - Popup creates a modal scope (temporary overlay)
+        /// - PopupRoot (internal WPF type) creates a modal scope for Menu/ComboBox dropdowns
+        /// - ComboBox, ContextMenu, Menu are just LEAVES that trigger popups (not modals themselves!)
         /// </summary>
         /// <param name="feType">The type of the element to check</param>
         /// <returns>True if element creates a modal navigation context</returns>
         private static bool IsModalType(Type feType)
         {
-            // Modal types: elements that create exclusive navigation contexts
-            // When open, these block access to background/parent elements
-
-            // Popups and their contents are always modal
+            // Popups are modal (they block background input)
             if (typeof(Popup).IsAssignableFrom(feType))
                 return true;
 
-            // ContextMenu creates modal context when open
-            if (typeof(ContextMenu).IsAssignableFrom(feType))
-                return true;
-
-            // ComboBox dropdown creates modal context when open (dual-role + modal)
-            if (typeof(ComboBox).IsAssignableFrom(feType))
-                return true;
-
-            // Menu creates modal context for its items
-            if (typeof(Menu).IsAssignableFrom(feType))
-                return true;
-
-            // Separate Windows are inherently modal for navigation purposes
-            // (each window is its own navigation scope)
+            // Windows are modal (separate navigation contexts)
             if (typeof(Window).IsAssignableFrom(feType))
                 return true;
 
-            // Non-modal types (even though they're groups):
-            // - ListBox, ListView, TreeView: freely navigate through items
-            // - TabControl: tabs don't block background navigation
-            // - ToolBar, StatusBar: always accessible
-            // - DataGrid: cell navigation doesn't create modal context
+            // ? NEW: ComboBox, ContextMenu, Menu are NOT modal!
+            // They are just leaves that happen to open popups.
+            // The PopupRoot that appears is the actual modal.
 
             return false;
         }
@@ -478,7 +432,6 @@ namespace AcManager.UiObserver
                     Debug.WriteLine($"?   Type: {parentTypeName}");
                     Debug.WriteLine($"?   Name: {parentName}");
                     Debug.WriteLine($"?   NavNode SimpleName: {parentNode.SimpleName}");
-                    Debug.WriteLine($"?   IsDualRoleGroup: {parentNode.IsDualRoleGroup}");
                     Debug.WriteLine($"?   Path: {parentPath}");
                 }
             } catch { }
@@ -594,23 +547,18 @@ namespace AcManager.UiObserver
 
         /// <summary>
         /// Whether this node is a group (can contain children) or a leaf (navigation target).
+        /// Groups are not navigable themselves; leaves are navigable.
         /// </summary>
         public bool IsGroup { get; }
 
         /// <summary>
-        /// Whether this group can act as both a leaf (when closed) and a group (when open).
-        /// Only relevant if IsGroup is true.
-        /// </summary>
-        public bool IsDualRoleGroup { get; }
-
-        /// <summary>
-        /// Whether this node creates a modal navigation context when open.
-        /// Modal nodes block access to parent/background elements during navigation.
+        /// Whether this node creates a modal navigation context.
+        /// Modal nodes (Window, Popup, PopupRoot) block access to background elements during navigation.
         /// 
         /// In our "observe and react" model:
-        /// - Popup elements are modals (they block input to background)
-        /// - The Popup itself is the modal boundary (not the control that triggered it)
+        /// - Popup and PopupRoot are modals (they block input to background)
         /// - We don't predict behavior, we observe what blocks input
+        /// - Menu and ComboBox are just leaves that trigger popups when activated
         /// </summary>
         public bool IsModal { get; }
 
@@ -620,21 +568,24 @@ namespace AcManager.UiObserver
         /// </summary>
         public bool HasFocus { get; set; }
 
+        /// <summary>
+        /// Whether this node is navigable (can receive keyboard focus).
+        /// Leaves are navigable; groups are not (unless special cases like ListBox).
+        /// </summary>
+        public bool IsNavigable => !IsGroup;
+
         #endregion
 
-        public NavNode(FrameworkElement fe, string simpleName, bool isGroup = false, bool isDualRoleGroup = false, bool isModal = false)
+        public NavNode(FrameworkElement fe, string simpleName, string hierarchicalPath, bool isGroup = false, bool isModal = false)
         {
             if (fe == null) throw new ArgumentNullException(nameof(fe));
             if (string.IsNullOrEmpty(simpleName)) throw new ArgumentException("SimpleName cannot be null or empty", nameof(simpleName));
 
             VisualRef = new WeakReference<FrameworkElement>(fe);
             SimpleName = simpleName;
+            HierarchicalPath = hierarchicalPath ?? simpleName; // Use provided path, fallback to simpleName
             IsGroup = isGroup;
-            IsDualRoleGroup = isDualRoleGroup;
             IsModal = isModal;
-
-            // HierarchicalPath will be set by NavForest during discovery
-            HierarchicalPath = simpleName; // Temporary default until NavForest sets the full path
         }
 
         public bool TryGetVisual(out FrameworkElement fe)
@@ -643,57 +594,39 @@ namespace AcManager.UiObserver
         }
 
         /// <summary>
-        /// Checks if this node's underlying element is currently valid for navigation.
-        /// Does NOT check modal scope - NavMapper handles that.
-        /// 
-        /// Checks:
-        /// 1. Element must be alive (WeakReference valid)
-        /// 2. Element must be loaded and visible
-        /// 3. Element must be connected to a presentation source
-        /// 4. Element must have reasonable size
-        /// </summary>
-        public bool IsNavigable {
-            get {
-                if (!TryGetVisual(out var fe))
-                    return false;
-
-                if (!fe.IsLoaded || !fe.IsVisible)
-                    return false;
-
-                try {
-                    var ps = PresentationSource.FromVisual(fe);
-                    if (ps == null)
-                        return false;
-                } catch {
-                    return false;
-                }
-
-                if (fe.ActualWidth < 1.0 || fe.ActualHeight < 1.0)
-                    return false;
-
-                return true;
-            }
-        }
-
-        /// <summary>
         /// Computes the center point of this node in device-independent pixels (DIP).
-        /// Returns null if element is not navigable or bounds cannot be computed.
+        /// Returns null if bounds cannot be computed.
+        /// 
+        /// Note: Returns value even for groups (for debug visualization purposes).
+        /// Navigation logic should check IsNavigable separately.
         /// </summary>
         public Point? GetCenterDip()
         {
-            if (!IsNavigable)
+            if (!TryGetVisual(out var fe))
                 return null;
 
-            if (!TryGetVisual(out var fe))
+            // Check if element is visible and loaded
+            if (!fe.IsLoaded || !fe.IsVisible)
+                return null;
+
+            try {
+                var ps = PresentationSource.FromVisual(fe);
+                if (ps == null)
+                    return null;
+            } catch {
+                return null;
+            }
+
+            if (fe.ActualWidth < 1.0 || fe.ActualHeight < 1.0)
                 return null;
 
             try {
                 var topLeftDevice = fe.PointToScreen(new Point(0, 0));
                 var bottomRightDevice = fe.PointToScreen(new Point(fe.ActualWidth, fe.ActualHeight));
 
-                var ps = PresentationSource.FromVisual(fe);
-                if (ps?.CompositionTarget != null) {
-                    var transform = ps.CompositionTarget.TransformFromDevice;
+                var ps2 = PresentationSource.FromVisual(fe);
+                if (ps2?.CompositionTarget != null) {
+                    var transform = ps2.CompositionTarget.TransformFromDevice;
                     var topLeftDip = transform.Transform(topLeftDevice);
                     var bottomRightDip = transform.Transform(bottomRightDevice);
 
@@ -715,13 +648,13 @@ namespace AcManager.UiObserver
         /// Activates this navigation node by performing its default action.
         /// Behavior depends on the control type and current state.
         /// 
-        /// Dual-role groups (ComboBox, ContextMenu):
-        ///   - Opens the group (WPF will emit events that NavForest listens to)
-        /// 
         /// Leaf controls:
         ///   - Button/RepeatButton: raises Click event
         ///   - ToggleButton/CheckBox/RadioButton: toggles IsChecked
         ///   - MenuItem: raises Click event
+        ///   - ComboBox: opens dropdown
+        ///   - Menu: opens first menu item
+        ///   - ContextMenu: opens menu
         ///   - ListBoxItem/ComboBoxItem/TreeViewItem: selects the item
         ///   - TabItem: selects the tab
         ///   - Expander: toggles IsExpanded
@@ -734,12 +667,7 @@ namespace AcManager.UiObserver
             }
 
             try {
-                // Dual-role groups: open them
-                if (IsDualRoleGroup && IsGroup) {
-                    return TryOpenGroup(fe);
-                }
-
-                // Leaf controls: perform type-specific activation
+                // Buttons
                 if (fe is Button btn) {
                     btn.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                     return true;
@@ -755,11 +683,33 @@ namespace AcManager.UiObserver
                     return true;
                 }
 
+                // Menu items
                 if (fe is MenuItem menuItem) {
                     menuItem.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
                     return true;
                 }
 
+                // ? NEW: ComboBox, Menu, ContextMenu are leaves - open them when activated
+                if (fe is ComboBox comboBox) {
+                    comboBox.IsDropDownOpen = true;
+                    return true;
+                }
+
+                if (fe is ContextMenu contextMenu) {
+                    contextMenu.IsOpen = true;
+                    return true;
+                }
+
+                if (fe is Menu menu) {
+                    var firstItem = menu.Items.OfType<MenuItem>().FirstOrDefault();
+                    if (firstItem != null) {
+                        firstItem.IsSubmenuOpen = true;
+                        return true;
+                    }
+                    return false;
+                }
+
+                // Selection items
                 if (fe is ListBoxItem listBoxItem) {
                     listBoxItem.IsSelected = true;
                     return true;
@@ -780,57 +730,43 @@ namespace AcManager.UiObserver
                     return true;
                 }
 
+                // Expander
                 if (fe is Expander expander) {
                     expander.IsExpanded = !expander.IsExpanded;
                     return true;
                 }
 
+                // Default: try to focus
                 return fe.Focus();
             } catch {
                 return false;
             }
         }
 
-        private bool TryOpenGroup(FrameworkElement fe)
-        {
-            try {
-                if (fe is ComboBox comboBox) {
-                    comboBox.IsDropDownOpen = true;
-                    return true;
-                }
-
-                if (fe is ContextMenu contextMenu) {
-                    contextMenu.IsOpen = true;
-                    return true;
-                }
-
-                if (fe is Menu menu) {
-                    var firstItem = menu.Items.OfType<MenuItem>().FirstOrDefault();
-                    if (firstItem != null) {
-                        firstItem.IsSubmenuOpen = true;
-                        return true;
-                    }
-                }
-            } catch { }
-
-            return false;
-        }
-
         /// <summary>
-        /// Closes this group if it's a dual-role group.
+        /// Closes this node if it's a modal group (Popup, Window).
+        /// For leaves (ComboBox, Menu, ContextMenu), closes their dropdown/menu.
         /// Returns true if successfully closed, false otherwise.
         /// </summary>
         public bool Close()
         {
-            if (!IsGroup || !IsDualRoleGroup) {
-                return false;
-            }
-
             if (!TryGetVisual(out var fe)) {
                 return false;
             }
 
             try {
+                // Modal groups: close them
+                if (fe is Popup popup) {
+                    popup.IsOpen = false;
+                    return true;
+                }
+
+                if (fe is Window window) {
+                    window.Close();
+                    return true;
+                }
+
+                // Leaves that open dropdowns: close their dropdowns
                 if (fe is ComboBox comboBox) {
                     comboBox.IsDropDownOpen = false;
                     return true;
@@ -852,46 +788,12 @@ namespace AcManager.UiObserver
             return false;
         }
 
-        /// <summary>
-        /// Checks if this dual-role modal group is currently open.
-        /// Uses the actual WPF state properties instead of relying on ItemCount.
-        /// </summary>
-        /// <returns>True if open, false if closed or not applicable</returns>
-        public bool IsDualModalCurrentlyOpen()
-        {
-            if (!IsGroup || !IsDualRoleGroup || !IsModal) {
-                return false;
-            }
-
-            if (!TryGetVisual(out var fe)) {
-                return false;
-            }
-
-            try {
-                if (fe is ComboBox comboBox) {
-                    return comboBox.IsDropDownOpen;
-                }
-
-                if (fe is ContextMenu contextMenu) {
-                    return contextMenu.IsOpen;
-                }
-
-                if (fe is Menu menu) {
-                    return menu.Items.OfType<MenuItem>().Any(mi => mi.IsSubmenuOpen);
-                }
-            } catch { }
-
-            return false;
-        }
-
         public override string ToString()
         {
             var type = IsGroup ? "Group" : "Leaf";
-            var dual = IsDualRoleGroup ? "+Dual" : "";
             var modal = IsModal ? "+Modal" : "";
-            var navigable = IsNavigable ? "Nav" : "!Nav";
             var focus = HasFocus ? "Focus" : "";
-            return $"{type}{dual}{modal} {SimpleName} [{navigable}] {focus}".Trim();
+            return $"{type}{modal} {SimpleName} [{(IsNavigable ? "Nav" : "!Nav")}] {focus}".Trim();
         }
     }
 }

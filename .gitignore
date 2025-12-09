@@ -84,3 +84,4 @@ AcManager/Assets/Icons/Source/*-256.png
 IgnoreVersionFiles.bat
 *tmp.csproj
 .vscode/*
+/DebugOutput.txt
