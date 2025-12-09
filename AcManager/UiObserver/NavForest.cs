@@ -209,8 +209,13 @@ namespace AcManager.UiObserver {
                         // Compute HierarchicalPath from full visual tree (for PathFilter)
                         navNode.HierarchicalPath = ComputeHierarchicalPath(fe);
                         
-                        // Build Parent/Children relationships
+                        // Build Parent/Children relationships (visual tree)
                         LinkToParent(navNode, fe);
+                        
+                        // ? NEW: If this is a Popup, establish logical link to owner
+                        if (fe is Popup popup) {
+                            LinkPopupToOwner(navNode, popup);
+                        }
                         
                         if (_rootIndex.TryGetValue(navTreeRoot, out var elementSet)) {
                             lock (elementSet) {
@@ -220,7 +225,15 @@ namespace AcManager.UiObserver {
                             try { RootChanged?.Invoke(navTreeRoot); } catch { }
                             try { NavNodeAdded?.Invoke(navNode); } catch { }
                             
-                            Debug.WriteLine($"[NavForest] Dynamic NavNode added: {fe.GetType().Name} '{navNode.SimpleName}'");
+                            // Enhanced debug output for Popup elements
+                            if (fe is Popup popupElement) {
+                                var placementTargetInfo = popupElement.PlacementTarget != null
+                                    ? $"{popupElement.PlacementTarget.GetType().Name} '{(string.IsNullOrEmpty((popupElement.PlacementTarget as FrameworkElement)?.Name) ? "(unnamed)" : (popupElement.PlacementTarget as FrameworkElement)?.Name)}'"
+                                    : "NULL";
+                                Debug.WriteLine($"[NavForest] Dynamic NavNode added: Popup '{navNode.SimpleName}' with PlacementTarget={placementTargetInfo}");
+                            } else {
+                                Debug.WriteLine($"[NavForest] Dynamic NavNode added: {fe.GetType().Name} '{navNode.SimpleName}'");
+                            }
 
                             // Track modal state
                             TrackModalStateForNewNode(navNode);
@@ -231,8 +244,18 @@ namespace AcManager.UiObserver {
         }
 
         /// <summary>
+        /// Placeholder for attaching Unloaded/LayoutUpdated handlers for dynamic element tracking.
+        /// Currently not needed as full tree rescans handle dynamic changes.
+        /// </summary>
+        private static void AttachSubtreeChangeHandlers(FrameworkElement fe) {
+            // Placeholder - dynamic changes are handled by periodic rescans via LayoutUpdated
+            // Could be extended in future to track specific element unload events
+        }
+
+        /// <summary>
         /// Links a newly-created NavNode to its parent in the navigation tree.
         /// Walks up the visual tree to find the first parent NavNode and establishes bidirectional link.
+        /// Also handles Popup boundaries by using PlacementTarget to bridge the visual tree gap.
         /// </summary>
         /// <param name="childNode">The newly-created NavNode to link</param>
         /// <param name="childFe">The FrameworkElement for the child node</param>
@@ -257,6 +280,23 @@ namespace AcManager.UiObserver {
                         
                         Debug.WriteLine($"[NavForest] Linked {childNode.SimpleName} -> parent: {parentNode.SimpleName}");
                         return;
+                    }
+                    
+                    // ? NEW: If we hit a Popup, jump across the boundary using PlacementTarget
+                    if (current is Popup popup && popup.PlacementTarget is FrameworkElement placementTarget) {
+                        if (_nodesByElement.TryGetValue(placementTarget, out var ownerNode)) {
+                            // Found owner across Popup boundary - establish visual tree link
+                            childNode.Parent = new WeakReference<NavNode>(ownerNode);
+                            ownerNode.Children.Add(new WeakReference<NavNode>(childNode));
+                            
+                            Debug.WriteLine($"[NavForest] Linked {childNode.SimpleName} -> parent (via Popup): {ownerNode.SimpleName}");
+                            return;
+                        } else {
+                            // Owner not yet discovered, continue walking up from PlacementTarget
+                            current = placementTarget;
+                            Debug.WriteLine($"[NavForest] Bridged Popup boundary for {childNode.SimpleName}, continuing from {placementTarget.GetType().Name}");
+                            continue;
+                        }
                     }
                 }
                 
@@ -289,30 +329,54 @@ namespace AcManager.UiObserver {
 
                 // Clear node's children list (they'll update their own parents as needed)
                 node.Children.Clear();
+                
+                // ? NEW: Clean up LinkedParent/LinkedChildren as well
+                if (node.LinkedParent != null && node.LinkedParent.TryGetTarget(out var linkedParent)) {
+                    linkedParent.LinkedChildren.RemoveAll(wr => {
+                        if (!wr.TryGetTarget(out var child)) return true; // Dead reference
+                        return ReferenceEquals(child, node);
+                    });
+                }
+                
+                node.LinkedParent = null;
+                node.LinkedChildren.Clear();
             } catch (Exception ex) {
                 Debug.WriteLine($"[NavForest] Error unlinking {node.SimpleName}: {ex.Message}");
             }
         }
 
-        private static void AttachSubtreeChangeHandlers(FrameworkElement fe) {
-            if (GetAttachedHandlers(fe)) return;
-            SetAttachedHandlers(fe, true);
-            
-            fe.Unloaded += (s, e) => SetAttachedHandlers(fe, false);
-            
+        /// <summary>
+        /// Establishes logical links between Popup and its owner control.
+        /// This bridges the visual tree gap created by WPF's Popup architecture.
+        /// 
+        /// When a Popup is discovered, we look at its PlacementTarget to find the owner control
+        /// (ComboBox, MenuItem, ContextMenu trigger, etc.) and create LinkedParent/LinkedChildren
+        /// relationships so navigation can traverse the logical structure.
+        /// </summary>
+        /// <param name="popupNode">The NavNode for the Popup</param>
+        /// <param name="popupElement">The Popup FrameworkElement</param>
+        private static void LinkPopupToOwner(NavNode popupNode, Popup popupElement) {
+            if (popupNode == null || popupElement == null) return;
+
             try {
-                if (fe is ComboBox cb) {
-                    // Register popup child as separate root when dropdown opens
-                    cb.DropDownOpened += (s, e) => {
-                        try {
-                            var popup = cb.Template?.FindName("PART_Popup", cb) as Popup;
-                            if (popup?.Child is FrameworkElement child) {
-                                RegisterRoot(child);
-                            }
-                        } catch { }
-                    };
+                var placementTarget = popupElement.PlacementTarget as FrameworkElement;
+                if (placementTarget == null) return;
+
+                // Try to get the NavNode for the owner control
+                if (!_nodesByElement.TryGetValue(placementTarget, out var ownerNode)) {
+                    // Owner node might not be discovered yet - that's OK, we'll link later if needed
+                    Debug.WriteLine($"[NavForest] Popup owner not yet discovered: {placementTarget.GetType().Name}");
+                    return;
                 }
-            } catch { }
+
+                // Establish bidirectional link
+                popupNode.LinkedParent = new WeakReference<NavNode>(ownerNode);
+                ownerNode.LinkedChildren.Add(new WeakReference<NavNode>(popupNode));
+                
+                Debug.WriteLine($"[NavForest] Linked Popup to owner: {popupNode.SimpleName} -> {ownerNode.SimpleName}");
+            } catch (Exception ex) {
+                Debug.WriteLine($"[NavForest] Error linking Popup to owner: {ex.Message}");
+            }
         }
 
         #endregion
@@ -598,10 +662,23 @@ namespace AcManager.UiObserver {
                         // Compute HierarchicalPath from full visual tree (for PathFilter)
                         navNode.HierarchicalPath = ComputeHierarchicalPath(fe);
                         
-                        // Build Parent/Children relationships
+                        // Build Parent/Children relationships (visual tree)
                         LinkToParent(navNode, fe);
                         
+                        // ? NEW: If this is a Popup, establish logical link to owner
+                        if (fe is Popup popup) {
+                            LinkPopupToOwner(navNode, popup);
+                        }
+                        
                         if (isNewNode) {
+                            // Enhanced debug output for Popup elements
+                            if (fe is Popup popupElement) {
+                                var placementTargetInfo = popupElement.PlacementTarget != null
+                                    ? $"{popupElement.PlacementTarget.GetType().Name} '{(string.IsNullOrEmpty((popupElement.PlacementTarget as FrameworkElement)?.Name) ? "(unnamed)" : (popupElement.PlacementTarget as FrameworkElement)?.Name)}'"
+                                    : "NULL";
+                                Debug.WriteLine($"[NavForest] NavNode discovered: Popup '{navNode.SimpleName}' with PlacementTarget={placementTargetInfo}");
+                            }
+                            
                             try { NavNodeAdded?.Invoke(navNode); } catch { }
 
                             // Track modal state

@@ -554,18 +554,38 @@ namespace AcManager.UiObserver
         public string HierarchicalPath { get; internal set; }
 
         /// <summary>
-        /// Parent node in the navigation tree.
+        /// Parent node in the visual tree.
         /// Null if this is a root node (Window/PresentationSource root).
         /// Set by NavForest during discovery.
         /// </summary>
         public WeakReference<NavNode> Parent { get; internal set; }
 
         /// <summary>
-        /// Child nodes in the navigation tree.
+        /// Child nodes in the visual tree.
         /// Empty list if this is a leaf node.
         /// Updated by NavForest as children are discovered.
         /// </summary>
         public List<WeakReference<NavNode>> Children { get; } = new List<WeakReference<NavNode>>();
+
+        /// <summary>
+        /// Logical parent across Popup boundaries.
+        /// For Popups and elements inside Popups, this points to the owner control
+        /// (ComboBox, MenuItem, ContextMenu trigger element, etc.) that triggered the Popup
+        /// via PlacementTarget.
+        /// 
+        /// This enables navigation to traverse the logical structure the user perceives
+        /// (e.g., ComboBox ? dropdown items) even though they're in separate visual trees.
+        /// </summary>
+        public WeakReference<NavNode> LinkedParent { get; internal set; }
+
+        /// <summary>
+        /// Logical children across Popup boundaries.
+        /// For dual-role modals (ComboBox, MenuItem), this contains the Popup NavNode(s)
+        /// that display their associated content (dropdown items, submenu items).
+        /// 
+        /// This is the inverse of LinkedParent, enabling bidirectional traversal.
+        /// </summary>
+        public List<WeakReference<NavNode>> LinkedChildren { get; } = new List<WeakReference<NavNode>>();
 
         /// <summary>
         /// Whether this node is a group (can contain children) or a leaf (navigation target).
