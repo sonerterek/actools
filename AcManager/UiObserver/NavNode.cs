@@ -127,6 +127,19 @@ namespace AcManager.UiObserver
             bool isDualRoleGroup = isGroup && IsDualRoleGroupType(feType);
             bool isLeaf = IsLeafType(feType);
 
+            // ? NEW: PopupRoot is a modal group (WPF's internal container for Menu/ContextMenu dropdowns)
+            // PopupRoot IS the Popup's child - it's what actually blocks input to background elements
+            // We detect it by type name since it's an internal WPF type
+            if (feType.Name == "PopupRoot") {
+                isGroup = true;
+                isDualRoleGroup = false;
+                isLeaf = false;
+                
+                if (VERBOSE_DEBUG) {
+                    Debug.WriteLine($"[NavNode]   -> PopupRoot detected - treating as modal group");
+                }
+            }
+
             if (VERBOSE_DEBUG) {
                 Debug.WriteLine($"[NavNode]   -> Type-based: IsGroup={isGroup}, IsDualRole={isDualRoleGroup}, IsLeaf={isLeaf}");
             }
@@ -208,6 +221,15 @@ namespace AcManager.UiObserver
 
             // Step 8: Determine modal behavior (type-based baseline)
             bool isModal = IsModalType(feType);
+            
+            // ? NEW: PopupRoot is always modal (it blocks background input)
+            if (feType.Name == "PopupRoot") {
+                isModal = true;
+                
+                if (VERBOSE_DEBUG) {
+                    Debug.WriteLine($"[NavNode]   -> PopupRoot is MODAL (blocks background navigation)");
+                }
+            }
 
             // Step 9: Apply modal override from classification (if specified)
             if (classification?.IsModal.HasValue == true) {
@@ -557,6 +579,9 @@ namespace AcManager.UiObserver
         /// Parent node in the visual tree.
         /// Null if this is a root node (Window/PresentationSource root).
         /// Set by NavForest during discovery.
+        /// 
+        /// For elements inside Popups, this correctly points to ancestors via PlacementTarget bridging,
+        /// so the Parent chain always represents the logical navigation structure.
         /// </summary>
         public WeakReference<NavNode> Parent { get; internal set; }
 
@@ -566,26 +591,6 @@ namespace AcManager.UiObserver
         /// Updated by NavForest as children are discovered.
         /// </summary>
         public List<WeakReference<NavNode>> Children { get; } = new List<WeakReference<NavNode>>();
-
-        /// <summary>
-        /// Logical parent across Popup boundaries.
-        /// For Popups and elements inside Popups, this points to the owner control
-        /// (ComboBox, MenuItem, ContextMenu trigger element, etc.) that triggered the Popup
-        /// via PlacementTarget.
-        /// 
-        /// This enables navigation to traverse the logical structure the user perceives
-        /// (e.g., ComboBox ? dropdown items) even though they're in separate visual trees.
-        /// </summary>
-        public WeakReference<NavNode> LinkedParent { get; internal set; }
-
-        /// <summary>
-        /// Logical children across Popup boundaries.
-        /// For dual-role modals (ComboBox, MenuItem), this contains the Popup NavNode(s)
-        /// that display their associated content (dropdown items, submenu items).
-        /// 
-        /// This is the inverse of LinkedParent, enabling bidirectional traversal.
-        /// </summary>
-        public List<WeakReference<NavNode>> LinkedChildren { get; } = new List<WeakReference<NavNode>>();
 
         /// <summary>
         /// Whether this node is a group (can contain children) or a leaf (navigation target).
@@ -601,6 +606,11 @@ namespace AcManager.UiObserver
         /// <summary>
         /// Whether this node creates a modal navigation context when open.
         /// Modal nodes block access to parent/background elements during navigation.
+        /// 
+        /// In our "observe and react" model:
+        /// - Popup elements are modals (they block input to background)
+        /// - The Popup itself is the modal boundary (not the control that triggered it)
+        /// - We don't predict behavior, we observe what blocks input
         /// </summary>
         public bool IsModal { get; }
 

@@ -209,13 +209,8 @@ namespace AcManager.UiObserver {
                         // Compute HierarchicalPath from full visual tree (for PathFilter)
                         navNode.HierarchicalPath = ComputeHierarchicalPath(fe);
                         
-                        // Build Parent/Children relationships (visual tree)
+                        // Build Parent/Children relationships (visual tree with PlacementTarget bridging)
                         LinkToParent(navNode, fe);
-                        
-                        // ? NEW: If this is a Popup, establish logical link to owner
-                        if (fe is Popup popup) {
-                            LinkPopupToOwner(navNode, popup);
-                        }
                         
                         if (_rootIndex.TryGetValue(navTreeRoot, out var elementSet)) {
                             lock (elementSet) {
@@ -329,53 +324,8 @@ namespace AcManager.UiObserver {
 
                 // Clear node's children list (they'll update their own parents as needed)
                 node.Children.Clear();
-                
-                // ? NEW: Clean up LinkedParent/LinkedChildren as well
-                if (node.LinkedParent != null && node.LinkedParent.TryGetTarget(out var linkedParent)) {
-                    linkedParent.LinkedChildren.RemoveAll(wr => {
-                        if (!wr.TryGetTarget(out var child)) return true; // Dead reference
-                        return ReferenceEquals(child, node);
-                    });
-                }
-                
-                node.LinkedParent = null;
-                node.LinkedChildren.Clear();
             } catch (Exception ex) {
                 Debug.WriteLine($"[NavForest] Error unlinking {node.SimpleName}: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Establishes logical links between Popup and its owner control.
-        /// This bridges the visual tree gap created by WPF's Popup architecture.
-        /// 
-        /// When a Popup is discovered, we look at its PlacementTarget to find the owner control
-        /// (ComboBox, MenuItem, ContextMenu trigger, etc.) and create LinkedParent/LinkedChildren
-        /// relationships so navigation can traverse the logical structure.
-        /// </summary>
-        /// <param name="popupNode">The NavNode for the Popup</param>
-        /// <param name="popupElement">The Popup FrameworkElement</param>
-        private static void LinkPopupToOwner(NavNode popupNode, Popup popupElement) {
-            if (popupNode == null || popupElement == null) return;
-
-            try {
-                var placementTarget = popupElement.PlacementTarget as FrameworkElement;
-                if (placementTarget == null) return;
-
-                // Try to get the NavNode for the owner control
-                if (!_nodesByElement.TryGetValue(placementTarget, out var ownerNode)) {
-                    // Owner node might not be discovered yet - that's OK, we'll link later if needed
-                    Debug.WriteLine($"[NavForest] Popup owner not yet discovered: {placementTarget.GetType().Name}");
-                    return;
-                }
-
-                // Establish bidirectional link
-                popupNode.LinkedParent = new WeakReference<NavNode>(ownerNode);
-                ownerNode.LinkedChildren.Add(new WeakReference<NavNode>(popupNode));
-                
-                Debug.WriteLine($"[NavForest] Linked Popup to owner: {popupNode.SimpleName} -> {ownerNode.SimpleName}");
-            } catch (Exception ex) {
-                Debug.WriteLine($"[NavForest] Error linking Popup to owner: {ex.Message}");
             }
         }
 
@@ -572,9 +522,8 @@ namespace AcManager.UiObserver {
 
         #region Scanning
 
-        public static void SyncRoot(FrameworkElement root) {
+        public static void SyncRoot(FrameworkElement root = null) {
             if (root == null) return;
-            if (!root.IsLoaded) return;
 
             if (!root.Dispatcher.CheckAccess()) {
                 ScheduleDebouncedSync(root);
@@ -662,13 +611,8 @@ namespace AcManager.UiObserver {
                         // Compute HierarchicalPath from full visual tree (for PathFilter)
                         navNode.HierarchicalPath = ComputeHierarchicalPath(fe);
                         
-                        // Build Parent/Children relationships (visual tree)
+                        // Build Parent/Children relationships (visual tree with PlacementTarget bridging)
                         LinkToParent(navNode, fe);
-                        
-                        // ? NEW: If this is a Popup, establish logical link to owner
-                        if (fe is Popup popup) {
-                            LinkPopupToOwner(navNode, popup);
-                        }
                         
                         if (isNewNode) {
                             // Enhanced debug output for Popup elements

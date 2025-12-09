@@ -408,37 +408,19 @@ namespace AcManager.UiObserver
 
 		/// <summary>
 		/// Checks if child is a descendant of ancestor in the navigation tree.
-		/// This considers BOTH visual tree (Parent) and logical links (LinkedParent) to handle
-		/// Popup boundaries correctly.
+		/// The Parent chain includes PlacementTarget bridging, so this correctly handles
+		/// elements inside Popups finding ancestors outside the Popup.
 		/// </summary>
 		private static bool IsDescendantOf(NavNode child, NavNode ancestor)
 		{
 			if (child == null || ancestor == null) return false;
 			
-			// Walk up the Parent chain (visual tree)
+			// Walk up the Parent chain (which includes PlacementTarget bridges!)
 			var current = child.Parent;
 			while (current != null && current.TryGetTarget(out var parentNode))
 			{
 				if (ReferenceEquals(parentNode, ancestor)) return true;
 				current = parentNode.Parent;
-			}
-			
-			// Walk up the LinkedParent chain (logical links across Popup boundaries)
-			var linkedCurrent = child.LinkedParent;
-			while (linkedCurrent != null && linkedCurrent.TryGetTarget(out var linkedParentNode))
-			{
-				if (ReferenceEquals(linkedParentNode, ancestor)) return true;
-				
-				// Continue up the visual tree from the linked parent
-				current = linkedParentNode.Parent;
-				while (current != null && current.TryGetTarget(out var parentNode))
-				{
-					if (ReferenceEquals(parentNode, ancestor)) return true;
-					current = parentNode.Parent;
-				}
-				
-				// Continue up the linked chain
-				linkedCurrent = linkedParentNode.LinkedParent;
 			}
 			
 			return false;
@@ -483,14 +465,14 @@ namespace AcManager.UiObserver
 
 		/// <summary>
 		/// Finds the closest non-modal group ancestor of a node.
-		/// This considers BOTH visual tree (Parent) and logical links (LinkedParent) to handle
-		/// Popup boundaries correctly.
+		/// The Parent chain includes PlacementTarget bridging, so this correctly traverses
+		/// from elements inside Popups back to their owner controls.
 		/// </summary>
 		private static NavNode FindClosestNonModalGroup(NavNode node)
 		{
 			if (node == null) return null;
 
-			// Walk up the Parent chain (visual tree)
+			// Walk up the Parent chain (which includes PlacementTarget bridges!)
 			var current = node.Parent;
 			while (current != null && current.TryGetTarget(out var parentNode))
 			{
@@ -500,18 +482,6 @@ namespace AcManager.UiObserver
 					return parentNode; // Found non-modal group
 				}
 				current = parentNode.Parent;
-			}
-			
-			// No non-modal group in visual tree, try LinkedParent (cross Popup boundary)
-			if (node.LinkedParent != null && node.LinkedParent.TryGetTarget(out var linkedParent))
-			{
-				if (linkedParent.IsGroup)
-				{
-					if (linkedParent.IsModal) return null; // Hit modal boundary
-					return linkedParent; // Found non-modal group
-				}
-				// Recurse up the linked parent's tree
-				return FindClosestNonModalGroup(linkedParent);
 			}
 			
 			return null;
@@ -885,96 +855,6 @@ namespace AcManager.UiObserver
 					visited.Add(ancestor);
 					current2 = ancestor.Parent;
 				}
-				
-				// Check 6: Validate LinkedParent/LinkedChildren consistency
-				if (node.LinkedParent != null && node.LinkedParent.TryGetTarget(out var linkedParentNode))
-				{
-					// Verify LinkedParent is valid (should be for Popup ? owner control)
-					if (node.TryGetVisual(out var nodeVisual) && nodeVisual is Popup popup)
-					{
-						// Verify PlacementTarget matches LinkedParent
-						var placementTarget = popup.PlacementTarget as FrameworkElement;
-						if (placementTarget != null && linkedParentNode.TryGetVisual(out var linkedParentVisual))
-						{
-							if (!ReferenceEquals(placementTarget, linkedParentVisual))
-							{
-								Debug.WriteLine($"  ? LINKED PARENT MISMATCH: {node.SimpleName}");
-								Debug.WriteLine($"     Path: {node.HierarchicalPath}");
-								if (bounds.HasValue)
-								{
-									Debug.WriteLine($"     Bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
-								}
-								Debug.WriteLine($"     LinkedParent: {linkedParentNode.SimpleName}");
-								Debug.WriteLine($"     LinkedParent Path: {linkedParentNode.HierarchicalPath}");
-								Debug.WriteLine($"     PlacementTarget: {placementTarget.GetType().Name}");
-							}
-						}
-					}
-					else
-					{
-						// LinkedParent set but node is not a Popup - might be intentional for ContextMenu
-						Debug.WriteLine($"  ??  LinkedParent on non-Popup: {node.SimpleName} (type: {nodeVisual?.GetType().Name})");
-					}
-					
-					// Check bidirectional link
-					bool foundBackLink = false;
-					foreach (var childRef in linkedParentNode.LinkedChildren)
-					{
-						if (childRef.TryGetTarget(out var linkedChild) && ReferenceEquals(linkedChild, node))
-						{
-							foundBackLink = true;
-							break;
-						}
-					}
-					
-					if (!foundBackLink)
-					{
-						childConsistencyErrors++;
-						Debug.WriteLine($"  ? LINKED PARENT BACKLINK MISSING: {node.SimpleName}");
-						Debug.WriteLine($"     Path: {node.HierarchicalPath}");
-						if (bounds.HasValue)
-						{
-							Debug.WriteLine($"     Bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
-						}
-						Debug.WriteLine($"     LinkedParent: {linkedParentNode.SimpleName}");
-						Debug.WriteLine($"     LinkedParent does not have this node in LinkedChildren!");
-					}
-				}
-				
-				// Check LinkedChildren backlinks
-				foreach (var linkedChildRef in node.LinkedChildren)
-				{
-					if (linkedChildRef.TryGetTarget(out var linkedChild))
-					{
-						if (linkedChild.LinkedParent == null || 
-						    !linkedChild.LinkedParent.TryGetTarget(out var backLinkParent) ||
-						    !ReferenceEquals(backLinkParent, node))
-						{
-							childConsistencyErrors++;
-							Debug.WriteLine($"  ? LINKED CHILD BACKLINK BROKEN: {node.SimpleName}");
-							Debug.WriteLine($"     Path: {node.HierarchicalPath}");
-							if (bounds.HasValue)
-							{
-								Debug.WriteLine($"     Bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
-							}
-							Debug.WriteLine($"     LinkedChild: {linkedChild.SimpleName}");
-							Debug.WriteLine($"     LinkedChild Path: {linkedChild.HierarchicalPath}");
-							if (linkedChild.LinkedParent == null)
-							{
-								Debug.WriteLine($"     LinkedChild's LinkedParent: NULL");
-							}
-							else if (!linkedChild.LinkedParent.TryGetTarget(out var lp))
-							{
-								Debug.WriteLine($"     LinkedChild's LinkedParent: DEAD REFERENCE");
-							}
-							else
-							{
-								Debug.WriteLine($"     LinkedChild's LinkedParent: {lp.SimpleName} (expected {node.SimpleName})");
-							}
-						}
-					}
-				}
-
 			}
 			
 			Debug.WriteLine($"\n========== Consistency Check Results ==========");
@@ -1104,15 +984,9 @@ namespace AcManager.UiObserver
 						// Format bounds as: (X, Y) WxH
 						var boundsStr = $"({rect.Left,7:F1}, {rect.Top,7:F1}) {rect.Width,6:F1}x{rect.Height,6:F1}";
 						
-						// Get LinkedParent name if exists
-						var linkedParentName = "(none)";
-						if (node.LinkedParent != null && node.LinkedParent.TryGetTarget(out var linkedParent)) {
-							linkedParentName = linkedParent.SimpleName + " [LINK]";
-						}
-						
-						// Build formatted debug line with Bounds and LinkedParent columns
-						var debugLine = $"{typeName,-20} | {elementName,-20} | {nodeType,-18} | {modalTag,-6} | {navigable,-35}{scopeInfo,-15} | {boundsStr,-30} | Linked:{linkedParentName,-25} | {navId,-30} | {hierarchicalPath}";
-						
+						// Build formatted debug line with Bounds column (LinkedParent removed - no longer needed)
+						var debugLine = $"{typeName,-20} | {elementName,-20} | {nodeType,-18} | {modalTag,-6} | {navigable,-35}{scopeInfo,-15} | {boundsStr,-30} | {navId,-30} | {hierarchicalPath}";
+
 						allDebugInfo.Add(new DebugRectInfo { 
 							Rect = rect, 
 							DebugLine = debugLine,
