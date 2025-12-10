@@ -18,24 +18,25 @@
 ???????????????????????????????????????????????????????????
 ?                      NavMapper                          ?
 ?  (Navigation Logic & Modal Stack Management)            ?
-?  - Subscribes to NavForest events                       ?
-?  - Manages modal stack (pushed/popped via events)       ?
-?  - Handles keyboard input (Alt+Arrow navigation)        ?
+?  - Subscribes to NavForest MODAL events ONLY            ?
+?  - Manages modal context stack (scope + focus)          ?
+?  - Handles keyboard input (Ctrl+Shift+Arrow navigation) ?
+?  - Initializes focus on modal open (complete info!)     ?
 ?  - Filters candidates by modal scope                    ?
 ?  - Spatial navigation algorithm                         ?
 ?  - Focus highlighting (HighlightOverlay)                ?
 ???????????????????????????????????????????????????????????
-                           ? events
-                           ? (NavNodeAdded, ModalGroupOpened, etc.)
+                           ? events (modal lifecycle only)
+                           ? (ModalGroupOpened, ModalGroupClosed)
 ???????????????????????????????????????????????????????????
 ?                      NavForest                          ?
-?  (Discovery Engine - Scans & Tracks Nodes)              ?
+?  (Discovery Engine - Silent Scanning)                   ?
 ?  - Auto-discovers PresentationSource roots              ?
-?  - Scans visual trees recursively                       ?
+?  - Scans visual trees SILENTLY (no per-node events!)    ?
 ?  - Creates NavNodes via factory pattern                 ?
 ?  - Builds Parent/Child relationships                    ?
 ?  - Tracks Popup?PlacementTarget bridges                 ?
-?  - Emits events when nodes added/removed                ?
+?  - Emits events ONLY for modal lifecycle                ?
 ???????????????????????????????????????????????????????????
                            ? creates
                            ?
@@ -50,6 +51,12 @@
 ?  - Stores: HierarchicalPath, Parent, Children           ?
 ???????????????????????????????????????????????????????????
 ```
+
+**Key Architectural Principle:** 
+- **Silent Discovery:** NavForest discovers nodes without firing events
+- **Modal-Only Events:** Only modal lifecycle changes trigger events
+- **Complete Information:** When ModalGroupOpened fires, ALL nodes in the modal scope are already discovered
+- **Single Focus Attempt:** Focus initialization happens once per modal with complete candidate list
 
 ---
 
@@ -82,36 +89,121 @@
 - **Safety:** Unknown types are ignored by default
 
 **Leaf Types:** Buttons, MenuItems, ComboBox, Menu, Sliders, etc.  
-**Group Types:** Popup, ListBox, TabControl, DataGrid, etc.
+**Group Types:** Popup, ListBox, TabControl, DataGrid, **Window** (see below)
+
+**? CRITICAL: Window Added to Group Types**
+
+**What changed:** `typeof(Window)` was added to `_groupTypes` whitelist in `NavNode.cs`.
+
+**Why it was needed:** Window wasn't being discovered as a NavNode, so MainWindow couldn't become the root modal context. This caused `CurrentContext` to remain `null`, breaking the entire navigation system.
+
+**Impact:**
+- Root window discovery now works correctly
+- Modal stack initialization succeeds
+- First architectural fix that made the system functional
+
+**Code:**
+```csharp
+private static readonly HashSet<Type> _groupTypes = new HashSet<Type>
+{
+    typeof(Window),        // Root modal: application windows (MainWindow, dialogs, etc.)
+    typeof(Popup),         // Pure container: never directly navigable
+    // ...rest of types
+};
+```
 
 ---
 
-### 3. Modal Stack = Linear Chain (Not Tree)
+### 3. Modal Context Stack = Linear Chain with Focus
 
-**Decision:** Modal stack is a **List<NavNode>** representing a linear parent?child chain.
+**Decision:** Modal stack is a **List<NavContext>** where each context bundles **modal scope + focused node**.
 
 **Why:**
-- **Simplicity:** Matches WPF's actual behavior (nested modals always descend from parent modals)
-- **Validation:** We validate that each new modal is a descendant of the current top modal
-- **No Siblings:** WPF doesn't allow sibling modals at the same level (one popup blocks another)
+- **Atomic State:** Modal scope and focus are inseparable - bundling prevents desync
+- **No Special Cases:** Root window (MainWindow) is just the first modal context
+- **Stack Never Empty:** After initialization, stack always has ?1 context (root)
+- **Automatic Focus Restore:** When modal closes, previous context's focus is automatically restored
+
+**Structure:**
+```csharp
+class NavContext {
+    NavNode ModalNode;    // Scope root (Window, Popup, PopupRoot)
+    NavNode FocusedNode;  // Currently focused node in this scope (or null)
+}
+```
 
 **Example Valid Stack:**
 ```
-[0] MainWindow (root context)
-[1] Popup inside MainWindow (dropdown menu)
-[2] PopupRoot inside that Popup (submenu)
+[0] NavContext(MainWindow, Button1)        ? Root context, always present
+[1] NavContext(Popup, MenuItem3)           ? Dropdown menu opened
+[2] NavContext(PopupRoot, SubMenuItem5)    ? Submenu opened
 ```
 
-**Example Invalid Stack (Rejected):**
+**Stack Lifecycle:**
 ```
-[0] MainWindow
-[1] Popup in Panel A
-[2] Popup in Panel B ? Not a descendant of [1]! Rejected.
+User opens dropdown:
+  OnModalGroupOpened(Popup)
+  ? Push NavContext(Popup, null)
+  ? TryInitializeFocusIfNeeded() ? finds MenuItem3 ? sets focus
+
+User closes dropdown:
+  OnModalGroupClosed(Popup)
+  ? Pop context
+  ? Restore focus from previous context (Button1) ?
 ```
+
+**Invariant:** `_modalContextStack.Count >= 1` at all times after first modal discovered
 
 ---
 
-### 4. HierarchicalPath = Computed Once, Stored Forever
+### 4. Opportunistic Focus Initialization
+
+**Decision:** Focus is initialized **lazily and opportunistically** when navigable nodes appear.
+
+**Why:**
+- **Handles Bulk Discovery:** After bulk scan completes (`RootChanged`), first navigable node gets focus
+- **Handles Dynamic Loading:** As UI loads incrementally (lazy tabs, etc.), first navigable node gets focus
+- **Modal-Aware:** Each modal context initializes focus independently when it opens
+
+**Triggers:**
+1. `OnNavNodeAdded` ? Check if current context needs focus
+2. `OnRootChanged` ? Check if current context needs focus (after bulk scan)
+3. `OnModalGroupOpened` ? New context created with null focus, then checked
+
+**Algorithm:**
+```csharp
+TryInitializeFocusIfNeeded() {
+    if (CurrentContext == null) return;          // No context yet
+    if (CurrentContext.FocusedNode != null) return;  // Already has focus
+    
+    var firstNode = FindFirstNavigableInScope(CurrentContext.ModalNode);
+    if (firstNode != null) {
+        CurrentContext.FocusedNode = firstNode;
+        SetFocusVisuals(firstNode);
+    }
+}
+```
+
+**Selection Strategy:** Top-left preference (Y-coordinate weighted higher than X)
+
+**? Debug Output:**
+
+When diagnosing focus selection issues, `TryInitializeFocusIfNeeded()` logs detailed candidate scoring:
+
+```
+[NavMapper] Finding first navigable in scope 'PopupRoot'...
+  Candidate: MenuItem @ path...
+    Center: 150.0,50.0 | Score: 500150.0
+  Candidate: ScrollBar @ path...
+    Center: 450.0,0.0 | Score: 450.0
+  ? WINNER: ScrollBar (score: 450.0)
+```
+
+This debug output was instrumental in discovering the ScrollBar hijacking issue (see below).
+
+---
+
+### 5. HierarchicalPath = Computed Once, Stored Forever
 
 **Decision:** Compute `HierarchicalPath` in `NavNode.CreateNavNode()` and pass to constructor.
 
@@ -126,7 +218,7 @@
 
 ---
 
-### 5. Popup?PlacementTarget Bridging
+### 6. Popup?PlacementTarget Bridging
 
 **Decision:** `NavForest.LinkToParent()` walks through `Popup.PlacementTarget` to bridge visual tree gaps.
 
@@ -145,7 +237,7 @@ if (current is Popup popup && popup.PlacementTarget != null) {
 
 ---
 
-### 6. Persistent HighlightOverlay (Not Dispose/Recreate)
+### 7. Persistent HighlightOverlay (Not Dispose/Recreate)
 
 **Decision:** Create overlay once, reuse it (Hide/Show instead of Dispose/Create).
 
@@ -197,18 +289,16 @@ _overlay?.Hide(); // Reuse same instance
 
 ### NavForest.cs - Discovery Engine
 
-**Purpose:** Scans visual trees, creates NavNodes, builds hierarchy, emits events.
+**Purpose:** Scans visual trees silently, creates NavNodes, builds hierarchy, emits modal lifecycle events only.
 
 **Key Methods:**
 - `RegisterRoot(fe)` - Register a PresentationSource root for scanning
-- `SyncRoot(root)` - Rescan visual tree and sync with tracked nodes
+- `SyncRoot(root)` - Rescan visual tree and sync with tracked nodes (silent operation)
 - `LinkToParent(node, fe)` - Build Parent/Child relationships (handles Popup bridging)
-- `TryCreateNavNodeForElement(fe)` - Create node for dynamically loaded elements
+- `TryCreateNavNodeForElement(fe)` - Create node for dynamically loaded elements (silent)
 
-**Key Events:**
-- `NavNodeAdded` - New node discovered
-- `NavNodeRemoved` - Node removed from tree
-- `ModalGroupOpened` - Modal opened (Popup, Window, PopupRoot)
+**Key Events (modal lifecycle only):**
+- `ModalGroupOpened` - Modal opened (Window, PopupRoot) - ALL children already discovered
 - `ModalGroupClosed` - Modal closed
 
 **Key Data Structures:**
@@ -218,36 +308,44 @@ _overlay?.Hide(); // Reuse same instance
 - `_pendingSyncs` - Debouncing for layout changes
 
 **Design Patterns:**
-- **Event-Driven Architecture:** Emits events instead of direct calls
+- **Event-Driven Architecture:** Emits events only for modal lifecycle (not per-node!)
+- **Silent Discovery:** Nodes are tracked internally without firing events
 - **Debouncing:** Coalesces multiple layout changes into single scan
 - **Weak References:** Parent/Child links use WeakReference to avoid memory leaks
+
+**Architectural Decision:** Per-node events (NavNodeAdded/NavNodeRemoved) were removed in favor of modal-only events. This simplifies the architecture and provides complete information to NavMapper when modals open.
 
 ---
 
 ### NavMapper.cs - Navigation Logic
 
-**Purpose:** Subscribes to events, manages modal stack, handles keyboard input, spatial navigation.
+**Purpose:** Subscribes to modal lifecycle events, manages modal context stack, handles keyboard input, spatial navigation.
 
 **Key Methods:**
 - `MoveInDirection(dir)` - Find best candidate in direction using spatial algorithm
 - `ActivateFocusedNode()` - Activate current focus
 - `ExitGroup()` - Close topmost modal
-- `ToggleHighlighting()` - Debug visualization (Ctrl+Shift+F12)
+- `TryInitializeFocusIfNeeded()` - Initialize focus when modal opens (complete candidate list!)
+- `FindFirstNavigableInScope(scopeNode)` - Find first navigable element (top-left preference)
+- `SetFocusVisuals(node)` - Update overlay highlight
 
 **Key Data:**
-- `_activeModalStack` - List<NavNode> representing modal stack
-- `_focusedNode` - Currently focused NavNode
+- `_modalContextStack` - List<NavContext> (modal scope + focused node per context)
+- `CurrentContext` - Helper property for top of stack
 - `_overlay` - HighlightOverlay for visual feedback
 
-**Event Handlers:**
-- `OnNavNodeAdded` / `OnNavNodeRemoved` - React to discovery changes
-- `OnModalGroupOpened` / `OnModalGroupClosed` - Push/pop modal stack
-- `OnPreviewKeyDown` - Handle Alt+Arrow keys
+**Event Handlers (modal lifecycle only):**
+- `OnModalGroupOpened` - Push new context, initialize focus with complete info
+- `OnModalGroupClosed` - Pop context, restore previous focus
+- `OnPreviewKeyDown` - Handle Ctrl+Shift+Arrow keys
 
 **Design Patterns:**
-- **Observer Pattern:** Subscribes to NavForest events
+- **Observer Pattern:** Subscribes to NavForest modal lifecycle events only
 - **Command Pattern:** Keyboard shortcuts trigger navigation commands
 - **Strategy Pattern:** Spatial navigation algorithm (directional cost calculation)
+- **Single-Pass Initialization:** Focus initialized once per modal with complete information
+
+**Architectural Decision:** Removed subscriptions to NavNodeAdded/NavNodeRemoved events. NavMapper now reacts only to modal lifecycle changes, receiving complete information about all nodes in the modal scope at once. This eliminates redundant focus attempts and ensures optimal candidate selection.
 
 ---
 
@@ -300,6 +398,26 @@ CLASSIFY: ** > *:SelectCarDialog => role=group; modal=true
 
 ---
 
+## ? Design Philosophy Summary
+
+1. **Observe, Don't Predict:** React to actual UI state, not guessed behavior
+2. **Whitelist Everything:** Performance through explicit tracking
+3. **Modal-Only Events:** Silent node discovery, events only for modal lifecycle
+4. **Complete Information:** Focus selection sees all candidates at once (not incremental)
+5. **Weak References Everywhere:** Prevent memory leaks in Parent/Child links
+6. **Compute Once, Store Forever:** HierarchicalPath computed at creation
+7. **Popup Bridging is Critical:** Jump across Popup boundaries via PlacementTarget
+8. **Modal Context = Scope + Focus:** Atomic bundling prevents desync
+9. **Stack Never Empty:** Root context always present after initialization
+10. **Single-Pass Initialization:** Focus initialized once per modal with complete candidate list
+11. **Persistent Resources:** Reuse windows/objects instead of recreate
+12. **Finalizers Are Dangerous:** Always suppress when implementing Dispose()
+13. **? Optimistic Validation:** Accept unlinked modals, reject only provably wrong hierarchies
+14. **? Pattern-Based Exclusion:** Context-aware filtering better than global type rules
+15. **? Silent Discovery:** Node tracking is internal, events signal user-facing state changes only
+
+---
+
 ## ?? Critical Implementation Details
 
 ### 1. CreateNavNode() - 11-Step Pipeline
@@ -324,150 +442,141 @@ public static NavNode CreateNavNode(FrameworkElement fe) {
 
 ---
 
-### 2. Modal Stack Validation
+### 2. Modal Context Stack Management
 
 ```csharp
 private static void OnModalGroupOpened(NavNode modalNode) {
     // Validate linear chain: new modal MUST be descendant of current top
-    if (_activeModalStack.Count > 0) {
-        var currentTop = _activeModalStack[_activeModalStack.Count - 1];
+    if (_modalContextStack.Count > 0) {
+        var currentTop = CurrentContext.ModalNode;
         if (!IsDescendantOf(modalNode, currentTop)) {
             Debug.WriteLine("ERROR: Modal not descendant of top!");
             return; // Reject!
         }
     }
-    _activeModalStack.Add(modalNode);
+    
+    // Push new context
+    var newContext = new NavContext(modalNode, focusedNode: null);
+    _modalContextStack.Add(newContext);
+    
+    // Clear old focus visuals
+    _overlay?.HideFocusRect();
+    
+    // Try to initialize focus in new context
+    TryInitializeFocusIfNeeded();
 }
-```
 
----
-
-### 3. Popup Bridging
-
-```csharp
-private static void LinkToParent(NavNode childNode, FrameworkElement childFe) {
-    DependencyObject current = childFe;
-    while (current != null) {
-        current = VisualTreeHelper.GetParent(current);
-        
-        // Check if parent is a NavNode
-        if (current is FrameworkElement parentFe && _nodesByElement.TryGetValue(parentFe, out var parentNode)) {
-            childNode.Parent = new WeakReference<NavNode>(parentNode);
-            return;
-        }
-        
-        // Jump across Popup boundary
-        if (current is Popup popup && popup.PlacementTarget != null) {
-            current = popup.PlacementTarget; // Continue from PlacementTarget
-        }
+private static void OnModalGroupClosed(NavNode modalNode) {
+    // Pop context
+    if (_modalContextStack.Count > 0 
+        && CurrentContext.ModalNode.HierarchicalPath == modalNode.HierarchicalPath) {
+        _modalContextStack.RemoveAt(_modalContextStack.Count - 1);
+    }
+    
+    // Restore focus from previous context
+    if (CurrentContext != null && CurrentContext.FocusedNode != null) {
+        SetFocusVisuals(CurrentContext.FocusedNode);
+    } else {
+        // No previous focus - try to initialize
+        TryInitializeFocusIfNeeded();
     }
 }
 ```
 
 ---
 
-## ?? Known Issues & Solutions
+### 3. Optimistic Modal Validation
 
-### Issue 1: Gen 2 GC Deadlock (SOLVED)
+**? ARCHITECTURAL CHANGE:** Modified modal validation to handle timing-sensitive initialization.
 
-**Symptom:** UI freezes permanently when memory reaches ~1GB after toggling overlay 7 times.
+**Problem:** PopupRoot fires `ModalGroupOpened` event BEFORE `LinkToParent()` runs, so `modalNode.Parent` is `null` when validation occurs. The original strict validation rejected these modals, breaking popup navigation.
 
-**Root Cause:**
-1. Old design disposed/recreated overlay on each toggle
-2. 7 dead overlay instances accumulated
-3. Gen 2 GC triggered at 1GB
-4. Window finalizers tried to close windows via Dispatcher
-5. Dispatcher blocked by GC
-6. Circular wait: GC ? finalizers ? Dispatcher ? GC ? **DEADLOCK**
-
-**Solution:**
-```csharp
-// 1. Persistent overlay (reuse instead of recreate)
-if (_debugMode) {
-    _overlay?.Hide(); // Just hide, don't dispose
-}
-
-// 2. Suppress finalizer in Dispose()
-public void Dispose() {
-    GC.SuppressFinalize(this); // ? Prevents finalizer from running during GC
-    // ... cleanup code
-}
-```
-
----
-
-### Issue 2: NavForest Not Tracking Overlay (NOT AN ISSUE)
-
-**Symptom:** HighlightOverlay rectangles not appearing in NavNode list.
-
-**Root Cause:** Canvas and Rectangle are **not whitelisted** ? filtered out at Step 4 (whitelist check).
-
-**Solution:** Not needed! Overlay elements should NOT be tracked.
-
-**Safety Net:** Exclusion rule `"EXCLUDE: *:HighlightOverlay > **"` acts as redundant protection.
-
----
-
-## ?? Pattern Syntax Reference
-
-### Basic Syntax
-
-```
-Name:Type               Match specific name and type
-*                       Match any name OR type (single wildcard)
-*:Button                Match any name, type = Button
-MyButton:*              Match name = MyButton, any type
-**                      Match 0+ elements (any depth)
-***                     Match 1+ elements (at least one ancestor away)
->                       Parent-child separator
-```
-
-### Rule Types
-
-```
-EXCLUDE: pattern                    Skip element from navigation
-CLASSIFY: pattern => properties     Override classification
-```
-
-### Classification Properties
-
-```
-role=leaf|group|dual    Override element role
-modal=true|false        Override modal behavior
-priority=10             Rule priority (higher = applied first)
-```
-
-### Examples
+**Solution:** Accept modals with no parent optimistically, reject only if they have a parent but it's the wrong one:
 
 ```csharp
-// Exclude main menu from navigation
-"EXCLUDE: Window:MainWindow > ** > PART_Menu:ModernMenu"
-
-// Force SelectCarDialog to be a modal group
-"CLASSIFY: ** > *:SelectCarDialog => role=group; modal=true"
-
-// Exclude all descendants of HistoricalTextBox
-"EXCLUDE: ** > *:HistoricalTextBox > **"
-
-// Exclude HighlightOverlay and all children (safety net)
-"EXCLUDE: *:HighlightOverlay > **"
+private static void OnModalGroupOpened(NavNode modalNode) {
+    if (_modalContextStack.Count > 0) {
+        var currentTop = CurrentContext.ModalNode;
+        
+        // ? NEW: Only reject if HAS parent but WRONG parent
+        if (modalNode.Parent != null && !IsDescendantOf(modalNode, currentTop)) {
+            Debug.WriteLine($"ERROR: Modal {modalNode.SimpleName} not descendant!");
+            return; // Reject invalid hierarchy
+        }
+        
+        // If Parent == null, accept optimistically
+        // (NavForest will link it immediately after this event)
+    }
+    
+    // Push new context
+    var newContext = new NavContext(modalNode, focusedNode: null);
+    _modalContextStack.Add(newContext);
+    
+    // Clear old focus visuals
+    _overlay?.HideFocusRect();
+    
+    // Try to initialize focus in new context
+    TryInitializeFocusIfNeeded();
+}
 ```
 
+**Event Sequence:**
+1. PopupRoot discovered ? `ModalGroupOpened` fires (`Parent = null`)
+2. Validation check passes (`Parent == null` is OK)
+3. New context pushed to stack ?
+4. `LinkToParent()` runs immediately after ? `Parent` set correctly
+5. Validation would pass retroactively
+
+**Risk Mitigation:** Invalid modals with wrong parent hierarchy are still rejected (have parent but not descendant of current top). Only nodes with no parent yet are accepted optimistically.
+
+**Impact:**
+- PopupRoot modals now work correctly
+- Dropdown menus can be navigated
+- Timing-sensitive initialization issues resolved
+
 ---
 
-## ?? Design Philosophy Summary
+### 4. Modal-Driven Focus Initialization
 
-1. **Observe, Don't Predict:** React to actual UI state, not guessed behavior
-2. **Whitelist Everything:** Performance through explicit tracking
-3. **Events Over Polling:** NavForest emits events, NavMapper reacts
-4. **Weak References Everywhere:** Prevent memory leaks in Parent/Child links
-5. **Compute Once, Store Forever:** HierarchicalPath computed at creation
-6. **Popup Bridging is Critical:** Jump across Popup boundaries via PlacementTarget
-7. **Modal Stack = Linear Chain:** Validate descendant relationship
-8. **Persistent Resources:** Reuse windows/objects instead of recreate
-9. **Finalizers Are Dangerous:** Always suppress when implementing Dispose()
+```csharp
+private static void TryInitializeFocusIfNeeded() {
+    // No context yet? Wait for first modal (MainWindow)
+    if (CurrentContext == null) return;
+    
+    // Already has focus? Nothing to do
+    if (CurrentContext.FocusedNode != null) return;
+    
+    // Find first navigable node in current scope (top-left preference)
+    // All nodes are ALREADY discovered - complete candidate list!
+    var firstNode = FindFirstNavigableInScope(CurrentContext.ModalNode);
+    if (firstNode != null) {
+        CurrentContext.FocusedNode = firstNode;
+        SetFocusVisuals(firstNode);
+        Debug.WriteLine($"Initialized focus in '{CurrentContext.ModalNode.SimpleName}' -> '{firstNode.SimpleName}'");
+    }
+}
+
+private static NavNode FindFirstNavigableInScope(NavNode scopeNode) {
+    var candidates = GetCandidatesInScope()
+        .Where(n => scopeNode == null || IsDescendantOf(n, scopeNode))
+        .OrderBy(n => {
+            // Prefer top-left (Y weight > X weight)
+            var center = n.GetCenterDip();
+            if (!center.HasValue) return double.MaxValue;
+            return center.Value.X + center.Value.Y * 10000.0;
+        })
+        .ToList();
+    
+    return candidates.FirstOrDefault();
+}
+```
+
+**Trigger Points (modal lifecycle only):**
+- `OnModalGroupOpened` ? New context created, initialize focus with complete node list
+- `OnModalGroupClosed` ? Previous context may need focus if it had none
+
+**Selection Strategy:** Top-left position preferred (Y-coordinate has 10,000× weight)
+
+**Key Improvement:** Unlike the old per-node event model, this executes **once per modal** with a **complete candidate list**, ensuring optimal selection every time.
 
 ---
-
-**To onboard a new thread:**
-> "Read `AcManager/UiObserver/DESIGN.md` - it explains the navigation system architecture, key decisions, and why things work the way they do."

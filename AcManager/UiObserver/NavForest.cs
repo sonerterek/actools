@@ -16,14 +16,16 @@ namespace AcManager.UiObserver {
     /// 
     /// Architecture:
     /// - NavNode: Pure data structure with type-specific behaviors (CreateNavNode factory)
-    /// - NavForest: Discovery engine - scans visual trees, builds HierarchicalId, emits events
-    /// - NavMapper: Navigation logic - subscribes to events, manages modal stack, handles input
+    /// - NavForest: Discovery engine - scans visual trees silently, builds hierarchy, emits modal events only
+    /// - NavMapper: Navigation logic - subscribes to modal lifecycle events, manages modal stack, handles input
     /// 
-    /// Events:
-    /// - NavNodeAdded: New node discovered
-    /// - NavNodeRemoved: Node removed from tree
-    /// - ModalGroupOpened: Dual-role modal opened (ComboBox, ContextMenu)
-    /// - ModalGroupClosed: Dual-role modal closed
+    /// Events (modal lifecycle only):
+    /// - ModalGroupOpened: Modal scope opened (Window, PopupRoot)
+    /// - ModalGroupClosed: Modal scope closed
+    /// 
+    /// Note: Individual node discovery is SILENT (no events fired per node).
+    /// NavMapper reacts only to modal lifecycle changes, which provides complete
+    /// information about all nodes in the modal scope.
     /// </summary>
     internal static class NavForest {
         #region Indexes
@@ -43,41 +45,22 @@ namespace AcManager.UiObserver {
         private static readonly ConcurrentDictionary<FrameworkElement, DispatcherOperation> _pendingSyncs = 
             new ConcurrentDictionary<FrameworkElement, DispatcherOperation>();
 
-        // Track which elements already have modal event handlers attached to prevent duplicate subscriptions
-        private static readonly HashSet<FrameworkElement> _elementsWithModalHandlers = new HashSet<FrameworkElement>();
-
         #endregion
 
         #region Events
 
         /// <summary>
-        /// Fired when a new NavNode is added to the forest.
-        /// NavMapper can subscribe to track nodes.
-        /// </summary>
-        public static event Action<NavNode> NavNodeAdded;
-
-        /// <summary>
-        /// Fired when a NavNode is removed from the forest.
-        /// NavMapper should clean up references (focused node, modal stack).
-        /// </summary>
-        public static event Action<NavNode> NavNodeRemoved;
-
-        /// <summary>
-        /// Fired when a dual-role modal group opens (ComboBox dropdown, ContextMenu, etc.).
-        /// NavMapper should push to modal stack.
+        /// Fired when a modal scope opens (Window, PopupRoot).
+        /// NavMapper should push to modal context stack and initialize focus.
+        /// All nodes within the modal scope are already discovered when this event fires.
         /// </summary>
         public static event Action<NavNode> ModalGroupOpened;
 
         /// <summary>
-        /// Fired when a dual-role modal group closes.
-        /// NavMapper should pop from modal stack.
+        /// Fired when a modal scope closes.
+        /// NavMapper should pop from modal context stack and restore previous focus.
         /// </summary>
         public static event Action<NavNode> ModalGroupClosed;
-
-        /// <summary>
-        /// Fired when a NavTree root changes (nodes added/removed).
-        /// </summary>
-        public static event Action<FrameworkElement> RootChanged;
 
         #endregion
 
@@ -203,14 +186,9 @@ namespace AcManager.UiObserver {
                     return;
                 }
                 
-                // ? CreateNavNode() already computes HierarchicalPath for PathFilter check
-                // No need to recompute it here!
                 var navNode = NavNode.CreateNavNode(fe);
                 if (navNode != null) {
                     if (_nodesByElement.TryAdd(fe, navNode)) {
-                        // ? HierarchicalPath already set by NavNode.CreateNavNode()
-                        // (It's computed there for exclusion check and stored in the node)
-                        
                         // Build Parent/Children relationships (visual tree with PlacementTarget bridging)
                         LinkToParent(navNode, fe);
                         
@@ -218,9 +196,6 @@ namespace AcManager.UiObserver {
                             lock (elementSet) {
                                 elementSet.Add(fe);
                             }
-                            
-                            try { RootChanged?.Invoke(navTreeRoot); } catch { }
-                            try { NavNodeAdded?.Invoke(navNode); } catch { }
                             
                             // Enhanced debug output for Popup elements
                             if (fe is Popup popupElement) {
@@ -232,8 +207,11 @@ namespace AcManager.UiObserver {
                                 Debug.WriteLine($"[NavForest] Dynamic NavNode added: {fe.GetType().Name} '{navNode.SimpleName}'");
                             }
 
-                            // Track modal state
-                            TrackModalStateForNewNode(navNode);
+                            // Fire modal event AFTER all setup is complete (consistent with bulk scan)
+                            if (navNode.IsModal && navNode.IsGroup) {
+                                Debug.WriteLine($"[NavForest] Pure modal activated (dynamic): {navNode.SimpleName}");
+                                try { ModalGroupOpened?.Invoke(navNode); } catch { }
+                            }
                         }
                     }
                 }
@@ -482,13 +460,11 @@ namespace AcManager.UiObserver {
             if (_rootIndex.TryRemove(root, out var set)) {
                 foreach (var fe in set) {
                     if (_nodesByElement.TryRemove(fe, out var node)) {
-                        // ? NEW: Clean up Parent/Children links
+                        // Clean up Parent/Children links
                         UnlinkNode(node);
                         
-                        // Handle modal tracking for removed node
+                        // Handle modal tracking for removed node (fires ModalGroupClosed if modal)
                         HandleRemovedNodeModalTracking(node);
-                        
-                        try { NavNodeRemoved?.Invoke(node); } catch { }
                     }
                 }
             }
@@ -550,17 +526,13 @@ namespace AcManager.UiObserver {
                                 // Clean up Parent/Children links
                                 UnlinkNode(oldNode);
                                 
-                                // Handle modal tracking for removed node
+                                // Handle modal tracking for removed node (fires ModalGroupClosed if modal)
                                 HandleRemovedNodeModalTracking(oldNode);
-                                
-                                try { NavNodeRemoved?.Invoke(oldNode); } catch { }
                             }
                         }
                     }
                     return newElements;
                 });
-
-                try { RootChanged?.Invoke(root); } catch { }
             } catch { }
         }
         
@@ -574,6 +546,9 @@ namespace AcManager.UiObserver {
             var stack = new Stack<DependencyObject>();
             stack.Push(root);
             visited.Add(root);
+            
+            // Collect modals discovered during scan - fire events AFTER scan completes
+            var discoveredModals = new List<NavNode>();
 
             while (stack.Count > 0) {
                 var node = stack.Pop();
@@ -604,14 +579,11 @@ namespace AcManager.UiObserver {
                         }
                     } catch { continue; }
 
-                    // ? CreateNavNode() already computes HierarchicalPath for PathFilter check
                     var navNode = NavNode.CreateNavNode(fe);
                     if (navNode != null) {
                         var isNewNode = !_nodesByElement.ContainsKey(fe);
                         _nodesByElement.AddOrUpdate(fe, navNode, (k, old) => navNode);
                         discoveredElements.Add(fe);
-                        
-                        // ? HierarchicalPath already set by NavNode.CreateNavNode()
                         
                         // Build Parent/Children relationships (visual tree with PlacementTarget bridging)
                         LinkToParent(navNode, fe);
@@ -624,11 +596,11 @@ namespace AcManager.UiObserver {
                                     : "NULL";
                                 Debug.WriteLine($"[NavForest] NavNode discovered: Popup '{navNode.SimpleName}' with PlacementTarget={placementTargetInfo}");
                             }
-                            
-                            try { NavNodeAdded?.Invoke(navNode); } catch { }
 
-                            // Track modal state
-                            TrackModalStateForNewNode(navNode);
+                            // Collect modals for later event firing (after scan completes)
+                            if (navNode.IsModal && navNode.IsGroup) {
+                                discoveredModals.Add(navNode);
+                            }
                         }
                     }
                 }
@@ -645,6 +617,12 @@ namespace AcManager.UiObserver {
                         }
                     } catch { }
                 }
+            }
+            
+            // Scan complete - now fire modal events with complete information available
+            foreach (var modalNode in discoveredModals) {
+                Debug.WriteLine($"[NavForest] Pure modal activated (after scan): {modalNode.SimpleName}");
+                try { ModalGroupOpened?.Invoke(modalNode); } catch { }
             }
         }
 
@@ -716,39 +694,6 @@ namespace AcManager.UiObserver {
         #endregion
 
         #region Modal State Tracking
-
-        /// <summary>
-        /// Tracks modal state changes when a new NavNode is discovered.
-        /// 
-        /// For pure modal groups (Window, Popup, PopupRoot):
-        ///   - Existence = active ? emit ModalGroupOpened immediately
-        /// 
-        /// For leaf nodes or non-modal nodes:
-        ///   - No modal tracking needed
-        ///   
-        /// ? NEW: ComboBox, Menu, ContextMenu are just LEAVES!
-        /// We don't track their open/close state.
-        /// When they open, WPF creates a PopupRoot which we detect as a modal.
-        /// </summary>
-        private static void TrackModalStateForNewNode(NavNode node) {
-            if (node == null) return;
-
-            try {
-                // CASE 1: Pure modal group (Window, Popup, PopupRoot) - existence = active
-                if (node.IsModal && node.IsGroup) {
-                    Debug.WriteLine($"[NavForest] Pure modal activated: {node.SimpleName}");
-                    try { ModalGroupOpened?.Invoke(node); } catch { }
-                    return;
-                }
-
-                // CASE 2: Leaf nodes - no modal tracking
-                // ComboBox, Menu, ContextMenu are just leaves that happen to open popups
-                // The PopupRoot that appears is the actual modal
-
-            } catch (Exception ex) {
-                Debug.WriteLine($"[NavForest] Error tracking modal for {node.SimpleName}: {ex.Message}");
-            }
-        }
 
         /// <summary>
         /// Handles modal tracking when a node is removed.

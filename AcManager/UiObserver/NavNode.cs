@@ -75,6 +75,7 @@ namespace AcManager.UiObserver
         // Group elements - containers that can hold navigable children
         private static readonly HashSet<Type> _groupTypes = new HashSet<Type>
         {
+            typeof(Window),        // Root modal: application windows (MainWindow, dialogs, etc.)
             typeof(Popup),         // Pure container: never directly navigable
             typeof(ToolBar),       // Pure container: never directly navigable
             typeof(StatusBar),     // Pure container: never directly navigable
