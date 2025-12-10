@@ -160,12 +160,6 @@ namespace AcManager.UiObserver
                             isGroup = true;
                             isLeaf = false;
                             break;
-
-                        case NavRole.DualGroup:
-                            // No longer supported - treat as regular group
-                            isGroup = true;
-                            isLeaf = false;
-                            break;
                     }
 
                     if (VERBOSE_DEBUG) {

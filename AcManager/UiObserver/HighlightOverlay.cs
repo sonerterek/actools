@@ -341,22 +341,5 @@ namespace AcManager.UiObserver {
                 }
             } catch { }
         }
-
-        /// <summary>
-        /// Legacy method for backward compatibility - shows debug rects.
-        /// </summary>
-        [Obsolete("Use ShowDebugRects instead")]
-        public void ShowRects(IEnumerable<Rect> leafRectsInDip, IEnumerable<Rect> groupRectsInDip = null) {
-            ShowDebugRects(leafRectsInDip, groupRectsInDip);
-        }
-
-        /// <summary>
-        /// Legacy method for backward compatibility - clears debug rects and hides focus rect.
-        /// </summary>
-        [Obsolete("Use ClearDebugRects or HideFocusRect instead")]
-        public void HideOverlay() {
-            ClearDebugRects();
-            HideFocusRect();
-        }
     }
 }

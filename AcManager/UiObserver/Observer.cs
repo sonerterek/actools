@@ -131,7 +131,6 @@ namespace AcManager.UiObserver {
                         return;
                     }
                     
-                    AttachSubtreeChangeHandlers(fe);
                     TryCreateNavNodeForElement(fe);
                     return;
                 }
@@ -146,7 +145,6 @@ namespace AcManager.UiObserver {
                     }
                     
                     if (_presentationSourceRoots.ContainsKey(ps)) {
-                        AttachSubtreeChangeHandlers(fe);
                         TryCreateNavNodeForElement(fe);
                         return;
                     }
@@ -219,15 +217,6 @@ namespace AcManager.UiObserver {
         }
 
         /// <summary>
-        /// Placeholder for attaching Unloaded/LayoutUpdated handlers for dynamic element tracking.
-        /// Currently not needed as full tree rescans handle dynamic changes.
-        /// </summary>
-        private static void AttachSubtreeChangeHandlers(FrameworkElement fe) {
-            // Placeholder - dynamic changes are handled by periodic rescans via LayoutUpdated
-            // Could be extended in future to track specific element unload events
-        }
-
-        /// <summary>
         /// Links a newly-created NavNode to its parent in the navigation tree.
         /// Walks up the visual tree to find the first parent NavNode and establishes bidirectional link.
         /// Also handles Popup boundaries by using PlacementTarget to bridge the visual tree gap.
@@ -257,7 +246,7 @@ namespace AcManager.UiObserver {
                         return;
                     }
                     
-                    // ? NEW: If we hit a Popup, jump across the boundary using PlacementTarget
+                    // If we hit a Popup, jump across the boundary using PlacementTarget
                     if (current is Popup popup && popup.PlacementTarget is FrameworkElement placementTarget) {
                         if (_nodesByElement.TryGetValue(placementTarget, out var ownerNode)) {
                             // Found owner across Popup boundary - establish visual tree link
@@ -347,22 +336,6 @@ namespace AcManager.UiObserver {
                 }
                 
                 ScheduleDebouncedSync(root);
-            } catch { }
-        }
-
-        public static void RescanSubtree(FrameworkElement subtreeRoot) {
-            if (subtreeRoot == null) return;
-            
-            try {
-                var ps = PresentationSource.FromVisual(subtreeRoot);
-                if (ps == null) return;
-                
-                if (!_presentationSourceRoots.TryGetValue(ps, out var navTreeRoot)) {
-                    RegisterRoot(subtreeRoot);
-                    return;
-                }
-                
-                ScheduleDebouncedSync(navTreeRoot);
             } catch { }
         }
 
@@ -660,18 +633,6 @@ namespace AcManager.UiObserver {
 
         #region Query API
 
-        public static IReadOnlyCollection<NavNode> GetNavNodesForRoot(FrameworkElement root) {
-            if (root == null) return new NavNode[0];
-            if (!_rootIndex.TryGetValue(root, out var set)) return new NavNode[0];
-            var list = new List<NavNode>();
-            foreach (var fe in set) {
-                if (_nodesByElement.TryGetValue(fe, out var node)) {
-                    list.Add(node);
-                }
-            }
-            return list.AsReadOnly();
-        }
-
         public static IReadOnlyCollection<NavNode> GetAllNavNodes() {
             return _nodesByElement.Values.Distinct().ToArray();
         }
@@ -712,49 +673,6 @@ namespace AcManager.UiObserver {
             } catch (Exception ex) {
                 Debug.WriteLine($"[Observer] Error handling removal of {node.SimpleName}: {ex.Message}");
             }
-        }
-
-        #endregion
-
-        #region Computed HierarchicalPath
-
-        /// <summary>
-        /// Computes the HierarchicalPath by walking up the FULL visual tree to the root.
-        /// Returns a string in format: "WindowName:Window > PanelName:StackPanel > ButtonName:Button"
-        /// 
-        /// IMPORTANT: This includes ALL FrameworkElements in the path, not just those with NavNodes.
-        /// Used by PathFilter for pattern matching and as unique identifier for logging.
-        /// </summary>
-        private static string ComputeHierarchicalPath(FrameworkElement fe) {
-            var segments = new List<string>();
-            
-            try {
-                DependencyObject current = fe;
-                
-                // Walk up the ENTIRE visual tree
-                while (current != null) {
-                    if (current is FrameworkElement currentFe) {
-                        var name = string.IsNullOrEmpty(currentFe.Name) ? "(unnamed)" : currentFe.Name;
-                        var type = currentFe.GetType().Name;
-                        segments.Insert(0, $"{name}:{type}");
-                    }
-                    
-                    try {
-                        current = VisualTreeHelper.GetParent(current);
-                    } catch {
-                        break;
-                    }
-                }
-            } catch { }
-            
-            // If visual tree walk failed completely, use this element's Name:Type
-            if (segments.Count == 0) {
-                var name = string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name;
-                var type = fe.GetType().Name;
-                segments.Add($"{name}:{type}");
-            }
-            
-            return string.Join(" > ", segments);
         }
 
         #endregion

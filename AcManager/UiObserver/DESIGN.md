@@ -91,7 +91,7 @@
 **Leaf Types:** Buttons, MenuItems, ComboBox, Menu, Sliders, etc.  
 **Group Types:** Popup, ListBox, TabControl, DataGrid, **Window** (see below)
 
-**? CRITICAL: Window Added to Group Types**
+**?? CRITICAL: Window Added to Group Types**
 
 **What changed:** `typeof(Window)` was added to `_groupTypes` whitelist in `NavNode.cs`.
 
@@ -156,54 +156,7 @@ User closes dropdown:
 
 ---
 
-### 4. Opportunistic Focus Initialization
-
-**Decision:** Focus is initialized **lazily and opportunistically** when navigable nodes appear.
-
-**Why:**
-- **Handles Bulk Discovery:** After bulk scan completes (`RootChanged`), first navigable node gets focus
-- **Handles Dynamic Loading:** As UI loads incrementally (lazy tabs, etc.), first navigable node gets focus
-- **Modal-Aware:** Each modal context initializes focus independently when it opens
-
-**Triggers:**
-1. `OnNavNodeAdded` ? Check if current context needs focus
-2. `OnRootChanged` ? Check if current context needs focus (after bulk scan)
-3. `OnModalGroupOpened` ? New context created with null focus, then checked
-
-**Algorithm:**
-```csharp
-TryInitializeFocusIfNeeded() {
-    if (CurrentContext == null) return;          // No context yet
-    if (CurrentContext.FocusedNode != null) return;  // Already has focus
-    
-    var firstNode = FindFirstNavigableInScope(CurrentContext.ModalNode);
-    if (firstNode != null) {
-        CurrentContext.FocusedNode = firstNode;
-        SetFocusVisuals(firstNode);
-    }
-}
-```
-
-**Selection Strategy:** Top-left preference (Y-coordinate weighted higher than X)
-
-**? Debug Output:**:
-
-When diagnosing focus selection issues, `TryInitializeFocusIfNeeded()` logs detailed candidate scoring:
-
-```
-[Navigator] Finding first navigable in scope 'PopupRoot'...
-  Candidate: MenuItem @ path...
-    Center: 150.0,50.0 | Score: 500150.0
-  Candidate: ScrollBar @ path...
-    Center: 450.0,0.0 | Score: 450.0
-  ? WINNER: ScrollBar (score: 450.0)
-```
-
-This debug output was instrumental in discovering the ScrollBar hijacking issue (see below).
-
----
-
-### 5. HierarchicalPath = Computed Once, Stored Forever
+### 4. HierarchicalPath = Computed Once, Stored Forever
 
 **Decision:** Compute `HierarchicalPath` in `NavNode.CreateNavNode()` and pass to constructor.
 
@@ -218,7 +171,7 @@ This debug output was instrumental in discovering the ScrollBar hijacking issue 
 
 ---
 
-### 6. Popup?PlacementTarget Bridging
+### 5. Popup?PlacementTarget Bridging
 
 **Decision:** `Observer.LinkToParent()` walks through `Popup.PlacementTarget` to bridge visual tree gaps.
 
@@ -237,7 +190,7 @@ if (current is Popup popup && popup.PlacementTarget != null) {
 
 ---
 
-### 7. Persistent HighlightOverlay (Not Dispose/Recreate)
+### 6. Persistent HighlightOverlay (Not Dispose/Recreate)
 
 **Decision:** Create overlay once, reuse it (Hide/Show instead of Dispose/Create).
 
@@ -258,6 +211,38 @@ _overlay?.Hide(); // Reuse same instance
 ```
 
 **Critical Fix:** `GC.SuppressFinalize(this)` in `HighlightOverlay.Dispose()` prevents finalizer deadlock.
+
+---
+
+### 7. Minimal Public API Surface
+
+**Decision:** Only `Navigator.Initialize()` is truly public. Most APIs are `internal` or `private`.
+
+**Why:**
+- **Encapsulation:** External code should only initialize the system, not manage it
+- **Simplicity:** Fewer entry points = fewer potential misuses
+- **Maintainability:** Internal refactoring doesn't affect external callers
+
+**Public API (Navigator):**
+- `Initialize()` - Main initialization *(called from AppUi.cs)*
+- `MoveInDirection(dir)` - Keyboard navigation
+- `ActivateFocusedNode()` - Activate current focus
+- `ExitGroup()` - Exit current modal
+
+**Internal API (Navigator):**
+- `FocusChanged` event - Internal subscribers only
+- `GetAllNavNodes()` - Internal queries only
+
+**Public API (Observer):**
+- `Configure(...)` - Configuration
+- `EnableAutoRootTracking()` - Auto-discovery
+- `RegisterRoot(...)` / `UnregisterRoot(...)` - Manual root management
+- `SyncRoot(...)` - Manual sync
+- `GetAllNavNodes()` - Query API (used by Navigator)
+- `TryGetNavNode(...)` - Lookup API (used by NavNode validation)
+- `ModalGroupOpened` / `ModalGroupClosed` events - Modal lifecycle
+
+**Architectural Note:** All other classes (NavNode, NavPathFilter, HighlightOverlay, NavContext) are `internal` - never exposed outside UiObserver directory.
 
 ---
 
@@ -293,9 +278,12 @@ _overlay?.Hide(); // Reuse same instance
 
 **Key Methods:**
 - `RegisterRoot(fe)` - Register a PresentationSource root for scanning
+- `UnregisterRoot(fe)` - Cleanup when root is unloaded
 - `SyncRoot(root)` - Rescan visual tree and sync with tracked nodes (silent operation)
 - `LinkToParent(node, fe)` - Build Parent/Child relationships (handles Popup bridging)
+- `UnlinkNode(node)` - Clean up Parent/Child links on removal
 - `TryCreateNavNodeForElement(fe)` - Create node for dynamically loaded elements (silent)
+- `HandleRemovedNodeModalTracking(node)` - Fire ModalGroupClosed for removed modals
 
 **Key Events (modal lifecycle only):**
 - `ModalGroupOpened` - Modal opened (Window, PopupRoot) - ALL children already discovered
@@ -315,6 +303,12 @@ _overlay?.Hide(); // Reuse same instance
 
 **Architectural Decision:** Per-node events (NavNodeAdded/NavNodeRemoved) were removed in favor of modal-only events. This simplifies the architecture and provides complete information to Navigator when modals open.
 
+**Dead Code Removed:**
+- ? `GetNavNodesForRoot()` - Never called
+- ? `RescanSubtree()` - Never called
+- ? `AttachSubtreeChangeHandlers()` - Empty placeholder
+- ? `ComputeHierarchicalPath()` - Replaced by `NavNode.GetHierarchicalPath()`
+
 ---
 
 ### Navigator.cs - Navigation Logic
@@ -322,11 +316,11 @@ _overlay?.Hide(); // Reuse same instance
 **Purpose:** Subscribes to modal lifecycle events, manages modal context stack, handles keyboard input, spatial navigation.
 
 **Key Methods:**
+- `Initialize()` - One-time setup (external entry point)
 - `MoveInDirection(dir)` - Find best candidate in direction using spatial algorithm
 - `ActivateFocusedNode()` - Activate current focus
 - `ExitGroup()` - Close topmost modal
 - `TryInitializeFocusIfNeeded()` - Initialize focus when modal opens (complete candidate list!)
-- `FindFirstNavigableInScope(scopeNode)` - Find first navigable element (top-left preference)
 - `SetFocusVisuals(node)` - Update overlay highlight
 
 **Key Data:**
@@ -339,6 +333,10 @@ _overlay?.Hide(); // Reuse same instance
 - `OnModalGroupClosed` - Pop context, restore previous focus
 - `OnPreviewKeyDown` - Handle Ctrl+Shift+Arrow keys
 
+**Internal API:**
+- `FocusChanged` event - Internal subscribers only (not public)
+- `GetAllNavNodes()` - Internal query API
+
 **Design Patterns:**
 - **Observer Pattern:** Subscribes to Observer modal lifecycle events only
 - **Command Pattern:** Keyboard shortcuts trigger navigation commands
@@ -346,6 +344,17 @@ _overlay?.Hide(); // Reuse same instance
 - **Single-Pass Initialization:** Focus initialized once per modal with complete information
 
 **Architectural Decision:** Removed subscriptions to NavNodeAdded/NavNodeRemoved events. Navigator now reacts only to modal lifecycle changes, receiving complete information about all nodes in the modal scope at once. This eliminates redundant focus attempts and ensures optimal candidate selection.
+
+**Dead Code Removed:**
+- ? `NavMapUpdated` event - Never subscribed to externally
+- ? `TryGetById()` - Never called
+- ? `FocusNodeByPath()` - Never called
+- ? `GetFocusedNodePath()` - Never called
+- ? `GetFocusedNode()` - Never called
+- ? `GetActiveModal()` - Never called
+- ? `GetModalStackPaths()` - Never called
+- ? `FindFirstNavigableInScope()` - Duplicate logic (merged into `TryInitializeFocusIfNeeded()`)
+- ? `_suppressFocusTracking` field - No longer needed
 
 ---
 
@@ -373,6 +382,10 @@ CLASSIFY: ** > *:SelectCarDialog => role=group; modal=true
 - **Interpreter Pattern:** Parse and evaluate path patterns
 - **Chain of Responsibility:** Check rules in priority order
 
+**Dead Code Removed:**
+- ? `NavRole.DualGroup` enum value - Remnant from abandoned "dual-role" architecture
+- ? `NavNodeClassification.AsDualGroup()` factory method - Never called
+
 ---
 
 ### HighlightOverlay.cs - Visual Feedback
@@ -396,6 +409,23 @@ CLASSIFY: ** > *:SelectCarDialog => role=group; modal=true
 - **Singleton-ish:** Navigator keeps one persistent instance
 - **Observer Pattern:** Updates when focus changes
 
+**Dead Code Removed:**
+- ? `ShowRects()` - Obsolete method (replaced by `ShowDebugRects()`)
+- ? `HideOverlay()` - Obsolete method (replaced by `ClearDebugRects()` + `HideFocusRect()`)
+
+---
+
+### NavContext.cs - Context Data Structure
+
+**Purpose:** Bundle modal scope with focused node (atomic state management).
+
+**Key Properties:**
+- `ModalNode` - The modal defining this context's scope (Window, Popup, PopupRoot)
+- `FocusedNode` - Currently focused node within this scope (or null)
+
+**Design Pattern:**
+- **Value Object:** Immutable modal node, mutable focus
+
 ---
 
 ## ? Design Philosophy Summary
@@ -415,6 +445,7 @@ CLASSIFY: ** > *:SelectCarDialog => role=group; modal=true
 13. **? Optimistic Validation:** Accept unlinked modals, reject only provably wrong hierarchies
 14. **? Pattern-Based Exclusion:** Context-aware filtering better than global type rules
 15. **? Silent Discovery:** Node tracking is internal, events signal user-facing state changes only
+16. **? Minimal Public API:** Only expose what external code needs (`Initialize()` + navigation commands)
 
 ---
 
@@ -487,7 +518,7 @@ private static void OnModalGroupClosed(NavNode modalNode) {
 
 ### 3. Optimistic Modal Validation
 
-**? ARCHITECTURAL CHANGE:** Modified modal validation to handle timing-sensitive initialization.
+**?? ARCHITECTURAL CHANGE:** Modified modal validation to handle timing-sensitive initialization.
 
 **Problem:** PopupRoot fires `ModalGroupOpened` event BEFORE `LinkToParent()` runs, so `modalNode.Parent` is `null` when validation occurs. The original strict validation rejected these modals, breaking popup navigation.
 
@@ -545,20 +576,11 @@ private static void TryInitializeFocusIfNeeded() {
     
     // Already has focus? Nothing to do
     if (CurrentContext.FocusedNode != null) return;
-    
+
     // Find first navigable node in current scope (top-left preference)
     // All nodes are ALREADY discovered - complete candidate list!
-    var firstNode = FindFirstNavigableInScope(CurrentContext.ModalNode);
-    if (firstNode != null) {
-        CurrentContext.FocusedNode = firstNode;
-        SetFocusVisuals(firstNode);
-        Debug.WriteLine($"Initialized focus in '{CurrentContext.ModalNode.SimpleName}' -> '{firstNode.SimpleName}'");
-    }
-}
-
-private static NavNode FindFirstNavigableInScope(NavNode scopeNode) {
     var candidates = GetCandidatesInScope()
-        .Where(n => scopeNode == null || IsDescendantOf(n, scopeNode))
+        .Where(n => CurrentContext.ModalNode == null || IsDescendantOf(n, CurrentContext.ModalNode))
         .OrderBy(n => {
             // Prefer top-left (Y weight > X weight)
             var center = n.GetCenterDip();
@@ -567,7 +589,12 @@ private static NavNode FindFirstNavigableInScope(NavNode scopeNode) {
         })
         .ToList();
     
-    return candidates.FirstOrDefault();
+    var firstNode = candidates.FirstOrDefault()?.Node;
+    if (firstNode != null) {
+        CurrentContext.FocusedNode = firstNode;
+        SetFocusVisuals(firstNode);
+        Debug.WriteLine($"Initialized focus in '{CurrentContext.ModalNode.SimpleName}' -> '{firstNode.SimpleName}'");
+    }
 }
 ```
 
@@ -580,3 +607,222 @@ private static NavNode FindFirstNavigableInScope(NavNode scopeNode) {
 **Key Improvement:** Unlike the old per-node event model, this executes **once per modal** with a **complete candidate list**, ensuring optimal selection every time.
 
 ---
+
+## ?? Known Issues & Solutions
+
+### Issue 1: ? SOLVED - ScrollBar Hijacking Focus
+
+**Problem:** ScrollBars inside dropdown menus were winning focus selection because they had lower Y-coordinates than menu items.
+
+**Why:** Top-left preference algorithm (Y weight = 10,000×) made ScrollBar (Y=0) beat MenuItem (Y=50).
+
+**Solution:** Added exclusion rules to filter ScrollBars from navigation:
+```csharp
+"EXCLUDE: *:PopupRoot > ** > *:ScrollBar",
+"EXCLUDE: *:PopupRoot > ** > *:BetterScrollBar",
+```
+
+**Impact:** Menu items now correctly get focus when dropdowns open.
+
+---
+
+### Issue 2: ? SOLVED - MainWindow Not Modal
+
+**Problem:** Root window wasn't being discovered, so modal stack remained empty and navigation failed.
+
+**Why:** Window wasn't in `_groupTypes` whitelist, so it was ignored during scanning.
+
+**Solution:** Added `typeof(Window)` to `_groupTypes`:
+```csharp
+private static readonly HashSet<Type> _groupTypes = new HashSet<Type>
+{
+    typeof(Window),  // ? Added this
+    // ...rest
+};
+```
+
+**Impact:** Root modal context now initializes correctly, navigation system functional.
+
+---
+
+### Issue 3: ? SOLVED - HighlightOverlay GC Deadlock
+
+**Problem:** App freezes during Gen 2 GC, debugger shows circular wait between GC thread and Dispatcher thread.
+
+**Why:** Multiple overlay instances created ? finalizers queued ? Gen 2 GC runs finalizers ? finalizers try to use Dispatcher ? circular deadlock.
+
+**Solution 1:** Reuse single overlay instance (Hide/Show instead of Dispose/Create)
+**Solution 2:** Add `GC.SuppressFinalize(this)` in `Dispose()` method
+
+**Impact:** No more freezes, overlay works reliably.
+
+---
+
+### Issue 4: ? SOLVED - PopupRoot Modal Validation Failure
+
+**Problem:** PopupRoot modals were rejected during validation because `Parent == null` when event fired.
+
+**Why:** `ModalGroupOpened` event fires immediately after node creation, before `LinkToParent()` runs.
+
+**Solution:** Optimistic validation - accept modals with no parent yet:
+```csharp
+// Only reject if HAS parent but WRONG parent
+if (modalNode.Parent != null && !IsDescendantOf(modalNode, currentTop)) {
+    return; // Reject
+}
+// If Parent == null, accept (will be linked immediately after)
+```
+
+**Impact:** Dropdown menus now navigate correctly.
+
+---
+
+## ?? Pattern Syntax Reference
+
+### Exclusion Rules
+
+```csharp
+// Exclude HighlightOverlay and all descendants
+"EXCLUDE: *:HighlightOverlay > **"
+
+// Exclude ModernMenu inside MainWindow
+"EXCLUDE: Window:MainWindow > WindowBorder:Border > ** > PART_Menu:ModernMenu"
+
+// Exclude ScrollBars inside popups
+"EXCLUDE: *:PopupRoot > ** > *:ScrollBar"
+```
+
+### Classification Rules
+
+```csharp
+// Make SelectCarDialog a modal group
+"CLASSIFY: ** > *:SelectCarDialog => role=group; modal=true"
+
+// Make SettingsPanel a non-modal group
+"CLASSIFY: ** > SettingsPanel:Border => role=group; modal=false"
+
+// Override ComboBox modality
+"CLASSIFY: *** > QuickFilter:ComboBox => modal=false"
+```
+
+### Wildcard Reference
+
+| Wildcard | Meaning | Example |
+|----------|---------|---------|
+| `*` | Match any single segment | `*:Button` = any Button |
+| `**` | Match 0+ segments | `** > *:Button` = Button at any depth |
+| `***` | Match 1+ segments | `*** > *:Button` = Button with at least 1 ancestor |
+| `>` | Parent-child separator | `A:Panel > B:Button` = Button B inside Panel A |
+
+### Segment Format
+
+```
+Name:Type
+```
+
+- **Name:** Element's `fe.Name` property (use `*` for any name)
+- **Type:** Element's type name (use `*` for any type)
+
+**Examples:**
+- `SaveButton:Button` - Button named "SaveButton"
+- `*:Button` - Any Button (any name)
+- `PART_Content:*` - Any element named "PART_Content"
+- `*:*` - Any element (same as `*`)
+
+---
+
+## ?? Debugging Tips
+
+### 1. Enable Verbose Debug Output
+
+Set `VERBOSE_DEBUG = true` in `NavNode.cs`:
+
+```csharp
+private const bool VERBOSE_DEBUG = true;
+```
+
+Output example:
+```
+[NavNode] Evaluating: Button 'SaveButton'
+[NavNode]   -> Type-based: IsGroup=false, IsLeaf=true
+[NavNode]   -> CREATED: Button Id=N:SaveButton
+[NavNode]   -> Final: IsGroup=false, IsModal=false
+[NavNode]   -> Path: MainWindow:Window > SaveButton:Button
+```
+
+---
+
+### 2. Toggle Debug Overlay
+
+Press **Ctrl+Shift+F12** to show all navigable elements with colored rectangles:
+- **Orange:** Leaf nodes (navigable targets)
+- **Gray:** Group nodes (containers)
+
+Press **Ctrl+Shift+F11** to show ALL discovered nodes (including out-of-scope).
+
+---
+
+### 3. Enable Consistency Validation (DEBUG builds only)
+
+Consistency validation runs automatically in DEBUG builds when toggling the overlay:
+
+```csharp
+#if DEBUG
+    ValidateNodeConsistency();  // Runs on Ctrl+Shift+F12/F11
+#endif
+```
+
+Output example:
+```
+========== NavNode Consistency Check ==========
+Total nodes to validate: 47
+Dead visuals: 0
+Parent mismatches: 0
+Child consistency errors: 0
+Orphaned nodes: 0
+Circular references: 0
+? All nodes are CONSISTENT with visual tree!
+```
+
+---
+
+### 4. Watch Modal Stack State
+
+Modal stack is logged during overlay toggle (Ctrl+Shift+F12/F11):
+
+```
+Modal Stack (2 contexts):
+  [0] MainWindow:Window > LayoutRoot:DockPanel [focused: Button1:Button]
+  [1] Popup:Popup [focused: MenuItem3:MenuItem]
+```
+
+---
+
+### 5. Watch Focus Selection
+
+`TryInitializeFocusIfNeeded()` logs detailed candidate scoring:
+
+```
+[Navigator] Finding first navigable in scope 'PopupRoot'...
+  Candidate: MenuItem @ path...
+    Center: 150.0,50.0 | Score: 500150.0
+  Candidate: ScrollBar @ path...
+    Center: 450.0,0.0 | Score: 450.0
+  ? WINNER: ScrollBar (score: 450.0)
+```
+
+This helped identify the ScrollBar hijacking issue.
+
+---
+
+## ?? Further Reading
+
+- **CHANGELOG.md** - Chronological history of architectural changes
+- **NavNode.cs** - Factory pattern + type classification
+- **Observer.cs** - Discovery engine implementation
+- **Navigator.cs** - Navigation logic + modal stack management
+- **NavPathFilter.cs** - Pattern matching implementation
+
+---
+
+**Last Updated:** After dead code cleanup (INavInterfaces.cs deleted, unused APIs removed, minimal public surface)

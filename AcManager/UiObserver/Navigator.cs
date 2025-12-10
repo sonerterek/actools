@@ -73,13 +73,9 @@ namespace AcManager.UiObserver
 		private static NavContext CurrentContext => _modalContextStack.Count > 0 
 			? _modalContextStack[_modalContextStack.Count - 1] 
 			: null;
-		
-		// Focus lock to prevent feedback loops
-		private static bool _suppressFocusTracking = false;
 
 		// Events
-		public static event Action NavMapUpdated;
-		public static event Action<NavNode, NavNode> FocusChanged; // (oldNode, newNode)
+		internal static event Action<NavNode, NavNode> FocusChanged; // (oldNode, newNode)
 
 		// Highlighting overlay
 		private static HighlightOverlay _overlay;
@@ -189,9 +185,6 @@ namespace AcManager.UiObserver
 			
 			// Initialize focus in new context (all nodes within scope are already discovered!)
 			TryInitializeFocusIfNeeded();
-			
-			// Notify external subscribers
-			try { NavMapUpdated?.Invoke(); } catch { }
 		}
 
 		private static void OnModalGroupClosed(NavNode modalNode)
@@ -217,9 +210,6 @@ namespace AcManager.UiObserver
 				// No previous focus - try to initialize
 				TryInitializeFocusIfNeeded();
 			}
-			
-			// Notify external subscribers
-			try { NavMapUpdated?.Invoke(); } catch { }
 		}
 
 		/// <summary>
@@ -265,24 +255,6 @@ namespace AcManager.UiObserver
 		}
 
 		/// <summary>
-		/// Find the first navigable element in the given scope, preferring top-left position.
-		/// </summary>
-		private static NavNode FindFirstNavigableInScope(NavNode scopeNode)
-		{
-			var candidates = GetCandidatesInScope()
-				.Where(n => scopeNode == null || IsDescendantOf(n, scopeNode))
-				.OrderBy(n => {
-					// Prefer top-left position (Y has higher weight than X)
-					var center = n.GetCenterDip();
-					if (!center.HasValue) return double.MaxValue;
-					return center.Value.X + center.Value.Y * 10000.0;
-				})
-				.ToList();
-			
-			return candidates.FirstOrDefault();
-		}
-
-		/// <summary>
 		/// Updates visual feedback (overlay) for focused node.
 		/// Separated from focus state management for clarity.
 		/// </summary>
@@ -308,28 +280,14 @@ namespace AcManager.UiObserver
 			var best = FindBestCandidateInDirection(CurrentContext.FocusedNode, dir);
 			if (best == null) return false;
 
-			_suppressFocusTracking = true;
-			try {
-				return SetFocus(best);
-			} finally {
-				Application.Current?.Dispatcher.BeginInvoke(new Action(() => {
-					_suppressFocusTracking = false;
-				}), DispatcherPriority.Input);
-			}
+			return SetFocus(best);
 		}
 
 		public static bool ActivateFocusedNode()
 		{
 			if (CurrentContext == null || CurrentContext.FocusedNode == null) return false;
 
-			_suppressFocusTracking = true;
-			try {
-				return CurrentContext.FocusedNode.Activate();
-			} finally {
-				Application.Current?.Dispatcher.BeginInvoke(new Action(() => {
-					_suppressFocusTracking = false;
-				}), DispatcherPriority.Input);
-			}
+			return CurrentContext.FocusedNode.Activate();
 		}
 
 		public static bool ExitGroup()
@@ -337,26 +295,6 @@ namespace AcManager.UiObserver
 			if (CurrentContext == null) return false;
 			return CurrentContext.ModalNode.Close();
 		}
-
-		public static bool FocusNodeByPath(string hierarchicalPath)
-		{
-			if (string.IsNullOrEmpty(hierarchicalPath)) return false;
-			
-			var node = Observer.GetAllNavNodes().FirstOrDefault(n => n.HierarchicalPath == hierarchicalPath);
-			if (node == null) return false;
-			if (!IsNavigableForSelection(node)) return false;
-			
-			return SetFocus(node);
-		}
-
-		public static string GetFocusedNodePath() => CurrentContext?.FocusedNode?.HierarchicalPath;
-		
-		public static NavNode GetFocusedNode() => CurrentContext?.FocusedNode;
-		
-		public static NavNode GetActiveModal() => CurrentContext?.ModalNode;
-		
-		public static IReadOnlyList<string> GetModalStackPaths() => 
-			_modalContextStack.Select(ctx => ctx.ModalNode.HierarchicalPath).ToList();
 
 		// === FOCUS MANAGEMENT ===
 
@@ -650,12 +588,9 @@ namespace AcManager.UiObserver
 
 		// === DEBUG VISUALIZATION ===
 
-		private const bool ENABLE_CONSISTENCY_VALIDATION = false;
-
+#if DEBUG
 		private static void ValidateNodeConsistency()
 		{
-			if (!ENABLE_CONSISTENCY_VALIDATION) return;
-			
 			Debug.WriteLine("\n========== NavNode Consistency Check ==========");
 
 			var allNodes = Observer.GetAllNavNodes().ToList();
@@ -946,6 +881,7 @@ namespace AcManager.UiObserver
 			
 			Debug.WriteLine("================================================\n");
 		}
+#endif
 
 		private static void ToggleHighlighting(bool filterByModalScope)
 		{
@@ -969,7 +905,9 @@ namespace AcManager.UiObserver
 				return;
 			}
 
+#if DEBUG
 			ValidateNodeConsistency();
+#endif
 
 			if (filterByModalScope) {
 				Debug.WriteLine("\n========== NavMapper: Highlight Rectangles (Active Modal Scope ONLY) ==========");
@@ -1141,16 +1079,6 @@ namespace AcManager.UiObserver
 		private static void ClearHighlighting()
 		{
 			try { _overlay?.ClearDebugRects(); } catch { }
-		}
-
-		// === PUBLIC QUERY API ===
-
-		public static IEnumerable<NavNode> GetAllNavNodes() => Observer.GetAllNavNodes();
-		
-		public static bool TryGetById(string id, out NavNode nav)
-		{
-			nav = Observer.GetAllNavNodes().FirstOrDefault(n => n.HierarchicalPath == id);
-			return nav != null;
 		}
 	}
 }

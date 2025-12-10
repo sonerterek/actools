@@ -12,8 +12,7 @@ namespace AcManager.UiObserver
     {
         Undefined,      // Use type-based detection (fallback)
         Leaf,           // Force as navigation leaf (selectable target)
-        Group,          // Force as pure group (container, not selectable)
-        DualGroup       // Force as dual-role group (ComboBox-like behavior)
+        Group           // Force as pure group (container, not selectable)
     }
 
     /// <summary>
@@ -34,7 +33,6 @@ namespace AcManager.UiObserver
         // Factory methods for common cases
         public static NavNodeClassification AsLeaf() => new NavNodeClassification { Role = NavRole.Leaf };
         public static NavNodeClassification AsGroup(bool? modal = null) => new NavNodeClassification { Role = NavRole.Group, IsModal = modal };
-        public static NavNodeClassification AsDualGroup(bool? modal = null) => new NavNodeClassification { Role = NavRole.DualGroup, IsModal = modal };
         public static NavNodeClassification WithModality(bool isModal) => new NavNodeClassification { IsModal = isModal };
     }
 
