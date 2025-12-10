@@ -32,7 +32,7 @@ namespace AcManager {
             _application = application ?? throw new ArgumentNullException(nameof(application));
 
             // Initialize navigation mapper
-            AcManager.UiObserver.NavMapper.Initialize();
+            AcManager.UiObserver.Navigator.Initialize();
 
             // Extra close-if-nothing-shown timer just to be sure
             if (_application.Dispatcher != null) {

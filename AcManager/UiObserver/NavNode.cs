@@ -358,7 +358,7 @@ namespace AcManager.UiObserver
 
         /// <summary>
         /// Walks up the visual tree to find if there's a non-modal NavGroup ancestor.
-        /// Uses NavForest's tracking dictionary to avoid re-evaluating types.
+        /// Uses Observer's tracking dictionary to avoid re-evaluating types.
         /// </summary>
         private static NavNode FindNonModalGroupAncestorNode(FrameworkElement fe, out NavNode modalBlocker)
         {
@@ -374,7 +374,7 @@ namespace AcManager.UiObserver
                     }
 
                     if (current is FrameworkElement parent) {
-                        if (NavForest.TryGetNavNode(parent, out var parentNode)) {
+                        if (Observer.TryGetNavNode(parent, out var parentNode)) {
                             if (parentNode.IsGroup) {
                                 if (parentNode.IsModal) {
                                     modalBlocker = parentNode;

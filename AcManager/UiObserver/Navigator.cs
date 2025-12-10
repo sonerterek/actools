@@ -43,10 +43,10 @@ namespace AcManager.UiObserver
 	}
 
 	/// <summary>
-	/// NavMapper - Navigation coordinator with event-driven architecture.
+	/// Navigator - Navigation coordinator with event-driven architecture.
 	/// 
 	/// Responsibilities:
-	/// - Subscribe to NavForest modal lifecycle events (ModalGroupOpened, ModalGroupClosed)
+	/// - Subscribe to Observer modal lifecycle events (ModalGroupOpened, ModalGroupClosed)
 	/// - Manage modal context stack (each context = modal scope + focused node)
 	/// - Handle keyboard input (Ctrl+Shift+Arrow keys for navigation)
 	/// - Filter navigable candidates by modal scope
@@ -55,13 +55,13 @@ namespace AcManager.UiObserver
 	/// 
 	/// Architecture:
 	/// - NavNode: Data + type-specific behaviors (CreateNavNode, Activate, Close)
-	/// - NavForest: Discovery engine (scans visual trees silently, emits modal lifecycle events)
-	/// - NavMapper: Navigation logic (subscribes to modal events only, manages modal stack, handles input)
+	/// - Observer: Discovery engine (scans visual trees silently, emits modal lifecycle events)
+	/// - Navigator: Navigation logic (subscribes to modal events only, manages modal stack, handles input)
 	/// 
-	/// Note: Individual node discovery is SILENT. NavMapper only reacts to modal lifecycle changes,
+	/// Note: Individual node discovery is SILENT. Navigator only reacts to modal lifecycle changes,
 	/// which provides complete information about all nodes in the modal scope at once.
 	/// </summary>
-	internal static class NavMapper
+	internal static class Navigator
 	{
 		private static bool _initialized = false;
 
@@ -93,15 +93,15 @@ namespace AcManager.UiObserver
 			// Initialize navigation rules
 			InitializeNavigationRules();
 
-			// Configure NavForest
-			NavForest.Configure(IsTrulyVisible);
+			// Configure Observer
+			Observer.Configure(IsTrulyVisible);
 			
-			// Subscribe to NavForest modal lifecycle events (simplified event model!)
-			NavForest.ModalGroupOpened += OnModalGroupOpened;
-			NavForest.ModalGroupClosed += OnModalGroupClosed;
+			// Subscribe to Observer modal lifecycle events (simplified event model!)
+			Observer.ModalGroupOpened += OnModalGroupOpened;
+			Observer.ModalGroupClosed += OnModalGroupClosed;
 			
 			// Enable automatic root tracking
-			NavForest.EnableAutoRootTracking();
+			Observer.EnableAutoRootTracking();
 
 			// Register keyboard handler
 			try {
@@ -116,7 +116,7 @@ namespace AcManager.UiObserver
 						HookWindow(w);
 						var content = w.Content as FrameworkElement;
 						if (content != null) {
-							NavForest.RegisterRoot(content);
+							Observer.RegisterRoot(content);
 						}
 					}
 					
@@ -143,7 +143,7 @@ namespace AcManager.UiObserver
 			try {
 				NavNode.PathFilter.ParseRules(rules);
 			} catch (Exception ex) {
-				Debug.WriteLine($"[NavMapper] Failed to initialize navigation rules: {ex}");
+				Debug.WriteLine($"[Navigator] Failed to initialize navigation rules: {ex}");
 			}
 		}
 
@@ -153,7 +153,7 @@ namespace AcManager.UiObserver
 				try {
 					_overlay = new HighlightOverlay();
 				} catch (Exception ex) {
-					Debug.WriteLine($"[NavMapper] Failed to create overlay: {ex.Message}");
+					Debug.WriteLine($"[Navigator] Failed to create overlay: {ex.Message}");
 				}
 			}
 		}
@@ -164,16 +164,16 @@ namespace AcManager.UiObserver
 		{
 			if (modalNode == null) return;
 			
-			Debug.WriteLine($"[NavMapper] Modal opened: {modalNode.SimpleName} @ {modalNode.HierarchicalPath}");
+			Debug.WriteLine($"[Navigator] Modal opened: {modalNode.SimpleName} @ {modalNode.HierarchicalPath}");
 			
 			// Validate linear chain (except for root context AND nodes with no parent yet)
 			if (_modalContextStack.Count > 0) {
 				var currentTop = CurrentContext.ModalNode;
 				
 				// Optimistic validation: Only reject if HAS parent but WRONG parent
-				// Accept modals with no parent yet (will be linked by NavForest after this event)
+				// Accept modals with no parent yet (will be linked by Observer after this event)
 				if (modalNode.Parent != null && !IsDescendantOf(modalNode, currentTop)) {
-					Debug.WriteLine($"[NavMapper] ERROR: Modal {modalNode.SimpleName} not descendant of {currentTop.SimpleName}!");
+					Debug.WriteLine($"[Navigator] ERROR: Modal {modalNode.SimpleName} not descendant of {currentTop.SimpleName}!");
 					return;
 				}
 			}
@@ -182,7 +182,7 @@ namespace AcManager.UiObserver
 			var newContext = new NavContext(modalNode, focusedNode: null);
 			_modalContextStack.Add(newContext);
 			
-			Debug.WriteLine($"[NavMapper] Modal stack depth: {_modalContextStack.Count}");
+			Debug.WriteLine($"[Navigator] Modal stack depth: {_modalContextStack.Count}");
 			
 			// Clear old focus visuals (new context has no focus yet)
 			_overlay?.HideFocusRect();
@@ -198,21 +198,21 @@ namespace AcManager.UiObserver
 		{
 			if (modalNode == null) return;
 			
-			Debug.WriteLine($"[NavMapper] Modal closed: {modalNode.SimpleName} @ {modalNode.HierarchicalPath}");
+			Debug.WriteLine($"[Navigator] Modal closed: {modalNode.SimpleName} @ {modalNode.HierarchicalPath}");
 			
 			// Pop context from stack
 			if (_modalContextStack.Count > 0 
 				&& CurrentContext.ModalNode.HierarchicalPath == modalNode.HierarchicalPath) {
 				_modalContextStack.RemoveAt(_modalContextStack.Count - 1);
 			} else {
-				Debug.WriteLine($"[NavMapper] WARNING: Closed modal not at top");
+				Debug.WriteLine($"[Navigator] WARNING: Closed modal not at top");
 				_modalContextStack.RemoveAll(ctx => ctx.ModalNode.HierarchicalPath == modalNode.HierarchicalPath);
 			}
 			
 			// Restore focus from previous context
 			if (CurrentContext != null && CurrentContext.FocusedNode != null) {
 				SetFocusVisuals(CurrentContext.FocusedNode);
-				Debug.WriteLine($"[NavMapper] Restored focus to '{CurrentContext.FocusedNode.SimpleName}'");
+				Debug.WriteLine($"[Navigator] Restored focus to '{CurrentContext.FocusedNode.SimpleName}'");
 			} else {
 				// No previous focus - try to initialize
 				TryInitializeFocusIfNeeded();
@@ -237,7 +237,7 @@ namespace AcManager.UiObserver
 			if (CurrentContext == null) return;
 			if (CurrentContext.FocusedNode != null) return;
 			
-			Debug.WriteLine($"[NavMapper] Finding first navigable in scope '{CurrentContext.ModalNode.SimpleName}'...");
+			Debug.WriteLine($"[Navigator] Finding first navigable in scope '{CurrentContext.ModalNode.SimpleName}'...");
 			
 			var candidates = GetCandidatesInScope()
 				.Where(n => CurrentContext.ModalNode == null || IsDescendantOf(n, CurrentContext.ModalNode))
@@ -259,7 +259,7 @@ namespace AcManager.UiObserver
 				CurrentContext.FocusedNode = firstNode;
 				SetFocusVisuals(firstNode);
 				
-				Debug.WriteLine($"[NavMapper] Initialized focus in '{CurrentContext.ModalNode.SimpleName}' -> '{firstNode.SimpleName}'");
+				Debug.WriteLine($"[Navigator] Initialized focus in '{CurrentContext.ModalNode.SimpleName}' -> '{firstNode.SimpleName}'");
 				try { FocusChanged?.Invoke(null, firstNode); } catch { }
 			}
 		}
@@ -342,7 +342,7 @@ namespace AcManager.UiObserver
 		{
 			if (string.IsNullOrEmpty(hierarchicalPath)) return false;
 			
-			var node = NavForest.GetAllNavNodes().FirstOrDefault(n => n.HierarchicalPath == hierarchicalPath);
+			var node = Observer.GetAllNavNodes().FirstOrDefault(n => n.HierarchicalPath == hierarchicalPath);
 			if (node == null) return false;
 			if (!IsNavigableForSelection(node)) return false;
 			
@@ -531,7 +531,7 @@ namespace AcManager.UiObserver
 
 		private static List<NavNode> GetCandidatesInScope()
 		{
-			return NavForest.GetAllNavNodes()
+			return Observer.GetAllNavNodes()
 				.Where(n => IsNavigableForSelection(n) && IsInActiveModalScope(n))
 				.ToList();
 		}
@@ -640,7 +640,7 @@ namespace AcManager.UiObserver
 		{
 			if (sender is Window w) {
 				var content = w.Content as FrameworkElement;
-				if (content != null) NavForest.RegisterRoot(content);
+				if (content != null) Observer.RegisterRoot(content);
 			}
 			
 			if (CurrentContext?.FocusedNode != null) {
@@ -658,7 +658,7 @@ namespace AcManager.UiObserver
 			
 			Debug.WriteLine("\n========== NavNode Consistency Check ==========");
 
-			var allNodes = NavForest.GetAllNavNodes().ToList();
+			var allNodes = Observer.GetAllNavNodes().ToList();
 			Debug.WriteLine($"Total nodes to validate: {allNodes.Count}");
 			
 			int deadVisuals = 0;
@@ -712,7 +712,7 @@ namespace AcManager.UiObserver
 						while (current != null)
 						{
 							current = VisualTreeHelper.GetParent(current);
-							if (current is FrameworkElement parentFe && NavForest.TryGetNavNode(parentFe, out var candidateParent))
+							if (current is FrameworkElement parentFe && Observer.TryGetNavNode(parentFe, out var candidateParent))
 							{
 								actualParent = candidateParent;
 								break;
@@ -842,7 +842,7 @@ namespace AcManager.UiObserver
 						var current = stack.Pop();
 						
 						// Skip the node itself
-						if (!ReferenceEquals(current, fe) && current is FrameworkElement childFe && NavForest.TryGetNavNode(childFe, out var foundNode))
+						if (!ReferenceEquals(current, fe) && current is FrameworkElement childFe && Observer.TryGetNavNode(childFe, out var foundNode))
 						{
 							visualTreeNavNodes.Add(foundNode);
 						}
@@ -960,11 +960,11 @@ namespace AcManager.UiObserver
 						_overlay.Hide();
 					}
 				} catch (Exception ex) {
-					Debug.WriteLine($"[NavMapper] Hide error: {ex.Message}");
+					Debug.WriteLine($"[Navigator] Hide error: {ex.Message}");
 				}
 
 				long memAfter = GC.GetTotalMemory(forceFullCollection: false);
-				Debug.WriteLine($"[NavMapper] Memory: Before={memBefore:N0}, After={memAfter:N0}, Delta={memAfter - memBefore:N0} bytes");
+				Debug.WriteLine($"[Navigator] Memory: Before={memBefore:N0}, After={memAfter:N0}, Delta={memAfter - memBefore:N0} bytes");
 
 				return;
 			}
@@ -996,17 +996,17 @@ namespace AcManager.UiObserver
 			var leafRects = new List<Rect>(256);
 			var groupRects = new List<Rect>(128);
 
-			// Get nodes from NavForest (authoritative source)
+			// Get nodes from Observer (authoritative source)
 			List<NavNode> nodesToShow;
 			if (filterByModalScope) {
 				// Filtered: Only show nodes in active modal scope
-				nodesToShow = NavForest.GetAllNavNodes()
+				nodesToShow = Observer.GetAllNavNodes()
 					.Where(n => IsInActiveModalScope(n))
 					.ToList();
 				Debug.WriteLine($"Nodes in current modal scope: {nodesToShow.Count}");
 			} else {
 				// Unfiltered: Show ALL discovered nodes (including groups!)
-				nodesToShow = NavForest.GetAllNavNodes().ToList();
+				nodesToShow = Observer.GetAllNavNodes().ToList();
 				Debug.WriteLine($"All discovered nodes: {nodesToShow.Count}");
 			}
 			
@@ -1120,7 +1120,7 @@ namespace AcManager.UiObserver
 				_overlay?.ShowDebugRects(leafRects, groupRects);
 				_debugMode = true;
 			} catch (Exception ex) {
-				Debug.WriteLine($"[NavMapper] Overlay error: {ex.Message}");
+				Debug.WriteLine($"[Navigator] Overlay error: {ex.Message}");
 			 }
 			
 			// ? Clear local collections to hint GC
@@ -1145,11 +1145,11 @@ namespace AcManager.UiObserver
 
 		// === PUBLIC QUERY API ===
 
-		public static IEnumerable<NavNode> GetAllNavNodes() => NavForest.GetAllNavNodes();
+		public static IEnumerable<NavNode> GetAllNavNodes() => Observer.GetAllNavNodes();
 		
 		public static bool TryGetById(string id, out NavNode nav)
 		{
-			nav = NavForest.GetAllNavNodes().FirstOrDefault(n => n.HierarchicalPath == id);
+			nav = Observer.GetAllNavNodes().FirstOrDefault(n => n.HierarchicalPath == id);
 			return nav != null;
 		}
 	}

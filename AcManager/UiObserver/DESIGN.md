@@ -16,9 +16,9 @@
 
 ```
 ???????????????????????????????????????????????????????????
-?                      NavMapper                          ?
+?                      Navigator                         ?
 ?  (Navigation Logic & Modal Stack Management)            ?
-?  - Subscribes to NavForest MODAL events ONLY            ?
+?  - Subscribes to Observer MODAL events ONLY             ?
 ?  - Manages modal context stack (scope + focus)          ?
 ?  - Handles keyboard input (Ctrl+Shift+Arrow navigation) ?
 ?  - Initializes focus on modal open (complete info!)     ?
@@ -29,7 +29,7 @@
                            ? events (modal lifecycle only)
                            ? (ModalGroupOpened, ModalGroupClosed)
 ???????????????????????????????????????????????????????????
-?                      NavForest                          ?
+?                      Observer                           ?
 ?  (Discovery Engine - Silent Scanning)                   ?
 ?  - Auto-discovers PresentationSource roots              ?
 ?  - Scans visual trees SILENTLY (no per-node events!)    ?
@@ -53,7 +53,7 @@
 ```
 
 **Key Architectural Principle:** 
-- **Silent Discovery:** NavForest discovers nodes without firing events
+- **Silent Discovery:** Observer discovers nodes without firing events
 - **Modal-Only Events:** Only modal lifecycle changes trigger events
 - **Complete Information:** When ModalGroupOpened fires, ALL nodes in the modal scope are already discovered
 - **Single Focus Attempt:** Focus initialization happens once per modal with complete candidate list
@@ -186,12 +186,12 @@ TryInitializeFocusIfNeeded() {
 
 **Selection Strategy:** Top-left preference (Y-coordinate weighted higher than X)
 
-**? Debug Output:**
+**? Debug Output:**:
 
 When diagnosing focus selection issues, `TryInitializeFocusIfNeeded()` logs detailed candidate scoring:
 
 ```
-[NavMapper] Finding first navigable in scope 'PopupRoot'...
+[Navigator] Finding first navigable in scope 'PopupRoot'...
   Candidate: MenuItem @ path...
     Center: 150.0,50.0 | Score: 500150.0
   Candidate: ScrollBar @ path...
@@ -220,7 +220,7 @@ This debug output was instrumental in discovering the ScrollBar hijacking issue 
 
 ### 6. Popup?PlacementTarget Bridging
 
-**Decision:** `NavForest.LinkToParent()` walks through `Popup.PlacementTarget` to bridge visual tree gaps.
+**Decision:** `Observer.LinkToParent()` walks through `Popup.PlacementTarget` to bridge visual tree gaps.
 
 **Why:**
 - **WPF Limitation:** Elements inside a Popup have NO visual tree parent (VisualTreeHelper.GetParent returns null)
@@ -287,7 +287,7 @@ _overlay?.Hide(); // Reuse same instance
 
 ---
 
-### NavForest.cs - Discovery Engine
+### Observer.cs - Discovery Engine
 
 **Purpose:** Scans visual trees silently, creates NavNodes, builds hierarchy, emits modal lifecycle events only.
 
@@ -313,11 +313,11 @@ _overlay?.Hide(); // Reuse same instance
 - **Debouncing:** Coalesces multiple layout changes into single scan
 - **Weak References:** Parent/Child links use WeakReference to avoid memory leaks
 
-**Architectural Decision:** Per-node events (NavNodeAdded/NavNodeRemoved) were removed in favor of modal-only events. This simplifies the architecture and provides complete information to NavMapper when modals open.
+**Architectural Decision:** Per-node events (NavNodeAdded/NavNodeRemoved) were removed in favor of modal-only events. This simplifies the architecture and provides complete information to Navigator when modals open.
 
 ---
 
-### NavMapper.cs - Navigation Logic
+### Navigator.cs - Navigation Logic
 
 **Purpose:** Subscribes to modal lifecycle events, manages modal context stack, handles keyboard input, spatial navigation.
 
@@ -340,12 +340,12 @@ _overlay?.Hide(); // Reuse same instance
 - `OnPreviewKeyDown` - Handle Ctrl+Shift+Arrow keys
 
 **Design Patterns:**
-- **Observer Pattern:** Subscribes to NavForest modal lifecycle events only
+- **Observer Pattern:** Subscribes to Observer modal lifecycle events only
 - **Command Pattern:** Keyboard shortcuts trigger navigation commands
 - **Strategy Pattern:** Spatial navigation algorithm (directional cost calculation)
 - **Single-Pass Initialization:** Focus initialized once per modal with complete information
 
-**Architectural Decision:** Removed subscriptions to NavNodeAdded/NavNodeRemoved events. NavMapper now reacts only to modal lifecycle changes, receiving complete information about all nodes in the modal scope at once. This eliminates redundant focus attempts and ensures optimal candidate selection.
+**Architectural Decision:** Removed subscriptions to NavNodeAdded/NavNodeRemoved events. Navigator now reacts only to modal lifecycle changes, receiving complete information about all nodes in the modal scope at once. This eliminates redundant focus attempts and ensures optimal candidate selection.
 
 ---
 
@@ -393,7 +393,7 @@ CLASSIFY: ** > *:SelectCarDialog => role=group; modal=true
 - `ShowInTaskbar = false` - Hidden from taskbar
 
 **Design Patterns:**
-- **Singleton-ish:** NavMapper keeps one persistent instance
+- **Singleton-ish:** Navigator keeps one persistent instance
 - **Observer Pattern:** Updates when focus changes
 
 ---
@@ -505,7 +505,7 @@ private static void OnModalGroupOpened(NavNode modalNode) {
         }
         
         // If Parent == null, accept optimistically
-        // (NavForest will link it immediately after this event)
+        // (Observer will link it immediately after this event)
     }
     
     // Push new context
