@@ -89,36 +89,24 @@ namespace AcManager.UiObserver
 			// Initialize navigation rules
 			InitializeNavigationRules();
 
-			// Configure Observer
-			Observer.Configure(IsTrulyVisible);
-			
-			// Subscribe to Observer modal lifecycle events (simplified event model!)
+			// Subscribe to Observer events
 			Observer.ModalGroupOpened += OnModalGroupOpened;
 			Observer.ModalGroupClosed += OnModalGroupClosed;
+			Observer.WindowLayoutChanged += OnWindowLayoutChanged;
 			
-			// Enable automatic root tracking
-			Observer.EnableAutoRootTracking();
+			// ? FIX: Create overlay BEFORE starting Observer to avoid race condition
+			// When Observer discovers MainWindow and fires ModalGroupOpened, the overlay
+			// must already exist so focus initialization can show the blue rectangle
+			EnsureOverlay();
+			
+			// Startup Observer (it will hook windows itself and fire ModalGroupOpened)
+			Observer.Initialize();
 
 			// Register keyboard handler
 			try {
 				EventManager.RegisterClassHandler(typeof(Window), UIElement.PreviewKeyDownEvent, 
 					new KeyEventHandler(OnPreviewKeyDown), true);
 			} catch { }
-
-			// Initialize windows
-			if (Application.Current != null) {
-				Application.Current.Dispatcher.BeginInvoke(new Action(() => {
-					foreach (Window w in Application.Current.Windows) {
-						HookWindow(w);
-						var content = w.Content as FrameworkElement;
-						if (content != null) {
-							Observer.RegisterRoot(content);
-						}
-					}
-					
-					EnsureOverlay();
-				}), DispatcherPriority.ApplicationIdle);
-			}
 		}
 		
 		private static void InitializeNavigationRules()
@@ -155,7 +143,6 @@ namespace AcManager.UiObserver
 		}
 
 		// === EVENT HANDLERS (Reactive Architecture) ===
-
 		private static void OnModalGroupOpened(NavNode modalNode)
 		{
 			if (modalNode == null) return;
@@ -212,6 +199,13 @@ namespace AcManager.UiObserver
 			}
 		}
 
+		private static void OnWindowLayoutChanged(object sender, EventArgs e)
+		{
+			if (CurrentContext?.FocusedNode != null) {
+				UpdateFocusRect(CurrentContext.FocusedNode);
+			}
+		}
+
 		/// <summary>
 		/// Initialize focus in the current context if:
 		/// 1. Current context exists
@@ -224,12 +218,59 @@ namespace AcManager.UiObserver
 		/// </summary>
 		private static void TryInitializeFocusIfNeeded()
 		{
-			if (CurrentContext == null) return;
-			if (CurrentContext.FocusedNode != null) return;
+			if (CurrentContext == null) {
+				Debug.WriteLine($"[Navigator] TryInitializeFocusIfNeeded: CurrentContext is null!");
+				return;
+			}
+			
+			if (CurrentContext.FocusedNode != null) {
+				Debug.WriteLine($"[Navigator] TryInitializeFocusIfNeeded: Already has focus: {CurrentContext.FocusedNode.SimpleName}");
+				return;
+			}
 			
 			Debug.WriteLine($"[Navigator] Finding first navigable in scope '{CurrentContext.ModalNode.SimpleName}'...");
 			
-			var candidates = GetCandidatesInScope()
+			// Get all candidates and log details
+			var allCandidates = GetCandidatesInScope();
+			Debug.WriteLine($"[Navigator] GetCandidatesInScope() returned {allCandidates.Count} candidates");
+			
+			if (allCandidates.Count == 0) {
+				// Diagnose why no candidates
+				var allNodes = Observer.GetAllNavNodes().ToList();
+				Debug.WriteLine($"[Navigator] Total nodes from Observer: {allNodes.Count}");
+				
+				var navigableNodes = allNodes.Where(n => IsNavigableForSelection(n)).ToList();
+				Debug.WriteLine($"[Navigator] Navigable nodes: {navigableNodes.Count}");
+				
+				var inScopeNodes = navigableNodes.Where(n => IsInActiveModalScope(n)).ToList();
+				Debug.WriteLine($"[Navigator] In active modal scope: {inScopeNodes.Count}");
+				
+				if (navigableNodes.Count > 0 && inScopeNodes.Count == 0) {
+					Debug.WriteLine($"[Navigator] Modal scope filtering removed all candidates!");
+					Debug.WriteLine($"[Navigator] CurrentContext.ModalNode: {CurrentContext.ModalNode.HierarchicalPath}");
+					
+					// Check a sample node
+					var sample = navigableNodes.First();
+					Debug.WriteLine($"[Navigator] Sample navigable node: {sample.SimpleName} @ {sample.HierarchicalPath}");
+					Debug.WriteLine($"[Navigator] Sample is descendant: {IsDescendantOf(sample, CurrentContext.ModalNode)}");
+					
+					// Walk up parent chain
+					var current = sample.Parent;
+					int depth = 0;
+					while (current != null && current.TryGetTarget(out var parentNode) && depth < 10) {
+						Debug.WriteLine($"[Navigator]   Parent {depth}: {parentNode.SimpleName} @ {parentNode.HierarchicalPath}");
+						if (ReferenceEquals(parentNode, CurrentContext.ModalNode)) {
+							Debug.WriteLine($"[Navigator]   ? Found modal node at depth {depth}!");
+						}
+						current = parentNode.Parent;
+						depth++;
+					}
+				}
+				
+				return;
+			}
+			
+			var candidates = allCandidates
 				.Where(n => CurrentContext.ModalNode == null || IsDescendantOf(n, CurrentContext.ModalNode))
 				.Select(n => {
 					var center = n.GetCenterDip();
@@ -247,10 +288,27 @@ namespace AcManager.UiObserver
 			if (firstNode != null) {
 				Debug.WriteLine($"  ? WINNER: {firstNode.SimpleName} (score: {candidates[0].Score:F1})");
 				CurrentContext.FocusedNode = firstNode;
-				SetFocusVisuals(firstNode);
+				
+				// ? FIX: Defer visual update until after layout is complete
+				// SetFocusVisuals() calls UpdateFocusRect() which needs final bounds.
+				// During ModalGroupOpened, visual tree may not be fully rendered yet,
+				// so we schedule the visual update on Dispatcher with Loaded priority.
+				if (Application.Current != null) {
+					Application.Current.Dispatcher.BeginInvoke(new Action(() => {
+						// Re-check that focus hasn't changed while waiting
+						if (CurrentContext?.FocusedNode == firstNode) {
+							SetFocusVisuals(firstNode);
+						}
+					}), DispatcherPriority.Loaded);
+				} else {
+					// Fallback if no dispatcher available
+					SetFocusVisuals(firstNode);
+				}
 				
 				Debug.WriteLine($"[Navigator] Initialized focus in '{CurrentContext.ModalNode.SimpleName}' -> '{firstNode.SimpleName}'");
 				try { FocusChanged?.Invoke(null, firstNode); } catch { }
+			} else {
+				Debug.WriteLine($"[Navigator] No valid candidate found after filtering!");
 			}
 		}
 
@@ -517,17 +575,6 @@ namespace AcManager.UiObserver
 			return ReferenceEquals(aParent, bParent);
 		}
 
-		private static bool IsTrulyVisible(FrameworkElement fe)
-		{
-			if (fe == null) return false;
-			DependencyObject cur = fe;
-			while (cur != null) {
-				if (cur is UIElement ui && ui.Visibility != Visibility.Visible) return false;
-				try { cur = VisualTreeHelper.GetParent(cur); } catch { break; }
-			}
-			return fe.IsVisible && fe.IsLoaded;
-		}
-
 		// === KEYBOARD INPUT ===
 
 		private static void OnPreviewKeyDown(object sender, KeyEventArgs e)
@@ -562,27 +609,6 @@ namespace AcManager.UiObserver
 				}
 				
 				if (handled) e.Handled = true;
-			}
-		}
-
-		private static void HookWindow(Window w)
-		{
-			if (w == null) return;
-			w.Loaded += OnRootLayoutChanged;
-			w.LayoutUpdated += OnRootLayoutChanged;
-			w.LocationChanged += OnRootLayoutChanged;
-			w.SizeChanged += OnRootLayoutChanged;
-		}
-
-		private static void OnRootLayoutChanged(object sender, EventArgs e)
-		{
-			if (sender is Window w) {
-				var content = w.Content as FrameworkElement;
-				if (content != null) Observer.RegisterRoot(content);
-			}
-			
-			if (CurrentContext?.FocusedNode != null) {
-				UpdateFocusRect(CurrentContext.FocusedNode);
 			}
 		}
 
@@ -945,7 +971,7 @@ namespace AcManager.UiObserver
 			} else {
 				// Unfiltered: Show ALL discovered nodes (including groups!)
 				nodesToShow = Observer.GetAllNavNodes().ToList();
-				Debug.WriteLine($"All discovered nodes: {nodesToShow.Count}");
+			 Debug.WriteLine($"All discovered nodes: {nodesToShow.Count}");
 			}
 			
 			// ? Limit processing to prevent OOM

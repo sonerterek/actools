@@ -18,25 +18,28 @@
 ???????????????????????????????????????????????????????????
 ?                      Navigator                         ?
 ?  (Navigation Logic & Modal Stack Management)            ?
-?  - Subscribes to Observer MODAL events ONLY             ?
+?  - Subscribes to Observer events ONLY                   ?
 ?  - Manages modal context stack (scope + focus)          ?
 ?  - Handles keyboard input (Ctrl+Shift+Arrow navigation) ?
 ?  - Initializes focus on modal open (complete info!)     ?
 ?  - Filters candidates by modal scope                    ?
 ?  - Spatial navigation algorithm                         ?
-?  - Focus highlighting (HighlightOverlay)                ?
+?  - Focus highlighting overlay                           ?
 ???????????????????????????????????????????????????????????
-                           ? events (modal lifecycle only)
-                           ? (ModalGroupOpened, ModalGroupClosed)
+                           ? events (Observer ? Navigator)
+                           ? • ModalGroupOpened
+                           ? • ModalGroupClosed
+                           ? • WindowLayoutChanged
 ???????????????????????????????????????????????????????????
 ?                      Observer                           ?
 ?  (Discovery Engine - Silent Scanning)                   ?
 ?  - Auto-discovers PresentationSource roots              ?
+?  - Hooks existing windows for lifecycle management      ?
 ?  - Scans visual trees SILENTLY (no per-node events!)    ?
 ?  - Creates NavNodes via factory pattern                 ?
 ?  - Builds Parent/Child relationships                    ?
 ?  - Tracks Popup?PlacementTarget bridges                 ?
-?  - Emits events ONLY for modal lifecycle                ?
+?  - Emits events ONLY for modal lifecycle & layout       ?
 ???????????????????????????????????????????????????????????
                            ? creates
                            ?
@@ -57,6 +60,7 @@
 - **Modal-Only Events:** Only modal lifecycle changes trigger events
 - **Complete Information:** When ModalGroupOpened fires, ALL nodes in the modal scope are already discovered
 - **Single Focus Attempt:** Focus initialization happens once per modal with complete candidate list
+- **Event-Driven Navigation:** Navigator reacts ONLY to Observer's events, never calls Observer directly
 
 ---
 
@@ -156,7 +160,32 @@ User closes dropdown:
 
 ---
 
-### 4. HierarchicalPath = Computed Once, Stored Forever
+### 4. Clean Separation: Observer vs Navigator
+
+**Decision:** Observer handles ALL discovery and lifecycle management. Navigator ONLY reacts to Observer's events.
+
+**Why:**
+- **Single Responsibility:** Observer = discovery, Navigator = navigation/overlay
+- **No Leaky Abstractions:** Navigator never calls `Observer.RegisterRoot()` or manages windows
+- **Testability:** Can test Observer without Navigator (and vice versa)
+- **Maintainability:** Discovery changes stay in Observer, navigation changes stay in Navigator
+
+**Observer's Responsibilities:**
+- ? Auto-discover PresentationSource roots
+- ? Hook existing windows for lifecycle events
+- ? Re-register roots when window layout changes
+- ? Emit `WindowLayoutChanged` event for overlay synchronization
+
+**Navigator's Responsibilities:**
+- ? Subscribe to Observer events (`ModalGroupOpened`, `ModalGroupClosed`, `WindowLayoutChanged`)
+- ? Manage modal context stack
+- ? Handle keyboard input
+- ? Update overlay position (react to `WindowLayoutChanged`)
+- ? Never call `Observer.RegisterRoot()` or hook windows
+
+---
+
+### 5. HierarchicalPath = Computed Once, Stored Forever
 
 **Decision:** Compute `HierarchicalPath` in `NavNode.CreateNavNode()` and pass to constructor.
 
@@ -171,7 +200,7 @@ User closes dropdown:
 
 ---
 
-### 5. Popup?PlacementTarget Bridging
+### 6. Popup?PlacementTarget Bridging
 
 **Decision:** `Observer.LinkToParent()` walks through `Popup.PlacementTarget` to bridge visual tree gaps.
 
@@ -190,7 +219,7 @@ if (current is Popup popup && popup.PlacementTarget != null) {
 
 ---
 
-### 6. Persistent HighlightOverlay (Not Dispose/Recreate)
+### 7. Persistent HighlightOverlay (Not Dispose/Recreate)
 
 **Decision:** Create overlay once, reuse it (Hide/Show instead of Dispose/Create).
 
@@ -214,7 +243,7 @@ _overlay?.Hide(); // Reuse same instance
 
 ---
 
-### 7. Minimal Public API Surface
+### 8. Minimal Public API Surface
 
 **Decision:** Only `Navigator.Initialize()` is truly public. Most APIs are `internal` or `private`.
 
@@ -234,13 +263,13 @@ _overlay?.Hide(); // Reuse same instance
 - `GetAllNavNodes()` - Internal queries only
 
 **Public API (Observer):**
-- `Configure(...)` - Configuration
-- `EnableAutoRootTracking()` - Auto-discovery
+- `Initialize()` - Main initialization (auto-hooks windows)
 - `RegisterRoot(...)` / `UnregisterRoot(...)` - Manual root management
 - `SyncRoot(...)` - Manual sync
 - `GetAllNavNodes()` - Query API (used by Navigator)
 - `TryGetNavNode(...)` - Lookup API (used by NavNode validation)
 - `ModalGroupOpened` / `ModalGroupClosed` events - Modal lifecycle
+- `WindowLayoutChanged` event - Layout change notifications
 
 **Architectural Note:** All other classes (NavNode, NavPathFilter, HighlightOverlay, NavContext) are `internal` - never exposed outside UiObserver directory.
 
@@ -274,9 +303,12 @@ _overlay?.Hide(); // Reuse same instance
 
 ### Observer.cs - Discovery Engine
 
-**Purpose:** Scans visual trees silently, creates NavNodes, builds hierarchy, emits modal lifecycle events only.
+**Purpose:** Scans visual trees silently, creates NavNodes, builds hierarchy, emits events only for modal lifecycle and layout changes.
 
 **Key Methods:**
+- `Initialize()` - Auto-discover roots + hook existing windows (self-sufficient!)
+- `HookExistingWindow(Window w)` - Hook layout events for window (private)
+- `OnWindowLayoutChanged(object, EventArgs)` - Re-register root + fire event
 - `RegisterRoot(fe)` - Register a PresentationSource root for scanning
 - `UnregisterRoot(fe)` - Cleanup when root is unloaded
 - `SyncRoot(root)` - Rescan visual tree and sync with tracked nodes (silent operation)
@@ -285,9 +317,10 @@ _overlay?.Hide(); // Reuse same instance
 - `TryCreateNavNodeForElement(fe)` - Create node for dynamically loaded elements (silent)
 - `HandleRemovedNodeModalTracking(node)` - Fire ModalGroupClosed for removed modals
 
-**Key Events (modal lifecycle only):**
+**Key Events:**
 - `ModalGroupOpened` - Modal opened (Window, PopupRoot) - ALL children already discovered
 - `ModalGroupClosed` - Modal closed
+- `WindowLayoutChanged` - Window layout changed (position, size, loaded state) - for overlay sync
 
 **Key Data Structures:**
 - `_nodesByElement` - ConcurrentDictionary<FrameworkElement, NavNode> (source of truth)
@@ -296,27 +329,22 @@ _overlay?.Hide(); // Reuse same instance
 - `_pendingSyncs` - Debouncing for layout changes
 
 **Design Patterns:**
-- **Event-Driven Architecture:** Emits events only for modal lifecycle (not per-node!)
+- **Event-Driven Architecture:** Emits events only for modal lifecycle & layout (not per-node!)
 - **Silent Discovery:** Nodes are tracked internally without firing events
 - **Debouncing:** Coalesces multiple layout changes into single scan
 - **Weak References:** Parent/Child links use WeakReference to avoid memory leaks
+- **Self-Sufficient:** Manages its own lifecycle, doesn't require Navigator's help
 
-**Architectural Decision:** Per-node events (NavNodeAdded/NavNodeRemoved) were removed in favor of modal-only events. This simplifies the architecture and provides complete information to Navigator when modals open.
-
-**Dead Code Removed:**
-- ? `GetNavNodesForRoot()` - Never called
-- ? `RescanSubtree()` - Never called
-- ? `AttachSubtreeChangeHandlers()` - Empty placeholder
-- ? `ComputeHierarchicalPath()` - Replaced by `NavNode.GetHierarchicalPath()`
+**Architectural Decision:** Observer is completely self-sufficient. It hooks windows, manages roots, and fires events. Navigator never calls Observer for discovery purposes, only subscribes to events.
 
 ---
 
 ### Navigator.cs - Navigation Logic
 
-**Purpose:** Subscribes to modal lifecycle events, manages modal context stack, handles keyboard input, spatial navigation.
+**Purpose:** Subscribes to Observer events, manages modal context stack, handles keyboard input, spatial navigation, overlay management.
 
 **Key Methods:**
-- `Initialize()` - One-time setup (external entry point)
+- `Initialize()` - One-time setup (subscribes to Observer events, registers keyboard handler)
 - `MoveInDirection(dir)` - Find best candidate in direction using spatial algorithm
 - `ActivateFocusedNode()` - Activate current focus
 - `ExitGroup()` - Close topmost modal
@@ -328,33 +356,22 @@ _overlay?.Hide(); // Reuse same instance
 - `CurrentContext` - Helper property for top of stack
 - `_overlay` - HighlightOverlay for visual feedback
 
-**Event Handlers (modal lifecycle only):**
+**Event Handlers (reactive architecture):**
 - `OnModalGroupOpened` - Push new context, initialize focus with complete info
 - `OnModalGroupClosed` - Pop context, restore previous focus
-- `OnPreviewKeyDown` - Handle Ctrl+Shift+Arrow keys
+- `OnWindowLayoutChanged` - Update overlay position (no Observer calls!)
 
 **Internal API:**
 - `FocusChanged` event - Internal subscribers only (not public)
-- `GetAllNavNodes()` - Internal query API
 
 **Design Patterns:**
-- **Observer Pattern:** Subscribes to Observer modal lifecycle events only
+- **Observer Pattern:** Subscribes to Observer events only (never calls Observer)
 - **Command Pattern:** Keyboard shortcuts trigger navigation commands
 - **Strategy Pattern:** Spatial navigation algorithm (directional cost calculation)
 - **Single-Pass Initialization:** Focus initialized once per modal with complete information
+- **Reactive Architecture:** All actions are reactions to Observer's events
 
-**Architectural Decision:** Removed subscriptions to NavNodeAdded/NavNodeRemoved events. Navigator now reacts only to modal lifecycle changes, receiving complete information about all nodes in the modal scope at once. This eliminates redundant focus attempts and ensures optimal candidate selection.
-
-**Dead Code Removed:**
-- ? `NavMapUpdated` event - Never subscribed to externally
-- ? `TryGetById()` - Never called
-- ? `FocusNodeByPath()` - Never called
-- ? `GetFocusedNodePath()` - Never called
-- ? `GetFocusedNode()` - Never called
-- ? `GetActiveModal()` - Never called
-- ? `GetModalStackPaths()` - Never called
-- ? `FindFirstNavigableInScope()` - Duplicate logic (merged into `TryInitializeFocusIfNeeded()`)
-- ? `_suppressFocusTracking` field - No longer needed
+**Architectural Decision:** Navigator is purely reactive. It never calls `Observer.RegisterRoot()` or manages windows. It only subscribes to events and updates its own state (modal stack, focus) and visual feedback (overlay).
 
 ---
 
@@ -382,10 +399,6 @@ CLASSIFY: ** > *:SelectCarDialog => role=group; modal=true
 - **Interpreter Pattern:** Parse and evaluate path patterns
 - **Chain of Responsibility:** Check rules in priority order
 
-**Dead Code Removed:**
-- ? `NavRole.DualGroup` enum value - Remnant from abandoned "dual-role" architecture
-- ? `NavNodeClassification.AsDualGroup()` factory method - Never called
-
 ---
 
 ### HighlightOverlay.cs - Visual Feedback
@@ -407,11 +420,7 @@ CLASSIFY: ** > *:SelectCarDialog => role=group; modal=true
 
 **Design Patterns:**
 - **Singleton-ish:** Navigator keeps one persistent instance
-- **Observer Pattern:** Updates when focus changes
-
-**Dead Code Removed:**
-- ? `ShowRects()` - Obsolete method (replaced by `ShowDebugRects()`)
-- ? `HideOverlay()` - Obsolete method (replaced by `ClearDebugRects()` + `HideFocusRect()`)
+- **Observer Pattern:** Updates when focus changes (via Navigator)
 
 ---
 
@@ -432,7 +441,7 @@ CLASSIFY: ** > *:SelectCarDialog => role=group; modal=true
 
 1. **Observe, Don't Predict:** React to actual UI state, not guessed behavior
 2. **Whitelist Everything:** Performance through explicit tracking
-3. **Modal-Only Events:** Silent node discovery, events only for modal lifecycle
+3. **Modal-Only Events:** Silent node discovery, events only for modal lifecycle & layout
 4. **Complete Information:** Focus selection sees all candidates at once (not incremental)
 5. **Weak References Everywhere:** Prevent memory leaks in Parent/Child links
 6. **Compute Once, Store Forever:** HierarchicalPath computed at creation
@@ -446,6 +455,7 @@ CLASSIFY: ** > *:SelectCarDialog => role=group; modal=true
 14. **? Pattern-Based Exclusion:** Context-aware filtering better than global type rules
 15. **? Silent Discovery:** Node tracking is internal, events signal user-facing state changes only
 16. **? Minimal Public API:** Only expose what external code needs (`Initialize()` + navigation commands)
+17. **? Clean Separation:** Observer handles discovery, Navigator handles navigation - NO overlap!
 
 ---
 
@@ -473,14 +483,103 @@ public static NavNode CreateNavNode(FrameworkElement fe) {
 
 ---
 
-### 2. Modal Context Stack Management
+### 2. Observer.Initialize() - Self-Sufficient Discovery
+
+```csharp
+internal static void Initialize() {
+    // Register global event handlers
+    EventManager.RegisterClassHandler(typeof(FrameworkElement), FrameworkElement.LoadedEvent, ...);
+    EventManager.RegisterClassHandler(typeof(ContextMenu), ContextMenu.OpenedEvent, ...);
+    EventManager.RegisterClassHandler(typeof(MenuItem), MenuItem.SubmenuOpenedEvent, ...);
+    
+    // ? NEW: Hook all existing windows (self-sufficient!)
+    if (Application.Current != null) {
+        Application.Current.Dispatcher.BeginInvoke(new Action(() => {
+            foreach (Window w in Application.Current.Windows) {
+                HookExistingWindow(w);
+            }
+        }), DispatcherPriority.ApplicationIdle);
+    }
+}
+
+private static void HookExistingWindow(Window w) {
+    // Register root for discovery
+    var content = w.Content as FrameworkElement;
+    if (content != null) {
+        RegisterRoot(content);
+    }
+    
+    // Hook layout events to fire WindowLayoutChanged
+    w.Loaded += OnWindowLayoutChanged;
+    w.LayoutUpdated += OnWindowLayoutChanged;
+    w.LocationChanged += OnWindowLayoutChanged;
+    w.SizeChanged += OnWindowLayoutChanged;
+}
+
+private static void OnWindowLayoutChanged(object sender, EventArgs e) {
+    // Re-register root to handle dynamic content changes
+    if (sender is Window w) {
+        var content = w.Content as FrameworkElement;
+        if (content != null) {
+            RegisterRoot(content);
+        }
+    }
+    
+    // Notify subscribers (Navigator's overlay)
+    WindowLayoutChanged?.Invoke(sender, e);
+}
+```
+
+**Key Insight:** Observer is completely self-sufficient. It manages its own lifecycle and fires events. Navigator never calls Observer for discovery purposes.
+
+---
+
+### 3. Navigator.Initialize() - Pure Subscriber
+
+```csharp
+public static void Initialize() {
+    // Initialize navigation rules
+    InitializeNavigationRules();
+
+    // ? Subscribe to Observer events ONLY
+    Observer.ModalGroupOpened += OnModalGroupOpened;
+    Observer.ModalGroupClosed += OnModalGroupClosed;
+    Observer.WindowLayoutChanged += OnWindowLayoutChanged;  // ? NEW!
+    
+    // Startup Observer (it will hook windows itself)
+    Observer.Initialize();
+
+    // Register keyboard handler
+    EventManager.RegisterClassHandler(typeof(Window), UIElement.PreviewKeyDownEvent, ...);
+
+    // Initialize overlay
+    if (Application.Current != null) {
+        Application.Current.Dispatcher.BeginInvoke(new Action(() => {
+            EnsureOverlay();
+        }), DispatcherPriority.ApplicationIdle);
+    }
+}
+
+private static void OnWindowLayoutChanged(object sender, EventArgs e) {
+    // ? Only update overlay (no Observer calls!)
+    if (CurrentContext?.FocusedNode != null) {
+        UpdateFocusRect(CurrentContext.FocusedNode);
+    }
+}
+```
+
+**Key Insight:** Navigator is purely reactive. All its actions are reactions to Observer's events. It never calls `Observer.RegisterRoot()` or manages windows.
+
+---
+
+### 4. Modal Context Stack Management
 
 ```csharp
 private static void OnModalGroupOpened(NavNode modalNode) {
     // Validate linear chain: new modal MUST be descendant of current top
     if (_modalContextStack.Count > 0) {
         var currentTop = CurrentContext.ModalNode;
-        if (!IsDescendantOf(modalNode, currentTop)) {
+        if (modalNode.Parent != null && !IsDescendantOf(modalNode, currentTop)) {
             Debug.WriteLine("ERROR: Modal not descendant of top!");
             return; // Reject!
         }
@@ -516,7 +615,7 @@ private static void OnModalGroupClosed(NavNode modalNode) {
 
 ---
 
-### 3. Optimistic Modal Validation
+### 5. Optimistic Modal Validation
 
 **?? ARCHITECTURAL CHANGE:** Modified modal validation to handle timing-sensitive initialization.
 
@@ -567,7 +666,7 @@ private static void OnModalGroupOpened(NavNode modalNode) {
 
 ---
 
-### 4. Modal-Driven Focus Initialization
+### 6. Modal-Driven Focus Initialization
 
 ```csharp
 private static void TryInitializeFocusIfNeeded() {
@@ -576,7 +675,7 @@ private static void TryInitializeFocusIfNeeded() {
     
     // Already has focus? Nothing to do
     if (CurrentContext.FocusedNode != null) return;
-
+    
     // Find first navigable node in current scope (top-left preference)
     // All nodes are ALREADY discovered - complete candidate list!
     var candidates = GetCandidatesInScope()
@@ -674,6 +773,32 @@ if (modalNode.Parent != null && !IsDescendantOf(modalNode, currentTop)) {
 ```
 
 **Impact:** Dropdown menus now navigate correctly.
+
+---
+
+### Issue 5: ? SOLVED - Navigator Managing Windows (Architectural Violation)
+
+**Problem:** Navigator was calling `Observer.RegisterRoot()` and hooking windows, violating separation of concerns.
+
+**Why:** Initial implementation didn't fully separate discovery (Observer) from navigation (Navigator).
+
+**Solution:** Moved window hooking to `Observer.Initialize()` and added `WindowLayoutChanged` event:
+```csharp
+// Observer now hooks windows itself
+private static void HookExistingWindow(Window w) {
+    RegisterRoot(w.Content);  // Discovery
+    w.Loaded += OnWindowLayoutChanged;  // Fire event for overlay
+}
+
+// Navigator only subscribes to event
+Observer.WindowLayoutChanged += OnWindowLayoutChanged;
+```
+
+**Impact:** 
+- Clean architectural separation achieved
+- Observer is self-sufficient (doesn't need Navigator's help)
+- Navigator is purely reactive (only subscribes to events)
+- No more `Observer.RegisterRoot()` calls from Navigator
 
 ---
 
@@ -825,4 +950,4 @@ This helped identify the ScrollBar hijacking issue.
 
 ---
 
-**Last Updated:** After dead code cleanup (INavInterfaces.cs deleted, unused APIs removed, minimal public surface)
+**Last Updated:** After architectural cleanup (Observer self-sufficient, Navigator purely reactive, WindowLayoutChanged event added)

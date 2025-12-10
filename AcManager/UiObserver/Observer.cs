@@ -62,102 +62,132 @@ namespace AcManager.UiObserver {
         /// </summary>
         public static event Action<NavNode> ModalGroupClosed;
 
-        #endregion
-
-        #region Configuration
-
-        private static Func<FrameworkElement, bool> _isTrulyVisible = null;
-
-        public static void Configure(Func<FrameworkElement, bool> isTrulyVisible) {
-            if (isTrulyVisible != null) _isTrulyVisible = isTrulyVisible;
-        }
+        /// <summary>
+        /// Fired when a window's layout changes (position, size, loaded state).
+        /// Navigator subscribes to this to update the overlay position.
+        /// Separates discovery concerns (Observer) from visual feedback (Navigator).
+        /// </summary>
+        public static event EventHandler WindowLayoutChanged;
 
         #endregion
 
-        #region Auto Root Tracking
-
-        // Attached flag to avoid subscribing handlers multiple times
-        private static readonly DependencyProperty AttachedHandlersProperty = DependencyProperty.RegisterAttached(
-                "AttachedHandlers", typeof(bool), typeof(Observer), new PropertyMetadata(false));
-
-        private static bool GetAttachedHandlers(DependencyObject o) {
-            try { return (bool)o.GetValue(AttachedHandlersProperty); } catch { return false; }
-        }
-
-        private static void SetAttachedHandlers(DependencyObject o, bool value) {
-            try { o.SetValue(AttachedHandlersProperty, value); } catch { }
-        }
+        #region Initialize
 
         /// <summary>
-        /// Enable automatic discovery of PresentationSource roots by listening to Loaded events.
+        /// Initialize Observer and hook all existing application windows.
+        /// This is the main external entry point called by Navigator.
         /// </summary>
-        public static void EnableAutoRootTracking() {
-            try {
-                EventManager.RegisterClassHandler(typeof(FrameworkElement), FrameworkElement.LoadedEvent,
-                        new RoutedEventHandler(OnAnyElementLoaded), true);
-                
-                // Listen for popup open events
-                try {
-                    EventManager.RegisterClassHandler(typeof(ContextMenu), ContextMenu.OpenedEvent,
-                            new RoutedEventHandler(OnAnyPopupOpened), true);
-                } catch { }
-                try {
-                    EventManager.RegisterClassHandler(typeof(MenuItem), MenuItem.SubmenuOpenedEvent,
-                            new RoutedEventHandler(OnAnyPopupOpened), true);
-                } catch { }
-            } catch { }
-        }
+        internal static void Initialize() {
+			try {
+				// Register global loaded event handler
+				EventManager.RegisterClassHandler(typeof(FrameworkElement), FrameworkElement.LoadedEvent,
+						new RoutedEventHandler(OnAnyElementLoaded), true);
+
+				// Listen for popup open events
+				try {
+					EventManager.RegisterClassHandler(typeof(ContextMenu), ContextMenu.OpenedEvent,
+							new RoutedEventHandler(OnAnyPopupOpened), true);
+				} catch { }
+				try {
+					EventManager.RegisterClassHandler(typeof(MenuItem), MenuItem.SubmenuOpenedEvent,
+							new RoutedEventHandler(OnAnyPopupOpened), true);
+				} catch { }
+				
+				// Hook all existing windows (moved from Navigator!)
+				if (Application.Current != null) {
+					Application.Current.Dispatcher.BeginInvoke(new Action(() => {
+						try {
+							foreach (Window w in Application.Current.Windows) {
+								HookExistingWindow(w);
+							}
+						} catch { }
+					}), DispatcherPriority.ApplicationIdle);
+				}
+			} catch { }
+		}
+
+		/// <summary>
+		/// Hook layout events for an existing window to keep discovery and overlay synchronized.
+		/// Called during initialization for pre-existing windows.
+		/// </summary>
+		private static void HookExistingWindow(Window w) {
+			if (w == null) return;
+			
+			try {
+				// Register root for discovery
+				var content = w.Content as FrameworkElement;
+				if (content != null) {
+					RegisterRoot(content);
+				}
+				
+				// Hook layout events to fire WindowLayoutChanged for Navigator's overlay
+				w.Loaded += OnWindowLayoutChanged;
+				w.LayoutUpdated += OnWindowLayoutChanged;
+				w.LocationChanged += OnWindowLayoutChanged;
+				w.SizeChanged += OnWindowLayoutChanged;
+			} catch { }
+		}
+
+		/// <summary>
+		/// Window layout changed - notify subscribers (Navigator will update overlay).
+		/// Also re-registers root to handle dynamic content changes.
+		/// </summary>
+		private static void OnWindowLayoutChanged(object sender, EventArgs e) {
+			try {
+				// Re-register root to handle dynamic content changes
+				if (sender is Window w) {
+					var content = w.Content as FrameworkElement;
+					if (content != null) {
+						RegisterRoot(content);
+					}
+				}
+				
+				// Notify subscribers (Navigator's overlay)
+				WindowLayoutChanged?.Invoke(sender, e);
+			} catch { }
+		}
 
         #endregion
 
         #region Discovery
 
         private static void OnAnyElementLoaded(object sender, RoutedEventArgs e) {
-            var fe = sender as FrameworkElement;
-            if (fe == null) return;
+            if (!(sender is FrameworkElement fe)) return;
             
             try {
+                // 1. Check if element is a Window or Window.Content ? RegisterRoot
                 var win = Window.GetWindow(fe);
-                
-                if (win != null) {
-                    if (ReferenceEquals(win, fe)) {
-                        var content = win.Content as FrameworkElement;
-                        RegisterRoot(content ?? win);
-                        return;
-                    }
-                    
-                    if (win.Content != null && ReferenceEquals(win.Content, fe)) {
-                        RegisterRoot(fe);
-                        return;
-                    }
-                    
-                    TryCreateNavNodeForElement(fe);
+                if (win != null && (ReferenceEquals(win, fe) || ReferenceEquals(win.Content, fe))) {
+                    RegisterRoot(win.Content as FrameworkElement ?? win);
                     return;
                 }
                 
+                // 2. Check if element is a PresentationSource root ? RegisterRoot
                 var ps = PresentationSource.FromVisual(fe);
                 if (ps != null) {
                     var psRoot = ps.RootVisual as FrameworkElement;
                     
-                    if (psRoot != null && object.ReferenceEquals(psRoot, fe)) {
+                    if (psRoot != null && ReferenceEquals(psRoot, fe)) {
                         RegisterRoot(fe);
                         return;
                     }
                     
+                    // 3. Element is inside a tracked root ? Try create node
                     if (_presentationSourceRoots.ContainsKey(ps)) {
                         TryCreateNavNodeForElement(fe);
                         return;
                     }
                     
+                    // 4. Element's PresentationSource root not tracked yet ? Register it
                     if (psRoot != null) {
                         RegisterRoot(psRoot);
                         return;
                     }
                 }
                 
+                // 5. Orphan element with no visual parent ? RegisterRoot as fallback
                 try {
-                    var hasVisualParent = VisualTreeHelper.GetParent(fe) != null;
-                    if (!hasVisualParent && fe.Parent == null) {
+                    if (VisualTreeHelper.GetParent(fe) == null && fe.Parent == null) {
                         RegisterRoot(fe);
                     }
                 } catch { }
@@ -170,7 +200,7 @@ namespace AcManager.UiObserver {
             try {
                 if (_nodesByElement.ContainsKey(fe)) return;
                 
-                if (_isTrulyVisible != null && !_isTrulyVisible(fe)) return;
+                if (!IsTrulyVisible(fe)) return;
                 
                 var ps = PresentationSource.FromVisual(fe);
                 if (ps == null) return;
@@ -205,16 +235,29 @@ namespace AcManager.UiObserver {
                                 Debug.WriteLine($"[Observer] Dynamic NavNode added: {fe.GetType().Name} '{navNode.SimpleName}'");
                             }
 
-                            // Fire modal event AFTER all setup is complete (consistent with bulk scan)
-                            if (navNode.IsModal && navNode.IsGroup) {
-                                Debug.WriteLine($"[Observer] Pure modal activated (dynamic): {navNode.SimpleName}");
-                                try { ModalGroupOpened?.Invoke(navNode); } catch { }
-                            }
+                            // ? REMOVED: Don't fire modal event for dynamically added nodes
+                            // Modal events should only fire during bulk SyncRoot() after all children are linked
+                            // If this is a problem for dynamically opened popups, we can schedule a re-sync instead
                         }
                     }
                 }
             } catch { }
         }
+
+        /// <summary>
+        /// Fires ModalGroupOpened event if the node is a newly-discovered modal.
+        /// Centralized logic to avoid duplication between dynamic and bulk discovery.
+        /// </summary>
+        private static void FireModalEventIfNeeded(NavNode node, bool isNewNode) {
+            if (!isNewNode || !node.IsModal || !node.IsGroup) return;
+            
+            Debug.WriteLine($"[Observer] Modal opened: {node.SimpleName}");
+            try { ModalGroupOpened?.Invoke(node); } catch { }
+        }
+
+        #endregion
+
+        #region Hierarchy Management
 
         /// <summary>
         /// Links a newly-created NavNode to its parent in the navigation tree.
@@ -342,46 +385,22 @@ namespace AcManager.UiObserver {
         private static void AttachCleanupHandlers(FrameworkElement root) {
             if (root == null) return;
             
-            root.Unloaded += OnRootUnloaded;
+            root.Unloaded += OnRootClosed;
             
-            try {
-                if (root is Window win) {
-                    win.Closed += OnWindowClosed;
-                }
-            } catch { }
-            
-            try {
-                if (root is Popup popup) {
-                    popup.Closed += OnPopupClosed;
-                }
-            } catch { }
-            
-            try {
-                if (root is ContextMenu cm) {
-                    cm.Closed += OnContextMenuClosed;
-                }
-            } catch { }
-        }
-
-        private static void OnRootUnloaded(object sender, RoutedEventArgs e) {
-            if (sender is FrameworkElement root) {
-                UnregisterRoot(root);
+            if (root is Window win) {
+                win.Closed += OnRootClosed;
+            } else if (root is Popup popup) {
+                popup.Closed += OnRootClosed;
+            } else if (root is ContextMenu cm) {
+                cm.Closed += OnRootClosed;
             }
         }
 
-        private static void OnWindowClosed(object sender, EventArgs e) {
-            if (sender is FrameworkElement root) {
-                UnregisterRoot(root);
-            }
-        }
-
-        private static void OnPopupClosed(object sender, EventArgs e) {
-            if (sender is FrameworkElement root) {
-                UnregisterRoot(root);
-            }
-        }
-
-        private static void OnContextMenuClosed(object sender, RoutedEventArgs e) {
+        /// <summary>
+        /// Generic handler for root closure events (Unloaded, Window.Closed, Popup.Closed, ContextMenu.Closed).
+        /// Consolidates 4 identical event handlers into one.
+        /// </summary>
+        private static void OnRootClosed(object sender, EventArgs e) {
             if (sender is FrameworkElement root) {
                 UnregisterRoot(root);
             }
@@ -447,24 +466,24 @@ namespace AcManager.UiObserver {
             if (root == null) return;
             
             try {
-                root.Unloaded -= OnRootUnloaded;
+                root.Unloaded -= OnRootClosed;
             } catch { }
             
             try {
                 if (root is Window win) {
-                    win.Closed -= OnWindowClosed;
+                    win.Closed -= OnRootClosed;
                 }
             } catch { }
             
             try {
                 if (root is Popup popup) {
-                    popup.Closed -= OnPopupClosed;
+                    popup.Closed -= OnRootClosed;
                 }
             } catch { }
             
             try {
                 if (root is ContextMenu cm) {
-                    cm.Closed -= OnContextMenuClosed;
+                    cm.Closed -= OnRootClosed;
                 }
             } catch { }
         }
@@ -487,8 +506,9 @@ namespace AcManager.UiObserver {
                 Debug.WriteLine($"[Observer] SyncRoot START: {typeName} '{elementName}'");
                 
                 var newElements = new HashSet<FrameworkElement>();
+                var newModalNodes = new List<NavNode>(); // Track new modal nodes discovered during scan
                 
-                ScanVisualTree(root, newElements);
+                ScanVisualTree(root, newElements, newModalNodes);
 
                 Debug.WriteLine($"[Observer] SyncRoot END: {typeName} '{elementName}' - found {newElements.Count} elements");
 
@@ -506,10 +526,17 @@ namespace AcManager.UiObserver {
                     }
                     return newElements;
                 });
+                
+                // ? FIX: Fire modal events AFTER all nodes are linked
+                // This ensures Navigator sees complete Parent/Children relationships when TryInitializeFocusIfNeeded() runs
+                foreach (var modalNode in newModalNodes) {
+                    Debug.WriteLine($"[Observer] Modal opened: {modalNode.SimpleName}");
+                    try { ModalGroupOpened?.Invoke(modalNode); } catch { }
+                }
             } catch { }
         }
         
-        private static void ScanVisualTree(FrameworkElement root, HashSet<FrameworkElement> discoveredElements) {
+        private static void ScanVisualTree(FrameworkElement root, HashSet<FrameworkElement> discoveredElements, List<NavNode> newModalNodes) {
             if (root == null) return;
 
             PresentationSource psRoot = null;
@@ -519,15 +546,12 @@ namespace AcManager.UiObserver {
             var stack = new Stack<DependencyObject>();
             stack.Push(root);
             visited.Add(root);
-            
-            // Collect modals discovered during scan - fire events AFTER scan completes
-            var discoveredModals = new List<NavNode>();
 
             while (stack.Count > 0) {
                 var node = stack.Pop();
 
                 if (node is FrameworkElement fe) {
-                    if (_isTrulyVisible != null && !_isTrulyVisible(fe)) {
+                    if (!IsTrulyVisible(fe)) {
                         continue;
                     }
 
@@ -570,9 +594,10 @@ namespace AcManager.UiObserver {
                                 Debug.WriteLine($"[Observer] NavNode discovered: Popup '{navNode.SimpleName}' with PlacementTarget={placementTargetInfo}");
                             }
 
-                            // Collect modals for later event firing (after scan completes)
+                            // ? CHANGED: Don't fire modal event immediately - collect it for later
+                            // This allows all child nodes to be discovered and linked first
                             if (navNode.IsModal && navNode.IsGroup) {
-                                discoveredModals.Add(navNode);
+                                newModalNodes.Add(navNode);
                             }
                         }
                     }
@@ -583,19 +608,12 @@ namespace AcManager.UiObserver {
                 for (int i = 0; i < visualCount; i++) {
                     try {
                         var child = VisualTreeHelper.GetChild(node, i);
-                        if (child == null) continue;
-                        if (!visited.Contains(child)) {
+                        if (child != null && !visited.Contains(child)) {
                           visited.Add(child);
                           stack.Push(child);
                         }
                     } catch { }
                 }
-            }
-            
-            // Scan complete - now fire modal events with complete information available
-            foreach (var modalNode in discoveredModals) {
-                Debug.WriteLine($"[Observer] Pure modal activated (after scan): {modalNode.SimpleName}");
-                try { ModalGroupOpened?.Invoke(modalNode); } catch { }
             }
         }
 
@@ -629,11 +647,26 @@ namespace AcManager.UiObserver {
             } catch { }
         }
 
-        #endregion
+		#endregion
 
-        #region Query API
+		#region Helpers
 
-        public static IReadOnlyCollection<NavNode> GetAllNavNodes() {
+		private static bool IsTrulyVisible(FrameworkElement fe)
+		{
+			if (fe == null) return false;
+			DependencyObject cur = fe;
+			while (cur != null) {
+				if (cur is UIElement ui && ui.Visibility != Visibility.Visible) return false;
+				try { cur = VisualTreeHelper.GetParent(cur); } catch { break; }
+			}
+			return fe.IsVisible && fe.IsLoaded;
+		}
+
+		#endregion
+
+		#region Query API
+
+		public static IReadOnlyCollection<NavNode> GetAllNavNodes() {
             return _nodesByElement.Values.Distinct().ToArray();
         }
 
