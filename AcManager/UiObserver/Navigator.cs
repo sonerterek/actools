@@ -1,12 +1,8 @@
-using System;
-using System.Collections.Concurrent;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Controls.Primitives;
 using System.Windows.Input;
-using System.Windows.Media;
 using System.Windows.Threading;
 using System.Diagnostics;
 
@@ -82,6 +78,18 @@ namespace AcManager.UiObserver
 		// Highlighting overlay (used by both production focus and debug visualization)
 		internal static HighlightOverlay _overlay;
 
+		/// <summary>
+		/// Gets whether verbose navigation debug output is enabled.
+		/// Controlled by Ctrl+Shift+F9 hotkey in debug builds.
+		/// Field defined in Navigator.Debug.cs partial class.
+		/// </summary>
+		internal static bool VerboseNavigationDebug =>
+#if DEBUG
+			_verboseNavigationDebug;
+#else
+			false;
+#endif
+
 		#endregion
 
 		#region Initialization
@@ -117,16 +125,25 @@ namespace AcManager.UiObserver
 		private static void InitializeNavigationRules()
 		{
 			var rules = new[] {
-				"EXCLUDE: Window:MainWindow > WindowBorder:Border > (unnamed):AdornerDecorator > (unnamed):Cell > (unnamed):Cell > (unnamed):AdornerDecorator > LayoutRoot:DockPanel > (unnamed):DockPanel > PART_Menu:ModernMenu",
-				"CLASSIFY: ** > *:SelectCarDialog => role=group; modal=true",
-				"EXCLUDE: ** > *:HistoricalTextBox > **",
-				"EXCLUDE: ** > *:LazyMenuItem > **",
-
+				// Exclude scrollbars in popups/menus
 				"EXCLUDE: *:PopupRoot > ** > *:ScrollBar",
 				"EXCLUDE: *:PopupRoot > ** > *:BetterScrollBar",
 
+				// Exclude text or fancy menu items
+				"EXCLUDE: ** > *:HistoricalTextBox > **",
+				"EXCLUDE: ** > *:LazyMenuItem > **",
+
 				// CRITICAL: Exclude debug overlay from navigation tracking to prevent feedback loop
 				"EXCLUDE: *:HighlightOverlay > **",
+
+				// Exclude main menu and content frame from navigation
+				"EXCLUDE: Window:MainWindow > WindowBorder:Border > (unnamed):AdornerDecorator > (unnamed):Cell > (unnamed):Cell > (unnamed):AdornerDecorator > LayoutRoot:DockPanel > (unnamed):DockPanel > PART_Menu:ModernMenu",
+				"EXCLUDE: Window:MainWindow > WindowBorder:Border > (unnamed):AdornerDecorator > (unnamed):Cell > (unnamed):Cell > (unnamed):AdornerDecorator > LayoutRoot:DockPanel > ContentFrame:ModernFrame",
+
+				"CLASSIFY: ** > *:SelectCarDialog => role=group; modal=true",
+				"CLASSIFY: ** > *:SelectTrackDialog => role=group; modal=true",
+				"CLASSIFY: ** > PART_SystemButtonsPanel:StackPanel => role=group; modal=false",
+				"CLASSIFY: ** > PART_TitleBar:DockPanel > *:ItemsControl => role=group; modal=false",
 			};
 
 			try {
@@ -441,48 +458,131 @@ namespace AcManager.UiObserver
 
 			var dirVector = GetDirectionVector(dir);
 
+			if (VerboseNavigationDebug) {
+				Debug.WriteLine($"\n[NAV] ========== From '{current.SimpleName}' → {dir} @ ({curCenter.Value.X:F0},{curCenter.Value.Y:F0}) | Candidates: {allCandidates.Count} ==========");
+			}
+
 			// Try same group first
+			var sameGroupCandidates = allCandidates.Where(c => AreInSameNonModalGroup(current, c)).ToList();
+			
 			var sameGroupBest = FindBestInCandidates(
 				current, curCenter.Value, dir, dirVector,
-				allCandidates.Where(c => AreInSameNonModalGroup(current, c)).ToList()
+				sameGroupCandidates,
+				"SAME GROUP"
 			);
 
-			if (sameGroupBest != null) return sameGroupBest;
+			if (sameGroupBest != null) {
+				if (VerboseNavigationDebug) {
+					Debug.WriteLine($"[NAV] ✅ FOUND in same group: '{sameGroupBest.SimpleName}'");
+					Debug.WriteLine($"[NAV] ============================================================\n");
+				}
+				return sameGroupBest;
+			}
+
+			if (VerboseNavigationDebug) {
+				Debug.WriteLine($"[NAV] No match in same group, trying across groups...");
+			}
 
 			// Try across groups
-			return FindBestInCandidates(current, curCenter.Value, dir, dirVector, allCandidates);
+			var acrossGroupsBest = FindBestInCandidates(
+				current, curCenter.Value, dir, dirVector, 
+				allCandidates,
+				"ACROSS GROUPS"
+			);
+
+			if (VerboseNavigationDebug) {
+				if (acrossGroupsBest != null) {
+					Debug.WriteLine($"[NAV] ✅ FOUND across groups: '{acrossGroupsBest.SimpleName}'");
+				} else {
+					Debug.WriteLine($"[NAV] ❌ NO CANDIDATE FOUND");
+				}
+				Debug.WriteLine($"[NAV] ============================================================\n");
+			}
+
+			return acrossGroupsBest;
 		}
 
 		private static NavNode FindBestInCandidates(
-			NavNode current, Point currentCenter, NavDirection dir, Point dirVector, List<NavNode> candidates)
+			NavNode current, Point currentCenter, NavDirection dir, Point dirVector, List<NavNode> candidates,
+			string phase = "")
 		{
 			if (candidates.Count == 0) return null;
+
+			if (VerboseNavigationDebug && !string.IsNullOrEmpty(phase)) {
+				Debug.WriteLine($"[NAV] --- {phase}: {candidates.Count} candidates ---");
+			}
 
 			var validCandidates = new List<ScoredCandidate>();
 
 			foreach (var candidate in candidates)
 			{
-				if (candidate.HierarchicalPath == current.HierarchicalPath) continue;
+				// Compare by object reference, not HierarchicalPath (which may not be unique)
+				if (ReferenceEquals(candidate, current)) {
+					if (VerboseNavigationDebug) {
+						Debug.WriteLine($"[NAV]   ⊘ '{candidate.SimpleName}' (skipped: same as current node)");
+					}
+					continue;
+				}
 				
 				var candidateCenter = candidate.GetCenterDip();
-				if (!candidateCenter.HasValue) continue;
+				if (!candidateCenter.HasValue) {
+					if (VerboseNavigationDebug) {
+						Debug.WriteLine($"[NAV]   ⊘ '{candidate.SimpleName}' (skipped: no center point)");
+					}
+					continue;
+				}
 
 				var c = candidateCenter.Value;
 				var v = new Point(c.X - currentCenter.X, c.Y - currentCenter.Y);
 				var len = Math.Sqrt(v.X * v.X + v.Y * v.Y);
-				if (len < double.Epsilon) continue;
+				if (len < double.Epsilon) {
+					if (VerboseNavigationDebug) {
+						Debug.WriteLine($"[NAV]   ⊘ '{candidate.SimpleName}' @ ({c.X:F0},{c.Y:F0}) (skipped: zero distance)");
+					}
+					continue;
+				}
 
 				var vNorm = new Point(v.X / len, v.Y / len);
 				var dot = vNorm.X * dirVector.X + vNorm.Y * dirVector.Y;
 
-				if (dot <= 0) continue;
+				if (dot <= 0) {
+					if (VerboseNavigationDebug) {
+						Debug.WriteLine($"[NAV]   ❌ '{candidate.SimpleName}' @ ({c.X:F0},{c.Y:F0}) | dot={dot:F2} (wrong direction)");
+					}
+					continue;
+				}
 
 				var cost = len / Math.Max(1e-7, dot);
+				var bonuses = "";
 
-				if (HaveSameImmediateParent(current, candidate)) cost *= 0.7;
-				if (IsWellAligned(currentCenter, c, dir)) cost *= 0.8;
+				if (HaveSameImmediateParent(current, candidate)) {
+					cost *= 0.7;
+					bonuses += " parent×0.7";
+				}
+				
+				if (IsWellAligned(currentCenter, c, dir)) {
+					cost *= 0.8;
+					bonuses += " align×0.8";
+				}
+
+				if (VerboseNavigationDebug) {
+					Debug.WriteLine($"[NAV]   ✅ '{candidate.SimpleName}' @ ({c.X:F0},{c.Y:F0}) | dist={len:F0} dot={dot:F2} cost={cost:F0}{bonuses}");
+				}
 
 				validCandidates.Add(new ScoredCandidate { Node = candidate, Cost = cost });
+			}
+
+			if (VerboseNavigationDebug && validCandidates.Count > 0) {
+				var sorted = validCandidates.OrderBy(sc => sc.Cost).ToList();
+				Debug.WriteLine($"[NAV]   🥇 WINNER: '{sorted[0].Node.SimpleName}' (cost={sorted[0].Cost:F0})");
+				
+				// Show runner-ups if available
+				if (sorted.Count > 1) {
+					Debug.WriteLine($"[NAV]   🥈 Runner-up: '{sorted[1].Node.SimpleName}' (cost={sorted[1].Cost:F0})");
+				}
+				if (sorted.Count > 2) {
+					Debug.WriteLine($"[NAV]   🥉 3rd place: '{sorted[2].Node.SimpleName}' (cost={sorted[2].Cost:F0})");
+				}
 			}
 
 			return validCandidates.OrderBy(sc => sc.Cost).FirstOrDefault()?.Node;
@@ -603,7 +703,7 @@ namespace AcManager.UiObserver
 		{
 			if (e == null) return;
 			
-			// Debug hotkeys (F11/F12) handled in Navigator.Debug.cs partial class
+			// Debug hotkeys (F9/F11/F12) handled in Navigator.Debug.cs partial class
 			
 			// Ctrl+Shift+Arrow keys: Navigation (ensure ONLY Ctrl+Shift, no other modifiers)
 			if (Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift)) {
@@ -616,6 +716,7 @@ namespace AcManager.UiObserver
 					case Key.Right: handled = MoveInDirection(NavDirection.Right); break;
 					case Key.Return: handled = ActivateFocusedNode(); break;
 					case Key.Escape: handled = ExitGroup(); break;
+					case Key.F9:  // Debug hotkey - handled in Navigator.Debug.cs
 					case Key.F11: // Debug hotkey - handled in Navigator.Debug.cs
 					case Key.F12: // Debug hotkey - handled in Navigator.Debug.cs
 						OnDebugHotkey(e);

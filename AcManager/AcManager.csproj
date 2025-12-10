@@ -967,6 +967,7 @@
     <Compile Include="Tools\WheelAnglesStorage.cs" />
     <Compile Include="Tools\Win10SharingUiHelper.cs" />
     <Compile Include="UiObserver\HighlightOverlay.cs" />
+    <Compile Include="UiObserver\IDebugRect.cs" />
     <Compile Include="UiObserver\Navigator.cs" />
     <Compile Include="UiObserver\Navigator.Debug.cs" />
     <Compile Include="UiObserver\NavNode.cs" />

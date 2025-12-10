@@ -20,12 +20,19 @@ namespace AcManager.UiObserver
 
 		private static bool _debugMode;
 
+		/// <summary>
+		/// Controls verbose navigation algorithm debug output.
+		/// When true, logs detailed distance calculations, scoring, and candidate evaluation.
+		/// Toggle with Ctrl+Shift+F9.
+		/// </summary>
+		internal static bool _verboseNavigationDebug = false;
+
 		#endregion
 
 		#region Debug Keyboard Handlers
 
 		/// <summary>
-		/// Handles debug hotkeys (F11/F12) for toggling visualization overlay.
+		/// Handles debug hotkeys (F9/F11/F12) for toggling visualization overlay and verbose output.
 		/// Called from OnPreviewKeyDown in Navigator.cs.
 		/// </summary>
 		static partial void OnDebugHotkey(KeyEventArgs e)
@@ -45,6 +52,24 @@ namespace AcManager.UiObserver
 				ToggleHighlighting(filterByModalScope: false);
 				return;
 			}
+
+			// Ctrl+Shift+F9: Toggle verbose navigation debug output
+			if (e.Key == Key.F9 && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift)) {
+				e.Handled = true;
+				ToggleVerboseNavigationDebug();
+				return;
+			}
+		}
+
+		/// <summary>
+		/// Toggles verbose navigation algorithm debug output.
+		/// </summary>
+		private static void ToggleVerboseNavigationDebug()
+		{
+			_verboseNavigationDebug = !_verboseNavigationDebug;
+			Debug.WriteLine($"\n========== Verbose Navigation Debug: {(_verboseNavigationDebug ? "ENABLED" : "DISABLED")} ==========");
+			Debug.WriteLine($"Press Ctrl+Shift+F9 to toggle");
+			Debug.WriteLine("=============================================================\n");
 		}
 
 		#endregion
@@ -351,6 +376,52 @@ namespace AcManager.UiObserver
 #endif
 
 		/// <summary>
+		/// Debug rectangle information for visualization.
+		/// Encapsulates styling logic based on NavNode properties.
+		/// </summary>
+		private class NavDebugRect : IDebugRect
+		{
+			private readonly Rect _bounds;
+			private readonly NavNode _node;
+			
+			public NavDebugRect(Rect bounds, NavNode node)
+			{
+				_bounds = bounds;
+				_node = node;
+			}
+			
+			public Rect Bounds => _bounds;
+			
+			public Point? CenterPoint => _node.GetCenterDip();
+			
+			public Brush StrokeBrush
+			{
+				get
+				{
+					// Color coding based on node properties
+					if (_node.IsGroup)
+					{
+						return Brushes.Gray;  // Groups = Gray
+					}
+					else if (!_node.IsNavigable)
+					{
+						return Brushes.DarkRed;  // Non-navigable leaves = Dark Red
+					}
+					else
+					{
+						return Brushes.Orange;  // Navigable leaves = Orange
+					}
+				}
+			}
+			
+			public double StrokeThickness => 2.0;
+			
+			public Brush FillBrush => Brushes.Transparent;
+			
+			public double Inset => _node.IsGroup ? 0.0 : 2.0;  // Inset leaves to show inside groups
+		}
+
+		/// <summary>
 		/// Toggles debug rectangle visualization overlay.
 		/// Shows colored rectangles for all navigable elements (leaves = orange, groups = gray).
 		/// </summary>
@@ -403,8 +474,7 @@ namespace AcManager.UiObserver
 			Debug.WriteLine("");
 
 			// ? Pre-allocate with capacity hints
-			var leafRects = new List<Rect>(256);
-			var groupRects = new List<Rect>(128);
+			var debugRects = new List<IDebugRect>(256);
 
 			// Get nodes from Observer (authoritative source)
 			List<NavNode> nodesToShow;
@@ -417,7 +487,7 @@ namespace AcManager.UiObserver
 			} else {
 				// Unfiltered: Show ALL discovered nodes (including groups!)
 				nodesToShow = Observer.GetAllNavNodes().ToList();
-				Debug.WriteLine($"All discovered nodes: {nodesToShow.Count}");
+			 Debug.WriteLine($"All discovered nodes: {nodesToShow.Count}");
 			}
 			
 			// ? Limit processing to prevent OOM
@@ -454,9 +524,14 @@ namespace AcManager.UiObserver
 					);
 
 					if (rect.Width >= 1.0 && rect.Height >= 1.0) {
+						// Create debug rect with node reference for smart styling
+						debugRects.Add(new NavDebugRect(rect, node));
+						
 						// Get node type description
 						var nodeType = node.IsGroup ? "PureGroup" : "Leaf";
-						var navigable = node.IsGroup ? "[NOT navigable - pure group]" : "[NAVIGABLE]";
+						var navigable = node.IsNavigable 
+							? (node.IsGroup ? "[NOT navigable - pure group]" : "[NAVIGABLE]")
+							: "[NON-NAVIGABLE]";
 						var scopeInfo = "";
 						
 						// Add scope information if we're showing all nodes
@@ -480,17 +555,10 @@ namespace AcManager.UiObserver
 						var debugLine = $"{typeName,-20} | {elementName,-20} | {nodeType,-18} | {modalTag,-6} | {navigable,-35}{scopeInfo,-15} | {boundsStr,-30} | {navId,-30} | {hierarchicalPath}";
 
 						allDebugInfo.Add(new DebugRectInfo { 
-							Rect = rect, 
 							DebugLine = debugLine,
 							IsGroup = node.IsGroup,
 							HierarchicalPath = hierarchicalPath
 						});
-						
-						if (node.IsGroup) {
-							groupRects.Add(rect);
-						} else {
-							leafRects.Add(rect);
-						}
 					}
 
 				} catch (Exception ex) {
@@ -523,11 +591,12 @@ namespace AcManager.UiObserver
 			} else {
 				Debug.WriteLine("Mode: UNFILTERED (Ctrl+Shift+F11) - showing ALL discovered nodes");
 			}
+			Debug.WriteLine("Color Legend: Orange = Navigable leaves | Dark Red = Non-navigable leaves | Gray = Groups");
 			Debug.WriteLine("=============================================================\n");
 
 			try {
 				EnsureOverlay();  // ? Reuses existing overlay if it exists
-				_overlay?.ShowDebugRects(leafRects, groupRects);
+				_overlay?.ShowDebugRects(debugRects);
 				_debugMode = true;
 			} catch (Exception ex) {
 				Debug.WriteLine($"[Navigator] Overlay error: {ex.Message}");
@@ -545,7 +614,6 @@ namespace AcManager.UiObserver
 		/// </summary>
 		private class DebugRectInfo
 		{
-			public Rect Rect { get; set; }
 			public string DebugLine { get; set; }
 			public bool IsGroup { get; set; }
 			public string HierarchicalPath { get; set; }

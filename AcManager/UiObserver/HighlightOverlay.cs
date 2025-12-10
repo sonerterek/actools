@@ -131,22 +131,23 @@ namespace AcManager.UiObserver {
         }
 
         /// <summary>
-        /// Shows debug rectangles for all navigable elements.
-        /// leafRectsInDip: leaf rectangles in DIP (Orange, inset by 2px to be visible inside groups)
-        /// groupRectsInDip: group rectangles in DIP (Gray, full size)
+        /// Shows debug rectangles for navigable elements with smart styling.
+        /// Uses IDebugRect interface to determine colors, thickness, and insets dynamically.
+        /// Draws a small dot at the center point to show navigation calculation origin.
         /// </summary>
-        public void ShowDebugRects(IEnumerable<Rect> leafRectsInDip, IEnumerable<Rect> groupRectsInDip = null) {
-            // ? Check if disposed first
+        /// <param name="debugRects">Collection of debug rectangles with styling information</param>
+        public void ShowDebugRects(IEnumerable<IDebugRect> debugRects) {
+            // Check if disposed first
             if (_isDisposed) return;
             
-            // ? MEMORY DEBUG: Track before clearing
+            // MEMORY DEBUG: Track before clearing
             var beforeShapes = _debugShapes.Count;
             var beforeCanvasChildren = _canvas.Children.Count;
             
-            // ? Clear aggressively to free memory ASAP (ONLY ONE CALL!)
+            // Clear aggressively to free memory ASAP
             ClearDebugRectsAggressive();
             
-            // ? MEMORY DEBUG: Track after clearing
+            // MEMORY DEBUG: Track after clearing
             System.Diagnostics.Debug.WriteLine($"[HighlightOverlay] BEFORE clear: {beforeShapes} shapes, {beforeCanvasChildren} canvas children");
             System.Diagnostics.Debug.WriteLine($"[HighlightOverlay] AFTER clear: {_debugShapes.Count} shapes, {_canvas.Children.Count} canvas children");
 
@@ -155,80 +156,74 @@ namespace AcManager.UiObserver {
             EnsureVisible();
 
             int shapeCount = 0;
-            int leafCount = 0;
-            int groupCount = 0;
-
-            // Draw leaf elements in Orange with 2px inset so they're visible inside group boundaries
-            if (leafRectsInDip != null) {
-                foreach (var rectDip in leafRectsInDip) {
-                    // ? Prevent OOM by limiting shape count
-                    if (shapeCount >= MAX_DEBUG_SHAPES) break;
-
-                    // Skip degenerate
-                    if (double.IsNaN(rectDip.Width) || double.IsNaN(rectDip.Height)) continue;
-                    if (rectDip.Width < 1.0 || rectDip.Height < 1.0) continue;
-
-                    // Inset by 2 DIP pixels on all sides so leaf boundaries are visible inside groups
-                    const double inset = 2.0;
-                    var insetRect = new Rect(
-                        rectDip.Left + inset,
-                        rectDip.Top + inset,
-                        Math.Max(0, rectDip.Width - inset * 2),
-                        Math.Max(0, rectDip.Height - inset * 2)
-                    );
-
-                    // Skip if inset makes it too small
-                    if (insetRect.Width < 1.0 || insetRect.Height < 1.0) continue;
-
-                    var shape = new Rectangle {
-                        Width = insetRect.Width,
-                        Height = insetRect.Height,
-                        Stroke = Brushes.Orange,
-                        StrokeThickness = 2,
-                        Fill = Brushes.Transparent,
-                        IsHitTestVisible = false
-                    };
-                    Canvas.SetLeft(shape, insetRect.Left - Left);
-                    Canvas.SetTop(shape, insetRect.Top - Top);
-                    _canvas.Children.Add(shape);
-                    _debugShapes.Add(shape);
-                    shapeCount++;
-                    leafCount++;
-                }
-            }
             
-            // Draw group elements in Gray at full size (no inset)
-            if (groupRectsInDip != null) {
-                foreach (var rectDip in groupRectsInDip) {
-                    // ? Prevent OOM by limiting shape count
-                    if (shapeCount >= MAX_DEBUG_SHAPES) break;
-
-                    // Skip degenerate
-                    if (double.IsNaN(rectDip.Width) || double.IsNaN(rectDip.Height)) continue;
-                    if (rectDip.Width < 1.0 || rectDip.Height < 1.0) continue;
-
-                    var shape = new Rectangle {
-                        Width = rectDip.Width,
-                        Height = rectDip.Height,
-                        Stroke = Brushes.Gray,
-                        StrokeThickness = 2,
-                        Fill = Brushes.Transparent,
+            foreach (var debugRect in debugRects)
+            {
+                // Prevent OOM by limiting shape count
+                if (shapeCount >= MAX_DEBUG_SHAPES) break;
+                
+                var bounds = debugRect.Bounds;
+                
+                // Skip degenerate
+                if (double.IsNaN(bounds.Width) || double.IsNaN(bounds.Height)) continue;
+                if (bounds.Width < 1.0 || bounds.Height < 1.0) continue;
+                
+                // Apply inset if specified
+                var inset = debugRect.Inset;
+                if (inset > 0)
+                {
+                    bounds = new Rect(
+                        bounds.Left + inset,
+                        bounds.Top + inset,
+                        Math.Max(0, bounds.Width - inset * 2),
+                        Math.Max(0, bounds.Height - inset * 2)
+                    );
+                    
+                    // Skip if inset makes it too small
+                    if (bounds.Width < 1.0 || bounds.Height < 1.0) continue;
+                }
+                
+                // Draw the main rectangle border
+                var shape = new Rectangle {
+                    Width = bounds.Width,
+                    Height = bounds.Height,
+                    Stroke = debugRect.StrokeBrush,
+                    StrokeThickness = debugRect.StrokeThickness,
+                    Fill = debugRect.FillBrush,
+                    IsHitTestVisible = false
+                };
+                
+                Canvas.SetLeft(shape, bounds.Left - Left);
+                Canvas.SetTop(shape, bounds.Top - Top);
+                _canvas.Children.Add(shape);
+                _debugShapes.Add(shape);
+                shapeCount++;
+                
+                // Draw center dot (2x2 pixels) if center point is available
+                var centerPoint = debugRect.CenterPoint;
+                if (centerPoint.HasValue)
+                {
+                    const double dotSize = 2.0;
+                    var dot = new Rectangle {
+                        Width = dotSize,
+                        Height = dotSize,
+                        Fill = debugRect.StrokeBrush,  // Same color as border
                         IsHitTestVisible = false
                     };
-                    Canvas.SetLeft(shape, rectDip.Left - Left);
-                    Canvas.SetTop(shape, rectDip.Top - Top);
-                    _canvas.Children.Add(shape);
-                    _debugShapes.Add(shape);
-                    shapeCount++;
-                    groupCount++;
+                    
+                    Canvas.SetLeft(dot, centerPoint.Value.X - Left - dotSize / 2);
+                    Canvas.SetTop(dot, centerPoint.Value.Y - Top - dotSize / 2);
+                    _canvas.Children.Add(dot);
+                    _debugShapes.Add(dot);
+                    // Don't increment shapeCount for dots (they're lightweight)
                 }
             }
 
-            // ? MEMORY DEBUG: Report final state
-            System.Diagnostics.Debug.WriteLine($"[HighlightOverlay] CREATED: {leafCount} leaf shapes (orange), {groupCount} group shapes (gray), TOTAL: {shapeCount}");
+            // MEMORY DEBUG: Report final state
+            System.Diagnostics.Debug.WriteLine($"[HighlightOverlay] CREATED: {shapeCount} debug shapes");
             System.Diagnostics.Debug.WriteLine($"[HighlightOverlay] FINAL: {_debugShapes.Count} in list, {_canvas.Children.Count} in canvas");
 
-            // ? If we hit the limit, warn in debug output
+            // If we hit the limit, warn in debug output
             if (shapeCount >= MAX_DEBUG_SHAPES) {
                 System.Diagnostics.Debug.WriteLine($"[HighlightOverlay] WARNING: Hit shape limit ({MAX_DEBUG_SHAPES}). Some elements not visualized.");
             }
