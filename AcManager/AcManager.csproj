@@ -968,6 +968,7 @@
     <Compile Include="Tools\Win10SharingUiHelper.cs" />
     <Compile Include="UiObserver\HighlightOverlay.cs" />
     <Compile Include="UiObserver\Navigator.cs" />
+    <Compile Include="UiObserver\Navigator.Debug.cs" />
     <Compile Include="UiObserver\NavNode.cs" />
     <Compile Include="UiObserver\NavPathFilter.cs" />
     <Compile Include="UiObserver\Observer.cs" />
