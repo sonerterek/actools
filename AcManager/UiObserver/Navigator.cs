@@ -1,10 +1,12 @@
-﻿using System;
+﻿using FirstFloor.ModernUI.Windows.Controls;
+using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Threading;
-using System.Diagnostics;
 
 namespace AcManager.UiObserver
 {
@@ -132,6 +134,7 @@ namespace AcManager.UiObserver
 				// Exclude text or fancy menu items
 				"EXCLUDE: ** > *:HistoricalTextBox > **",
 				"EXCLUDE: ** > *:LazyMenuItem > **",
+				"EXCLUDE: ** > *:ModernTabSplitter",
 
 				// CRITICAL: Exclude debug overlay from navigation tracking to prevent feedback loop
 				"EXCLUDE: *:HighlightOverlay > **",
@@ -139,6 +142,8 @@ namespace AcManager.UiObserver
 				// Exclude main menu and content frame from navigation
 				"EXCLUDE: Window:MainWindow > WindowBorder:Border > (unnamed):AdornerDecorator > (unnamed):Cell > (unnamed):Cell > (unnamed):AdornerDecorator > LayoutRoot:DockPanel > (unnamed):DockPanel > PART_Menu:ModernMenu",
 				"EXCLUDE: Window:MainWindow > WindowBorder:Border > (unnamed):AdornerDecorator > (unnamed):Cell > (unnamed):Cell > (unnamed):AdornerDecorator > LayoutRoot:DockPanel > ContentFrame:ModernFrame",
+				"EXCLUDE: (unnamed):SelectTrackDialog > (unnamed):Border > (unnamed):Cell > (unnamed):AdornerDecorator > PART_Border:Border > (unnamed):Cell > (unnamed):DockPanel > (unnamed):Border > PART_Content:TransitioningContentControl > (unnamed):Cell > CurrentWrapper:Border > CurrentContentPresentationSite:ContentPresenter > (unnamed):Grid > (unnamed):DockPanel > (unnamed):AdornerDecorator > Tabs:ModernTab",
+				"EXCLUDE: (unnamed):SelectTrackDialog > (unnamed):Border > (unnamed):Cell > (unnamed):AdornerDecorator > PART_Border:Border > (unnamed):Cell > (unnamed):DockPanel > (unnamed):Border > PART_Content:TransitioningContentControl > (unnamed):Cell > CurrentWrapper:Border > CurrentContentPresentationSite:ContentPresenter > (unnamed):Grid > (unnamed):DockPanel > (unnamed):AdornerDecorator > Tabs:ModernTab > (unnamed):DockPanel > PART_Frame:ModernFrame",
 
 				"CLASSIFY: ** > *:SelectCarDialog => role=group; modal=true",
 				"CLASSIFY: ** > *:SelectTrackDialog => role=group; modal=true",

@@ -28,9 +28,9 @@ namespace AcManager.UiObserver
 
         /// <summary>
         /// Enable verbose debug output for NavNode creation and evaluation.
-        /// Set to false in production to reduce debug spam.
+        /// Now controlled by Observer.ToggleVerboseDebug() via Navigator hotkey.
         /// </summary>
-        private const bool VERBOSE_DEBUG = false;
+        internal static bool VerboseDebug { get; set; } = false;
 
         #endregion
 
@@ -113,7 +113,7 @@ namespace AcManager.UiObserver
 
             var feType = fe.GetType();
 
-            if (VERBOSE_DEBUG) {
+            if (VerboseDebug) {
                 Debug.WriteLine($"[NavNode] Evaluating: {feType.Name} '{(string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name)}'");
             }
 
@@ -128,12 +128,12 @@ namespace AcManager.UiObserver
                 isGroup = true;
                 isLeaf = false;
                 
-                if (VERBOSE_DEBUG) {
+                if (VerboseDebug) {
                     Debug.WriteLine($"[NavNode]   -> PopupRoot detected - treating as modal group");
                 }
             }
 
-            if (VERBOSE_DEBUG) {
+            if (VerboseDebug) {
                 Debug.WriteLine($"[NavNode]   -> Type-based: IsGroup={isGroup}, IsLeaf={isLeaf}");
             }
 
@@ -144,7 +144,7 @@ namespace AcManager.UiObserver
             // This allows CLASSIFY rules to bring non-whitelisted types into the system
             var classification = PathFilter.GetClassification(hierarchicalPath);
             if (classification != null) {
-                if (VERBOSE_DEBUG) {
+                if (VerboseDebug) {
                     Debug.WriteLine($"[NavNode]   -> Classification rule matched: Role={classification.Role}, Modal={classification.IsModal}");
                 }
 
@@ -162,7 +162,7 @@ namespace AcManager.UiObserver
                             break;
                     }
 
-                    if (VERBOSE_DEBUG) {
+                    if (VerboseDebug) {
                         Debug.WriteLine($"[NavNode]   -> After classification: IsGroup={isGroup}, IsLeaf={isLeaf}");
                     }
                 }
@@ -170,7 +170,7 @@ namespace AcManager.UiObserver
 
             // Step 4: Whitelist check
             if (!isGroup && !isLeaf) {
-                if (VERBOSE_DEBUG) {
+                if (VerboseDebug) {
                     Debug.WriteLine($"[NavNode]   -> Not in whitelist (and no classification override), rejected");
                 }
                 return null;
@@ -178,7 +178,7 @@ namespace AcManager.UiObserver
 
             // Step 5: Check for nested leaf constraint
             if (!isGroup && HasLeafAncestor(fe, out var leafAncestor)) {
-                if (VERBOSE_DEBUG) {
+                if (VerboseDebug) {
                     try {
                         var skippedTypeName = feType.Name;
                         var ancestorTypeName = leafAncestor?.GetType().Name ?? "Unknown";
@@ -208,7 +208,7 @@ namespace AcManager.UiObserver
             if (feType.Name == "PopupRoot") {
                 isModal = true;
                 
-                if (VERBOSE_DEBUG) {
+                if (VerboseDebug) {
                     Debug.WriteLine($"[NavNode]   -> PopupRoot is MODAL (blocks background navigation)");
                 }
             }
@@ -217,12 +217,12 @@ namespace AcManager.UiObserver
             if (classification?.IsModal.HasValue == true) {
                 isModal = classification.IsModal.Value;
 
-                if (VERBOSE_DEBUG) {
+                if (VerboseDebug) {
                     Debug.WriteLine($"[NavNode]   -> Modal overridden by classification: {isModal}");
                 }
             }
 
-            if (VERBOSE_DEBUG && isModal) {
+            if (VerboseDebug && isModal) {
                 Debug.WriteLine($"[NavNode]   -> MODAL TYPE (blocks background navigation)");
             }
 
@@ -235,7 +235,7 @@ namespace AcManager.UiObserver
                 }
             }
 
-            if (VERBOSE_DEBUG) {
+            if (VerboseDebug) {
                 Debug.WriteLine($"[NavNode]   -> CREATED: {feType.Name} Id={id}");
                 Debug.WriteLine($"[NavNode]   -> Final: IsGroup={isGroup}, IsModal={isModal}");
                 Debug.WriteLine($"[NavNode]   -> Path: {hierarchicalPath}");

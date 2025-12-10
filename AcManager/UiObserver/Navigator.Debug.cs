@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -63,12 +63,18 @@ namespace AcManager.UiObserver
 
 		/// <summary>
 		/// Toggles verbose navigation algorithm debug output.
+		/// Also toggles Observer's verbose discovery logging and NavNode's creation logging.
 		/// </summary>
 		private static void ToggleVerboseNavigationDebug()
 		{
 			_verboseNavigationDebug = !_verboseNavigationDebug;
-			Debug.WriteLine($"\n========== Verbose Navigation Debug: {(_verboseNavigationDebug ? "ENABLED" : "DISABLED")} ==========");
-			Debug.WriteLine($"Press Ctrl+Shift+F9 to toggle");
+			
+			// Toggle Observer's verbose debug (which cascades to NavNode)
+			Observer.VerboseDebug = _verboseNavigationDebug;
+			
+			Debug.WriteLine($"\n========== Verbose Debug Mode: {(_verboseNavigationDebug ? "ENABLED" : "DISABLED")} ==========");
+			Debug.WriteLine("Enabled for: Navigator (algorithm), Observer (discovery), NavNode (creation)");
+			Debug.WriteLine("Press Ctrl+Shift+F9 to toggle");
 			Debug.WriteLine("=============================================================\n");
 		}
 
@@ -100,7 +106,7 @@ namespace AcManager.UiObserver
 				if (!node.TryGetVisual(out var fe))
 				{
 					deadVisuals++;
-					Debug.WriteLine($"  ? DEAD VISUAL: {node.SimpleName}");
+					Debug.WriteLine($"  ⚠ DEAD VISUAL: {node.SimpleName}");
 					Debug.WriteLine($"     Path: {node.HierarchicalPath}");
 					continue;
 				}
@@ -148,7 +154,7 @@ namespace AcManager.UiObserver
 					}
 					catch (Exception ex)
 					{
-						Debug.WriteLine($"  ??  ERROR walking visual tree for {node.SimpleName}: {ex.Message}");
+						Debug.WriteLine($"  ⚠⚠  ERROR walking visual tree for {node.SimpleName}: {ex.Message}");
 						Debug.WriteLine($"     Path: {node.HierarchicalPath}");
 						if (bounds.HasValue)
 						{
@@ -159,7 +165,7 @@ namespace AcManager.UiObserver
 					if (actualParent == null)
 					{
 						parentMismatches++;
-						Debug.WriteLine($"  ? PARENT MISMATCH: {node.SimpleName}");
+						Debug.WriteLine($"  ⚠ PARENT MISMATCH: {node.SimpleName}");
 						Debug.WriteLine($"     Path: {node.HierarchicalPath}");
 						if (bounds.HasValue)
 						{
@@ -172,7 +178,7 @@ namespace AcManager.UiObserver
 					else if (!ReferenceEquals(actualParent, parentNode))
 					{
 						parentMismatches++;
-						Debug.WriteLine($"  ? PARENT MISMATCH: {node.SimpleName}");
+						Debug.WriteLine($"  ⚠ PARENT MISMATCH: {node.SimpleName}");
 						Debug.WriteLine($"     Path: {node.HierarchicalPath}");
 						if (bounds.HasValue)
 						{
@@ -202,7 +208,7 @@ namespace AcManager.UiObserver
 					if (seenChildren.Contains(child))
 					{
 						childConsistencyErrors++;
-						Debug.WriteLine($"  ? DUPLICATE CHILD: {node.SimpleName}");
+						Debug.WriteLine($"  ⚠ DUPLICATE CHILD: {node.SimpleName}");
 						Debug.WriteLine($"     Path: {node.HierarchicalPath}");
 						if (bounds.HasValue)
 						{
@@ -220,7 +226,7 @@ namespace AcManager.UiObserver
 					if (child.Parent == null || !child.Parent.TryGetTarget(out var childParent) || !ReferenceEquals(childParent, node))
 					{
 						childConsistencyErrors++;
-						Debug.WriteLine($"  ? CHILD PARENT MISMATCH: {node.SimpleName}");
+						Debug.WriteLine($"  ⚠ CHILD PARENT MISMATCH: {node.SimpleName}");
 						Debug.WriteLine($"     Path: {node.HierarchicalPath}");
 						if (bounds.HasValue)
 						{
@@ -247,7 +253,7 @@ namespace AcManager.UiObserver
 				if (deadChildRefs > 0)
 				{
 					childConsistencyErrors++;
-					Debug.WriteLine($"  ? DEAD CHILD REFERENCES: {node.SimpleName}");
+					Debug.WriteLine($"  ⚠ DEAD CHILD REFERENCES: {node.SimpleName}");
 					Debug.WriteLine($"     Path: {node.HierarchicalPath}");
 					if (bounds.HasValue)
 					{
@@ -292,7 +298,7 @@ namespace AcManager.UiObserver
 				}
 				catch (Exception ex)
 				{
-					Debug.WriteLine($"  ??  ERROR walking visual tree descendants for {node.SimpleName}: {ex.Message}");
+					Debug.WriteLine($"  ⚠⚠  ERROR walking visual tree descendants for {node.SimpleName}: {ex.Message}");
 					Debug.WriteLine($"     Path: {node.HierarchicalPath}");
 					if (bounds.HasValue)
 					{
@@ -319,7 +325,7 @@ namespace AcManager.UiObserver
 					if (!reachable)
 					{
 						orphanedNodes++;
-						Debug.WriteLine($"  ? ORPHANED NODE IN VISUAL TREE: {visualNode.SimpleName}");
+						Debug.WriteLine($"  ⚠ ORPHANED NODE IN VISUAL TREE: {visualNode.SimpleName}");
 						Debug.WriteLine($"     Path: {visualNode.HierarchicalPath}");
 						Debug.WriteLine($"     Found in visual subtree of: {node.SimpleName}");
 						Debug.WriteLine($"     Parent node path: {node.HierarchicalPath}");
@@ -339,7 +345,7 @@ namespace AcManager.UiObserver
 					if (visited.Contains(ancestor))
 					{
 						circularRefs++;
-						Debug.WriteLine($"  ? CIRCULAR REFERENCE: {node.SimpleName} has circular parent chain!");
+						Debug.WriteLine($"  ⚠ CIRCULAR REFERENCE: {node.SimpleName} has circular parent chain!");
 						Debug.WriteLine($"     Path: {node.HierarchicalPath}");
 						if (bounds.HasValue)
 						{
@@ -364,11 +370,11 @@ namespace AcManager.UiObserver
 			
 			if (deadVisuals == 0 && parentMismatches == 0 && childConsistencyErrors == 0 && orphanedNodes == 0 && circularRefs == 0)
 			{
-				Debug.WriteLine("? All nodes are CONSISTENT with visual tree!");
+				Debug.WriteLine("✓ All nodes are CONSISTENT with visual tree!");
 			}
 			else
 			{
-				Debug.WriteLine("??  INCONSISTENCIES DETECTED - see details above");
+				Debug.WriteLine("⚠⚠  INCONSISTENCIES DETECTED - see details above");
 			}
 			
 			Debug.WriteLine("================================================\n");
@@ -473,7 +479,7 @@ namespace AcManager.UiObserver
 			}
 			Debug.WriteLine("");
 
-			// ? Pre-allocate with capacity hints
+			// ✓ Pre-allocate with capacity hints
 			var debugRects = new List<IDebugRect>(256);
 
 			// Get nodes from Observer (authoritative source)
@@ -490,14 +496,14 @@ namespace AcManager.UiObserver
 			 Debug.WriteLine($"All discovered nodes: {nodesToShow.Count}");
 			}
 			
-			// ? Limit processing to prevent OOM
+			// ✓ Limit processing to prevent OOM
 			const int MAX_NODES_TO_PROCESS = 1000;
 			if (nodesToShow.Count > MAX_NODES_TO_PROCESS) {
 				Debug.WriteLine($"[NavMapper] WARNING: {nodesToShow.Count} nodes exceeds limit {MAX_NODES_TO_PROCESS}. Truncating.");
 				nodesToShow = nodesToShow.Take(MAX_NODES_TO_PROCESS).ToList();
 			}
 			
-			// ? Use initial capacity based on actual count
+			// ✓ Use initial capacity based on actual count
 			var allDebugInfo = new List<DebugRectInfo>(nodesToShow.Count);
 			
 			foreach (var node in nodesToShow) {
@@ -543,16 +549,13 @@ namespace AcManager.UiObserver
 						var typeName = fe.GetType().Name;
 						var elementName = string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name;
 						var modalTag = node.IsModal ? "MODAL" : "";
-						var navId = node.HierarchicalPath;
-						
-						// Get hierarchical path for sorting
-						var hierarchicalPath = NavNode.GetHierarchicalPath(fe);
+						var hierarchicalPath = node.HierarchicalPath;  // Use stored path for both display and sorting
 						
 						// Format bounds as: (X, Y) WxH
 						var boundsStr = $"({rect.Left,7:F1}, {rect.Top,7:F1}) {rect.Width,6:F1}x{rect.Height,6:F1}";
 
-						// Build formatted debug line
-						var debugLine = $"{typeName,-20} | {elementName,-20} | {nodeType,-18} | {modalTag,-6} | {navigable,-35}{scopeInfo,-15} | {boundsStr,-30} | {navId,-30} | {hierarchicalPath}";
+						// Build formatted debug line (hierarchicalPath is last column)
+						var debugLine = $"{typeName,-20} | {elementName,-20} | {nodeType,-18} | {modalTag,-6} | {navigable,-35}{scopeInfo,-15} | {boundsStr,-30} | {hierarchicalPath}";
 
 						allDebugInfo.Add(new DebugRectInfo { 
 							DebugLine = debugLine,
@@ -595,14 +598,14 @@ namespace AcManager.UiObserver
 			Debug.WriteLine("=============================================================\n");
 
 			try {
-				EnsureOverlay();  // ? Reuses existing overlay if it exists
+				EnsureOverlay();  // ✓ Reuses existing overlay if it exists
 				_overlay?.ShowDebugRects(debugRects);
 				_debugMode = true;
 			} catch (Exception ex) {
 				Debug.WriteLine($"[Navigator] Overlay error: {ex.Message}");
 			}
 			
-			// ? Clear local collections to hint GC
+			// ✓ Clear local collections to hint GC
 			allDebugInfo.Clear();
 			allDebugInfo = null;
 			nodesToShow.Clear();

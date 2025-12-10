@@ -28,6 +28,43 @@ namespace AcManager.UiObserver {
     /// information about all nodes in the modal scope.
     /// </summary>
     internal static class Observer {
+        #region Debug Configuration
+
+        /// <summary>
+        /// Controls verbose debug output for Observer discovery.
+        /// Toggle via Navigator's Ctrl+Shift+F9 hotkey.
+        /// </summary>
+        private static bool _verboseDebug = false;
+
+        /// <summary>
+        /// Gets or sets the verbose debug flag for Observer discovery logging.
+        /// When enabled, logs detailed information about element loading paths and NavNode creation.
+        /// </summary>
+        public static bool VerboseDebug
+        {
+            get => _verboseDebug;
+            set
+            {
+                _verboseDebug = value;
+                // Cascade to NavNode
+                NavNode.VerboseDebug = value;
+            }
+        }
+
+        /// <summary>
+        /// Toggles verbose discovery debug output.
+        /// Called by Navigator when user presses Ctrl+Shift+F9.
+        /// </summary>
+        public static void ToggleVerboseDebug()
+        {
+            VerboseDebug = !VerboseDebug;
+            Debug.WriteLine($"\n========== Observer Verbose Debug: {(VerboseDebug ? "ENABLED" : "DISABLED")} ==========");
+            Debug.WriteLine("Press Ctrl+Shift+F9 to toggle");
+            Debug.WriteLine("=============================================================\n");
+        }
+
+        #endregion
+
         #region Indexes
 
         // Track NavNodes by their FrameworkElement (TRUE source of truth)
@@ -154,10 +191,17 @@ namespace AcManager.UiObserver {
         private static void OnAnyElementLoaded(object sender, RoutedEventArgs e) {
             if (!(sender is FrameworkElement fe)) return;
             
+            if (_verboseDebug) {
+                Debug.WriteLine($"[Observer] OnAnyElementLoaded: {fe.GetType().Name} '{(string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name)}'");
+            }
+            
             try {
                 // 1. Check if element is a Window or Window.Content ? RegisterRoot
                 var win = Window.GetWindow(fe);
                 if (win != null && (ReferenceEquals(win, fe) || ReferenceEquals(win.Content, fe))) {
+                    if (_verboseDebug) {
+                        Debug.WriteLine($"[Observer]   ? Path 1: Window or Window.Content detected");
+                    }
                     RegisterRoot(win.Content as FrameworkElement ?? win);
                     return;
                 }
@@ -168,18 +212,27 @@ namespace AcManager.UiObserver {
                     var psRoot = ps.RootVisual as FrameworkElement;
                     
                     if (psRoot != null && ReferenceEquals(psRoot, fe)) {
+                        if (_verboseDebug) {
+                            Debug.WriteLine($"[Observer]   ? Path 2: PresentationSource root detected");
+                        }
                         RegisterRoot(fe);
                         return;
                     }
                     
                     // 3. Element is inside a tracked root ? Try create node
                     if (_presentationSourceRoots.ContainsKey(ps)) {
+                        if (_verboseDebug) {
+                            Debug.WriteLine($"[Observer]   ? Path 3: Inside tracked root, trying to create NavNode");
+                        }
                         TryCreateNavNodeForElement(fe);
                         return;
                     }
                     
                     // 4. Element's PresentationSource root not tracked yet ? Register it
                     if (psRoot != null) {
+                        if (_verboseDebug) {
+                            Debug.WriteLine($"[Observer]   ? Path 4: Untracked PresentationSource root, registering");
+                        }
                         RegisterRoot(psRoot);
                         return;
                     }
@@ -188,30 +241,64 @@ namespace AcManager.UiObserver {
                 // 5. Orphan element with no visual parent ? RegisterRoot as fallback
                 try {
                     if (VisualTreeHelper.GetParent(fe) == null && fe.Parent == null) {
+                        if (_verboseDebug) {
+                            Debug.WriteLine($"[Observer]   ? Path 5: Orphan element, registering as root");
+                        }
                         RegisterRoot(fe);
+                    } else if (_verboseDebug) {
+                        Debug.WriteLine($"[Observer]   ? Skipped: Has parent but not in tracked tree");
                     }
                 } catch { }
-            } catch { }
+            } catch (Exception ex) {
+                if (_verboseDebug) {
+                    Debug.WriteLine($"[Observer]   ? ERROR: {ex.Message}");
+                }
+            }
         }
 
         private static void TryCreateNavNodeForElement(FrameworkElement fe) {
             if (fe == null) return;
             
             try {
-                if (_nodesByElement.ContainsKey(fe)) return;
+                if (_nodesByElement.ContainsKey(fe)) {
+                    if (_verboseDebug) {
+                        Debug.WriteLine($"[Observer] TryCreate: {fe.GetType().Name} - already exists");
+                    }
+                    return;
+                }
                 
-                if (!IsTrulyVisible(fe)) return;
+                if (!IsTrulyVisible(fe)) {
+                    if (_verboseDebug) {
+                        Debug.WriteLine($"[Observer] TryCreate: {fe.GetType().Name} '{(string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name)}' - not visible");
+                    }
+                    return;
+                }
                 
                 var ps = PresentationSource.FromVisual(fe);
-                if (ps == null) return;
+                if (ps == null) {
+                    if (_verboseDebug) {
+                        Debug.WriteLine($"[Observer] TryCreate: {fe.GetType().Name} - no PresentationSource");
+                    }
+                    return;
+                }
                 
                 if (!_presentationSourceRoots.TryGetValue(ps, out var navTreeRoot)) {
+                    if (_verboseDebug) {
+                        Debug.WriteLine($"[Observer] TryCreate: {fe.GetType().Name} - PresentationSource not tracked");
+                    }
                     return;
                 }
                 
                 var psRoot = PresentationSource.FromVisual(navTreeRoot);
                 if (!object.ReferenceEquals(ps, psRoot)) {
+                    if (_verboseDebug) {
+                        Debug.WriteLine($"[Observer] TryCreate: {fe.GetType().Name} - PresentationSource mismatch");
+                    }
                     return;
+                }
+                
+                if (_verboseDebug) {
+                    Debug.WriteLine($"[Observer] TryCreate: {fe.GetType().Name} '{(string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name)}' - calling CreateNavNode");
                 }
                 
                 var navNode = NavNode.CreateNavNode(fe);
@@ -239,9 +326,17 @@ namespace AcManager.UiObserver {
                             // Modal events should only fire during bulk SyncRoot() after all children are linked
                             // If this is a problem for dynamically opened popups, we can schedule a re-sync instead
                         }
+                    } else if (_verboseDebug) {
+                        Debug.WriteLine($"[Observer] TryCreate: {fe.GetType().Name} - TryAdd failed (race condition?)");
                     }
+                } else if (_verboseDebug) {
+                    Debug.WriteLine($"[Observer] TryCreate: {fe.GetType().Name} '{(string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name)}' - CreateNavNode returned null (filtered/excluded)");
                 }
-            } catch { }
+            } catch (Exception ex) {
+                if (_verboseDebug) {
+                    Debug.WriteLine($"[Observer] TryCreate ERROR: {ex.Message}");
+                }
+            }
         }
 
         /// <summary>
@@ -592,6 +687,8 @@ namespace AcManager.UiObserver {
                                     ? $"{popupElement.PlacementTarget.GetType().Name} '{(string.IsNullOrEmpty((popupElement.PlacementTarget as FrameworkElement)?.Name) ? "(unnamed)" : (popupElement.PlacementTarget as FrameworkElement)?.Name)}'"
                                     : "NULL";
                                 Debug.WriteLine($"[Observer] NavNode discovered: Popup '{navNode.SimpleName}' with PlacementTarget={placementTargetInfo}");
+                            } else {
+                                Debug.WriteLine($"[Observer] NavNode discovered: {fe.GetType().Name} '{navNode.SimpleName}'");
                             }
 
                             // ? CHANGED: Don't fire modal event immediately - collect it for later
