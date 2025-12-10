@@ -565,7 +565,7 @@ namespace AcManager.UiObserver
 
         /// <summary>
         /// Whether this node is navigable (can receive keyboard focus).
-        /// Leaves are navigable; groups are not (unless special cases like ListBox).
+        /// Leaves are navigable; groups are not.
         /// </summary>
         public bool IsNavigable => !IsGroup;
 
