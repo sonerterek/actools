@@ -208,34 +208,75 @@ namespace AcManager.UiObserver {
                 
                 // 2. Check if element is a PresentationSource root ? RegisterRoot
                 var ps = PresentationSource.FromVisual(fe);
-                if (ps != null) {
-                    var psRoot = ps.RootVisual as FrameworkElement;
+                if (ps == null) {
+                    if (_verboseDebug) {
+                        Debug.WriteLine($"[Observer]   ? Skipped: No PresentationSource (element not in visual tree yet?)");
+                    }
+                    return;
+                }
+                
+                var psRoot = ps.RootVisual as FrameworkElement;
+                
+                if (psRoot != null && ReferenceEquals(psRoot, fe)) {
+                    if (_verboseDebug) {
+                        Debug.WriteLine($"[Observer]   ? Path 2: PresentationSource root detected");
+                    }
+                    RegisterRoot(fe);
+                    return;
+                }
+                
+                // 3. Element is inside a tracked root ? Schedule deferred discovery on next dispatcher cycle
+                if (_presentationSourceRoots.ContainsKey(ps)) {
+                    if (_verboseDebug) {
+                        Debug.WriteLine($"[Observer]   ? Path 3: Inside tracked root, scheduling deferred discovery");
+                    }
                     
-                    if (psRoot != null && ReferenceEquals(psRoot, fe)) {
-                        if (_verboseDebug) {
-                            Debug.WriteLine($"[Observer]   ? Path 2: PresentationSource root detected");
-                        }
-                        RegisterRoot(fe);
+                    // Capture the root for the closure
+                    if (!_presentationSourceRoots.TryGetValue(ps, out var trackedRoot)) {
                         return;
                     }
                     
-                    // 3. Element is inside a tracked root ? Try create node
-                    if (_presentationSourceRoots.ContainsKey(ps)) {
-                        if (_verboseDebug) {
-                            Debug.WriteLine($"[Observer]   ? Path 3: Inside tracked root, trying to create NavNode");
+                    // ? FIX: Defer to next dispatcher cycle (Loaded priority)
+                    // This allows children to fire Loaded events before we discover the parent,
+                    // then we discover the parent + scan its subtree to catch any missed children
+                    fe.Dispatcher.BeginInvoke(new Action(() => {
+                        try {
+                            // Double-check element is still valid
+                            if (!fe.IsLoaded) return;
+                            if (PresentationSource.FromVisual(fe) == null) return;
+                            
+                            // Try to create the node
+                            TryCreateNavNodeForElement(fe);
+                            
+                            // If this is a container type (UserControl, Page, etc.), scan its subtree
+                            // to catch any children that fired Loaded before the parent was tracked
+                            if (fe is UserControl || fe is System.Windows.Controls.Page) {
+                                if (_verboseDebug) {
+                                    Debug.WriteLine($"[Observer]   ? Scanning subtree of {fe.GetType().Name} for missed children");
+                                }
+                                
+                                // Schedule a scan of this element's subtree
+                                ScheduleDebouncedSync(trackedRoot);
+                            }
+                        } catch (Exception ex) {
+                            if (_verboseDebug) {
+                                Debug.WriteLine($"[Observer]   ? Deferred discovery error: {ex.Message}");
+                            }
                         }
-                        TryCreateNavNodeForElement(fe);
-                        return;
-                    }
+                    }), System.Windows.Threading.DispatcherPriority.Loaded);
                     
-                    // 4. Element's PresentationSource root not tracked yet ? Register it
-                    if (psRoot != null) {
-                        if (_verboseDebug) {
-                            Debug.WriteLine($"[Observer]   ? Path 4: Untracked PresentationSource root, registering");
-                        }
-                        RegisterRoot(psRoot);
-                        return;
+                    return;
+                }
+                
+                // 4. Element's PresentationSource root not tracked yet ? Register it
+                if (psRoot != null) {
+                    if (_verboseDebug) {
+                        Debug.WriteLine($"[Observer]   ? Path 4: Untracked PresentationSource root, registering");
+                        Debug.WriteLine($"[Observer]       psRoot type: {psRoot.GetType().Name}");
+                        Debug.WriteLine($"[Observer]       psRoot name: {(string.IsNullOrEmpty(psRoot.Name) ? "(unnamed)" : psRoot.Name)}");
                     }
+                    RegisterRoot(psRoot);
+                    return;
                 }
                 
                 // 5. Orphan element with no visual parent ? RegisterRoot as fallback
@@ -247,6 +288,8 @@ namespace AcManager.UiObserver {
                         RegisterRoot(fe);
                     } else if (_verboseDebug) {
                         Debug.WriteLine($"[Observer]   ? Skipped: Has parent but not in tracked tree");
+                        Debug.WriteLine($"[Observer]       Visual parent: {VisualTreeHelper.GetParent(fe)?.GetType().Name ?? "NULL"}");
+                        Debug.WriteLine($"[Observer]       Logical parent: {fe.Parent?.GetType().Name ?? "NULL"}");
                     }
                 } catch { }
             } catch (Exception ex) {
@@ -267,12 +310,8 @@ namespace AcManager.UiObserver {
                     return;
                 }
                 
-                if (!IsTrulyVisible(fe)) {
-                    if (_verboseDebug) {
-                        Debug.WriteLine($"[Observer] TryCreate: {fe.GetType().Name} '{(string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name)}' - not visible");
-                    }
-                    return;
-                }
+                // ? REMOVED: IsTrulyVisible check - it blocks elements that fire Loaded before layout completes
+                // The visibility/bounds check will happen later in GetCenterDip() when actually navigating
                 
                 var ps = PresentationSource.FromVisual(fe);
                 if (ps == null) {
@@ -304,6 +343,9 @@ namespace AcManager.UiObserver {
                 var navNode = NavNode.CreateNavNode(fe);
                 if (navNode != null) {
                     if (_nodesByElement.TryAdd(fe, navNode)) {
+                        // ? NEW: Hook Unloaded event to track when element is removed from visual tree
+                        fe.Unloaded += OnElementUnloaded;
+                        
                         // Build Parent/Children relationships (visual tree with PlacementTarget bridging)
                         LinkToParent(navNode, fe);
                         
@@ -355,9 +397,122 @@ namespace AcManager.UiObserver {
         #region Hierarchy Management
 
         /// <summary>
+        /// Called when any discovered element is unloaded from the visual tree.
+        /// Removes the element and all its descendants from tracking to prevent
+        /// stale references when content is swapped (e.g., tab changes in ModernFrame).
+        /// 
+        /// FIX: Handles the case where ContentPresenter replaces its content without firing
+        /// individual Unloaded events for every descendant. When QuickDrive_Weekend tab is
+        /// replaced by QuickDrive_Practice tab:
+        /// 1. QuickDrive_Weekend's Unloaded event fires
+        /// 2. We remove it from _nodesByElement
+        /// 3. We scan _nodesByElement for all descendants and remove them too
+        /// 4. This prevents parent mismatch errors in ValidateNodeConsistency()
+        /// </summary>
+        private static void OnElementUnloaded(object sender, RoutedEventArgs e) {
+            if (!(sender is FrameworkElement fe)) return;
+            
+            try {
+                // Unhook the event to prevent memory leaks
+                fe.Unloaded -= OnElementUnloaded;
+                
+                // Remove this element and all its descendants
+                RemoveElementAndDescendants(fe);
+            } catch (Exception ex) {
+                Debug.WriteLine($"[Observer] OnElementUnloaded error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Removes an element and all its descendants from tracking.
+        /// Called when an element is unloaded from the visual tree (e.g., tab content swapped).
+        /// </summary>
+        private static void RemoveElementAndDescendants(FrameworkElement root) {
+            if (root == null) return;
+            
+            try {
+                // First, remove the element itself
+                if (_nodesByElement.TryRemove(root, out var rootNode)) {
+                    Debug.WriteLine($"[Observer] Removed unloaded element: {rootNode.SimpleName}");
+                    UnlinkNode(rootNode);
+                    HandleRemovedNodeModalTracking(rootNode);
+                    
+                    // Remove from root index
+                    foreach (var kvp in _rootIndex) {
+                        var elementSet = kvp.Value;
+                        lock (elementSet) {
+                            elementSet.Remove(root);
+                        }
+                    }
+                }
+                
+                // Then, find and remove all descendants
+                // We need to check all tracked elements to see if they're descendants of the removed root
+                var toRemove = new List<FrameworkElement>();
+                
+                foreach (var kvp in _nodesByElement) {
+                    var element = kvp.Key;
+                    if (ReferenceEquals(element, root)) continue; // Already removed above
+                    
+                    // Check if this element is a visual descendant of the removed root
+                    if (IsVisualDescendantOf(element, root)) {
+                        toRemove.Add(element);
+                    }
+                }
+                
+                // Remove all descendants
+                foreach (var descendant in toRemove) {
+                    if (_nodesByElement.TryRemove(descendant, out var node)) {
+                        Debug.WriteLine($"[Observer] Removed descendant: {node.SimpleName}");
+                        UnlinkNode(node);
+                        HandleRemovedNodeModalTracking(node);
+                        
+                        // Unhook event
+                        descendant.Unloaded -= OnElementUnloaded;
+                        
+                        // Remove from root index
+                        foreach (var kvp in _rootIndex) {
+                            var elementSet = kvp.Value;
+                            lock (elementSet) {
+                                elementSet.Remove(descendant);
+                            }
+                        }
+                    }
+                }
+                
+                if (toRemove.Count > 0) {
+                    Debug.WriteLine($"[Observer] Cleaned up {toRemove.Count} descendants of {rootNode?.SimpleName ?? root.GetType().Name}");
+                }
+            } catch (Exception ex) {
+                Debug.WriteLine($"[Observer] RemoveElementAndDescendants error: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Checks if a child element is a visual descendant of an ancestor element.
+        /// Uses the CURRENT visual tree (not cached relationships).
+        /// </summary>
+        private static bool IsVisualDescendantOf(DependencyObject child, DependencyObject ancestor) {
+            if (child == null || ancestor == null) return false;
+            
+            try {
+                var parent = child;
+                while (parent != null) {
+                    parent = VisualTreeHelper.GetParent(parent);
+                    if (ReferenceEquals(parent, ancestor)) {
+                        return true;
+                    }
+                }
+            } catch { }
+            
+            return false;
+        }
+
+        /// <summary>
         /// Links a newly-created NavNode to its parent in the navigation tree.
         /// Walks up the visual tree to find the first parent NavNode and establishes bidirectional link.
         /// Also handles Popup boundaries by using PlacementTarget to bridge the visual tree gap.
+        /// Captures the intermediate visual tree path (excluding child and parent NavNodes) for diagnostics.
         /// </summary>
         /// <param name="childNode">The newly-created NavNode to link</param>
         /// <param name="childFe">The FrameworkElement for the child node</param>
@@ -366,6 +521,7 @@ namespace AcManager.UiObserver {
 
             try {
                 DependencyObject current = childFe;
+                var visualPath = new List<WeakReference<FrameworkElement>>();
                 
                 // Walk up visual tree to find first parent NavNode
                 while (current != null) {
@@ -375,12 +531,28 @@ namespace AcManager.UiObserver {
                         break;
                     }
 
+                    // ? NEW: Only add intermediate elements (not NavNodes) to the path
+                    // Child NavNode knows its own FE, parent NavNode knows its own FE
+                    // We only need to track the non-NavNode elements between them
+                    if (current is FrameworkElement intermediateFe && !_nodesByElement.ContainsKey(intermediateFe)) {
+                        visualPath.Add(new WeakReference<FrameworkElement>(intermediateFe));
+                    }
+
                     if (current is FrameworkElement parentFe && _nodesByElement.TryGetValue(parentFe, out var parentNode)) {
                         // Found parent NavNode - establish bidirectional link
                         childNode.Parent = new WeakReference<NavNode>(parentNode);
                         parentNode.Children.Add(new WeakReference<NavNode>(childNode));
                         
+                        // ? Store the intermediate visual tree path for diagnostics
+                        // Only store if there are intermediate elements
+                        if (visualPath.Count > 0) {
+                            childNode.VisualTreePath = visualPath;
+                        }
+                        
                         Debug.WriteLine($"[Observer] Linked {childNode.SimpleName} -> parent: {parentNode.SimpleName}");
+                        if (_verboseDebug) {
+                            Debug.WriteLine($"[Observer]   Path depth: {visualPath.Count} intermediate elements");
+                        }
                         return;
                     }
                     
@@ -391,10 +563,20 @@ namespace AcManager.UiObserver {
                             childNode.Parent = new WeakReference<NavNode>(ownerNode);
                             ownerNode.Children.Add(new WeakReference<NavNode>(childNode));
                             
+                            // ? Store the visual tree path (note: placementTarget is a NavNode, so don't add it)
+                            if (visualPath.Count > 0) {
+                                childNode.VisualTreePath = visualPath;
+                            }
+                            
                             Debug.WriteLine($"[Observer] Linked {childNode.SimpleName} -> parent (via Popup): {ownerNode.SimpleName}");
+                            if (_verboseDebug) {
+                                Debug.WriteLine($"[Observer]   Path depth: {visualPath.Count} intermediate elements (with Popup boundary)");
+                            }
                             return;
                         } else {
                             // Owner not yet discovered, continue walking up from PlacementTarget
+                            // Add PlacementTarget to path since it's not a NavNode yet
+                            visualPath.Add(new WeakReference<FrameworkElement>(placementTarget));
                             current = placementTarget;
                             Debug.WriteLine($"[Observer] Bridged Popup boundary for {childNode.SimpleName}, continuing from {placementTarget.GetType().Name}");
                             continue;
@@ -402,7 +584,7 @@ namespace AcManager.UiObserver {
                     }
                 }
                 
-                // No parent found - this is a root node
+                // No parent found - this is a root node (no path to store)
                 Debug.WriteLine($"[Observer] Root node: {childNode.SimpleName} (no parent)");
             } catch (Exception ex) {
                 Debug.WriteLine($"[Observer] Error linking parent for {childNode.SimpleName}: {ex.Message}");
@@ -676,6 +858,11 @@ namespace AcManager.UiObserver {
                         var isNewNode = !_nodesByElement.ContainsKey(fe);
                         _nodesByElement.AddOrUpdate(fe, navNode, (k, old) => navNode);
                         discoveredElements.Add(fe);
+                        
+                        // ? NEW: Hook Unloaded event for all discovered elements
+                        if (isNewNode) {
+                            fe.Unloaded += OnElementUnloaded;
+                        }
                         
                         // Build Parent/Children relationships (visual tree with PlacementTarget bridging)
                         LinkToParent(navNode, fe);

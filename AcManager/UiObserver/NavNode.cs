@@ -67,10 +67,7 @@ namespace AcManager.UiObserver
             typeof(TabItem),
             typeof(Expander),
             typeof(GroupBox),
-
-            // Custom controls (FirstFloor.ModernUI)
-            // Note: These will be checked by name/namespace since types may not be available
-        };
+		};
 
         // Group elements - containers that can hold navigable children
         private static readonly HashSet<Type> _groupTypes = new HashSet<Type>
@@ -541,6 +538,28 @@ namespace AcManager.UiObserver
         public List<WeakReference<NavNode>> Children { get; } = new List<WeakReference<NavNode>>();
 
         /// <summary>
+        /// Captures the intermediate visual tree path from this element to its parent NavNode.
+        /// Stored during LinkToParent() for diagnostic purposes.
+        /// 
+        /// Format: List of weak references to FrameworkElements between this node and its parent.
+        /// - Does NOT include this node's element (accessible via VisualRef)
+        /// - Does NOT include parent NavNode's element (accessible via Parent.VisualRef)
+        /// - Only contains intermediate non-NavNode FrameworkElements
+        /// 
+        /// Index 0 = immediate visual parent (non-NavNode)
+        /// Index 1 = parent's visual parent (non-NavNode)
+        /// ...
+        /// Last index = last intermediate element before parent NavNode
+        /// 
+        /// NULL or empty if this node is a direct child of its parent NavNode (no intermediates).
+        /// NULL if this is a root node (no parent).
+        /// 
+        /// Used for diagnosing visual tree disconnections by comparing captured path
+        /// with current visual tree state.
+        /// </summary>
+        public List<WeakReference<FrameworkElement>> VisualTreePath { get; set; }
+
+        /// <summary>
         /// Whether this node is a group (can contain children) or a leaf (navigation target).
         /// Groups are not navigable themselves; leaves are navigable.
         /// </summary>
@@ -594,26 +613,44 @@ namespace AcManager.UiObserver
         /// 
         /// Note: Returns value even for groups (for debug visualization purposes).
         /// Navigation logic should check IsNavigable separately.
+        /// 
+        /// ? CHANGED: Removed IsVisible check to support elements in non-active tabs.
+        /// WPF's IsVisible returns false for tab content that's loaded but not currently selected,
+        /// even though the elements are rendered and have valid screen coordinates.
         /// </summary>
         public Point? GetCenterDip()
         {
             if (!TryGetVisual(out var fe))
+            {
+                if (VerboseDebug) Debug.WriteLine($"[NavNode] GetCenterDip failed: Visual reference dead for {SimpleName}");
                 return null;
+            }
 
-            // Check if element is visible and loaded
-            if (!fe.IsLoaded || !fe.IsVisible)
+            // ? CHANGED: Only check IsLoaded, not IsVisible
+            // Elements in inactive tabs have IsVisible=false but are still navigable
+            if (!fe.IsLoaded)
+            {
+                if (VerboseDebug) Debug.WriteLine($"[NavNode] GetCenterDip failed: Not loaded - {SimpleName}");
                 return null;
+            }
 
             try {
                 var ps = PresentationSource.FromVisual(fe);
                 if (ps == null)
+                {
+                    if (VerboseDebug) Debug.WriteLine($"[NavNode] GetCenterDip failed: No PresentationSource - {SimpleName}");
                     return null;
+                }
             } catch {
+                if (VerboseDebug) Debug.WriteLine($"[NavNode] GetCenterDip failed: PresentationSource exception - {SimpleName}");
                 return null;
             }
 
             if (fe.ActualWidth < 1.0 || fe.ActualHeight < 1.0)
+            {
+                if (VerboseDebug) Debug.WriteLine($"[NavNode] GetCenterDip failed: Zero size ({fe.ActualWidth}x{fe.ActualHeight}) - {SimpleName}");
                 return null;
+            }
 
             try {
                 var topLeftDevice = fe.PointToScreen(new Point(0, 0));
@@ -628,13 +665,17 @@ namespace AcManager.UiObserver
                     var centerX = (topLeftDip.X + bottomRightDip.X) / 2.0;
                     var centerY = (topLeftDip.Y + bottomRightDip.Y) / 2.0;
 
+                    if (VerboseDebug) Debug.WriteLine($"[NavNode] GetCenterDip success: {SimpleName} @ ({centerX:F1},{centerY:F1})");
                     return new Point(centerX, centerY);
                 } else {
                     var centerX = (topLeftDevice.X + bottomRightDevice.X) / 2.0;
                     var centerY = (topLeftDevice.Y + bottomRightDevice.Y) / 2.0;
+                    
+                    if (VerboseDebug) Debug.WriteLine($"[NavNode] GetCenterDip success (device): {SimpleName} @ ({centerX:F1},{centerY:F1})");
                     return new Point(centerX, centerY);
                 }
-            } catch {
+            } catch (Exception ex) {
+                if (VerboseDebug) Debug.WriteLine($"[NavNode] GetCenterDip failed: PointToScreen exception - {SimpleName}: {ex.Message}");
                 return null;
             }
         }

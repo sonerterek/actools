@@ -142,6 +142,7 @@ namespace AcManager.UiObserver
 				// Exclude main menu and content frame from navigation
 				"EXCLUDE: Window:MainWindow > WindowBorder:Border > (unnamed):AdornerDecorator > (unnamed):Cell > (unnamed):Cell > (unnamed):AdornerDecorator > LayoutRoot:DockPanel > (unnamed):DockPanel > PART_Menu:ModernMenu",
 				"EXCLUDE: Window:MainWindow > WindowBorder:Border > (unnamed):AdornerDecorator > (unnamed):Cell > (unnamed):Cell > (unnamed):AdornerDecorator > LayoutRoot:DockPanel > ContentFrame:ModernFrame",
+				"EXCLUDE: Window:MainWindow > WindowBorder:Border > (unnamed):AdornerDecorator > (unnamed):Cell > (unnamed):Cell > (unnamed):AdornerDecorator > LayoutRoot:DockPanel > ContentFrame:ModernFrame > (unnamed):Border > (unnamed):Cell > (unnamed):TransitioningContentControl > (unnamed):Cell > CurrentWrapper:Border > CurrentContentPresentationSite:ContentPresenter > This:QuickDrive > (unnamed):Border > (unnamed):ContentPresenter > MainGrid:Grid > (unnamed):Grid > ModeTab:ModernTab > (unnamed):DockPanel > PART_Frame:ModernFrame",
 				"EXCLUDE: (unnamed):SelectTrackDialog > (unnamed):Border > (unnamed):Cell > (unnamed):AdornerDecorator > PART_Border:Border > (unnamed):Cell > (unnamed):DockPanel > (unnamed):Border > PART_Content:TransitioningContentControl > (unnamed):Cell > CurrentWrapper:Border > CurrentContentPresentationSite:ContentPresenter > (unnamed):Grid > (unnamed):DockPanel > (unnamed):AdornerDecorator > Tabs:ModernTab",
 				"EXCLUDE: (unnamed):SelectTrackDialog > (unnamed):Border > (unnamed):Cell > (unnamed):AdornerDecorator > PART_Border:Border > (unnamed):Cell > (unnamed):DockPanel > (unnamed):Border > PART_Content:TransitioningContentControl > (unnamed):Cell > CurrentWrapper:Border > CurrentContentPresentationSite:ContentPresenter > (unnamed):Grid > (unnamed):DockPanel > (unnamed):AdornerDecorator > Tabs:ModernTab > (unnamed):DockPanel > PART_Frame:ModernFrame",
 
@@ -264,40 +265,61 @@ namespace AcManager.UiObserver
 			
 			Debug.WriteLine($"[Navigator] Finding first navigable in scope '{CurrentContext.ModalNode.SimpleName}'...");
 			
+			// Log modal node details
+			if (CurrentContext.ModalNode.TryGetVisual(out var modalVisual)) {
+				Debug.WriteLine($"[Navigator] ModalNode type: {modalVisual.GetType().Name}");
+			} else {
+				Debug.WriteLine($"[Navigator] ModalNode type: (dead reference)");
+			}
+			Debug.WriteLine($"[Navigator] ModalNode path: {CurrentContext.ModalNode.HierarchicalPath}");
+			
 			// Get all candidates and log details
+			var allNodes = Observer.GetAllNavNodes().ToList();
+			Debug.WriteLine($"[Navigator] Total nodes from Observer: {allNodes.Count}");
+			
+			var navigableNodes = allNodes.Where(n => IsNavigableForSelection(n)).ToList();
+			Debug.WriteLine($"[Navigator] Navigable nodes (IsGroup=false, IsNavigable=true): {navigableNodes.Count}");
+			
 			var allCandidates = GetCandidatesInScope();
 			Debug.WriteLine($"[Navigator] GetCandidatesInScope() returned {allCandidates.Count} candidates");
 			
 			if (allCandidates.Count == 0) {
-				// Diagnose why no candidates
-				var allNodes = Observer.GetAllNavNodes().ToList();
-				Debug.WriteLine($"[Navigator] Total nodes from Observer: {allNodes.Count}");
-				
-				var navigableNodes = allNodes.Where(n => IsNavigableForSelection(n)).ToList();
-				Debug.WriteLine($"[Navigator] Navigable nodes: {navigableNodes.Count}");
+				// Enhanced diagnostics
+				Debug.WriteLine($"[Navigator] ❌ NO CANDIDATES FOUND - Detailed Analysis:");
 				
 				var inScopeNodes = navigableNodes.Where(n => IsInActiveModalScope(n)).ToList();
-				Debug.WriteLine($"[Navigator] In active modal scope: {inScopeNodes.Count}");
+				Debug.WriteLine($"[Navigator]   Nodes passing IsInActiveModalScope: {inScopeNodes.Count}");
 				
 				if (navigableNodes.Count > 0 && inScopeNodes.Count == 0) {
-					Debug.WriteLine($"[Navigator] Modal scope filtering removed all candidates!");
-					Debug.WriteLine($"[Navigator] CurrentContext.ModalNode: {CurrentContext.ModalNode.HierarchicalPath}");
+					Debug.WriteLine($"[Navigator]   ? Modal scope filtering removed ALL candidates!");
 					
-					// Check a sample node
-					var sample = navigableNodes.First();
-					Debug.WriteLine($"[Navigator] Sample navigable node: {sample.SimpleName} @ {sample.HierarchicalPath}");
-					Debug.WriteLine($"[Navigator] Sample is descendant: {IsDescendantOf(sample, CurrentContext.ModalNode)}");
-					
-					// Walk up parent chain
-					var current = sample.Parent;
-					int depth = 0;
-					while (current != null && current.TryGetTarget(out var parentNode) && depth < 10) {
-						Debug.WriteLine($"[Navigator]   Parent {depth}: {parentNode.SimpleName} @ {parentNode.HierarchicalPath}");
-						if (ReferenceEquals(parentNode, CurrentContext.ModalNode)) {
-							Debug.WriteLine($"[Navigator]   ? Found modal node at depth {depth}!");
+					// Check first few navigable nodes
+					var samplesToCheck = Math.Min(5, navigableNodes.Count);
+					for (int i = 0; i < samplesToCheck; i++) {
+						var sample = navigableNodes[i];
+						Debug.WriteLine($"[Navigator]   Sample #{i}: {sample.SimpleName}");
+						
+						if (sample.TryGetVisual(out var sampleVisual)) {
+							Debug.WriteLine($"[Navigator]     Type: {sampleVisual.GetType().Name}");
+						} else {
+							Debug.WriteLine($"[Navigator]     Type: (dead reference)");
 						}
-						current = parentNode.Parent;
-						depth++;
+						
+						Debug.WriteLine($"[Navigator]     Path: {sample.HierarchicalPath}");
+						Debug.WriteLine($"[Navigator]     IsDescendantOf(ModalNode): {IsDescendantOf(sample, CurrentContext.ModalNode)}");
+						
+						// Walk parent chain
+						var current = sample.Parent;
+						int depth = 0;
+						Debug.WriteLine($"[Navigator]     Parent chain:");
+						while (current != null && current.TryGetTarget(out var parentNode) && depth < 8) {
+							var isModal = ReferenceEquals(parentNode, CurrentContext.ModalNode);
+							Debug.WriteLine($"[Navigator]       [{depth}] {parentNode.SimpleName} {(isModal ? "← MODAL ROOT" : "")}");
+							current = parentNode.Parent;
+							depth++;
+							if (isModal) break;
+						}
+						if (depth >= 8) Debug.WriteLine($"[Navigator]       [...] (chain continues)");
 					}
 				}
 				
@@ -305,7 +327,6 @@ namespace AcManager.UiObserver
 			}
 			
 			var candidates = allCandidates
-				.Where(n => CurrentContext.ModalNode == null || IsDescendantOf(n, CurrentContext.ModalNode))
 				.Select(n => {
 					var center = n.GetCenterDip();
 					var score = center.HasValue ? center.Value.X + center.Value.Y * 10000.0 : double.MaxValue;
@@ -633,12 +654,29 @@ namespace AcManager.UiObserver
 		{
 			if (child == null || ancestor == null) return false;
 			
+			// ? FIX: If checking against root window (no parent), accept all nodes
+			// This handles the common case where we're in the root modal context
+			if (ancestor.Parent == null || !ancestor.Parent.TryGetTarget(out _)) {
+				return true; // Root context accepts all nodes
+			}
+			
 			// Walk up the Parent chain (which includes PlacementTarget bridges!)
 			var current = child.Parent;
-			while (current != null && current.TryGetTarget(out var parentNode))
+			int depth = 0;
+			const int MAX_DEPTH = 50; // Prevent infinite loops
+			
+			while (current != null && current.TryGetTarget(out var parentNode) && depth < MAX_DEPTH)
 			{
 				if (ReferenceEquals(parentNode, ancestor)) return true;
 				current = parentNode.Parent;
+				depth++;
+			}
+			
+			// ? FALLBACK: If we couldn't traverse the parent chain (incomplete linking),
+			// but the ancestor is a Window/MainWindow (root modal), accept the node.
+			// This handles race conditions during batch node discovery.
+			if (ancestor.TryGetVisual(out var ancestorVisual) && ancestorVisual is Window) {
+				return true;
 			}
 			
 			return false;

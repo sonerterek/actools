@@ -174,6 +174,102 @@ namespace AcManager.UiObserver
 						Debug.WriteLine($"     Recorded Parent: {parentNode.SimpleName}");
 						Debug.WriteLine($"     Recorded Parent Path: {parentNode.HierarchicalPath}");
 						Debug.WriteLine($"     Actual Parent: NONE (visual tree has no NavNode parent)");
+
+						// ✓ NEW: Parallel walk of captured path and current visual tree
+						if (node.VisualTreePath != null && node.VisualTreePath.Count > 0)
+						{
+							Debug.WriteLine($"     Intermediate Elements ({node.VisualTreePath.Count} captured during discovery):");
+							
+							DependencyObject visualDO = fe;
+							int interIndex = 0;
+							bool reachedRecordedParent = false;
+							
+							while (interIndex < node.VisualTreePath.Count)
+							{
+								try {
+									// Get the captured parent at this index
+									FrameworkElement capturedParentFE = null;
+									if (!node.VisualTreePath[interIndex].TryGetTarget(out capturedParentFE)) {
+										Debug.WriteLine($"       [{interIndex}] Captured element is DEAD (garbage collected)");
+										break;
+									}
+									
+									// Get the current visual parent
+									var visualParentDO = VisualTreeHelper.GetParent(visualDO);
+									
+									if (visualParentDO == null) {
+										// Visual tree breaks here!
+										Debug.WriteLine($"       [{interIndex}] BREAK: GetParent() returned NULL");
+										Debug.WriteLine($"       Disconnected child: {visualDO.GetType().Name}");
+										Debug.WriteLine($"       Expected parent: {capturedParentFE.GetType().Name}");
+										Debug.WriteLine($"       Checking if parent still has child in VisualChildren...");
+										
+										// Check if capturedParentFE still has visualDO as a visual child
+										int childCount = VisualTreeHelper.GetChildrenCount(capturedParentFE);
+										bool foundAsChild = false;
+										
+										for (int childNo = 0; childNo < childCount; childNo++) {
+											var visualChild = VisualTreeHelper.GetChild(capturedParentFE, childNo);
+											if (ReferenceEquals(visualChild, visualDO)) {
+												foundAsChild = true;
+												break;
+											}
+											// Also check descendants
+											if (visualChild != null && IsVisualDescendant(visualDO, visualChild)) {
+												foundAsChild = true;
+												break;
+											}
+										}
+										
+										if (foundAsChild) {
+											Debug.WriteLine($"       ⚠⚠  INCONSISTENCY DETECTED!");
+											Debug.WriteLine($"       Parent ({capturedParentFE.GetType().Name}) STILL has child in VisualChildren");
+											Debug.WriteLine($"       But GetParent(child) returns NULL!");
+											Debug.WriteLine($"       This is a WPF visual tree corruption!");
+										} else {
+											Debug.WriteLine($"       Parent ({capturedParentFE.GetType().Name}) does NOT have child in VisualChildren");
+											Debug.WriteLine($"       Visual tree disconnect is consistent on both sides.");
+										}
+										break;
+									}
+									
+									// Check if we reached the recorded parent NavNode
+									if (visualParentDO is FrameworkElement visualParentFE && 
+										Observer.TryGetNavNode(visualParentFE, out var visualParentNode) &&
+										ReferenceEquals(visualParentNode, parentNode)) {
+										Debug.WriteLine($"       [{interIndex}] ✓ Reached recorded parent NavNode: {parentNode.SimpleName}");
+										reachedRecordedParent = true;
+										break;
+									}
+									
+									// Compare current visual parent with captured parent
+									if (!ReferenceEquals(visualParentDO, capturedParentFE)) {
+										Debug.WriteLine($"       [{interIndex}] MISMATCH:");
+										Debug.WriteLine($"         Captured: {capturedParentFE.GetType().Name}");
+										Debug.WriteLine($"         Current:  {visualParentDO.GetType().Name}");
+										Debug.WriteLine($"         Visual tree structure has changed!");
+										break;
+									}
+						
+									// Match! Continue to next level
+									Debug.WriteLine($"       [{interIndex}] ✓ Match: {capturedParentFE.GetType().Name}");
+									visualDO = visualParentDO;
+									interIndex++;
+	
+								} catch (Exception ex) {
+									Debug.WriteLine($"       Exception at index {interIndex}: {ex.Message}");
+									break;
+								}
+							}
+							
+							if (reachedRecordedParent) {
+								Debug.WriteLine($"     ✓ Visual tree path is consistent - reached recorded parent successfully");
+							}
+						}
+						else
+						{
+							Debug.WriteLine($"     (No intermediate elements were captured - direct parent or root node)");
+						}
 					}
 					else if (!ReferenceEquals(actualParent, parentNode))
 					{
@@ -309,7 +405,7 @@ namespace AcManager.UiObserver
 				// Now check if all visual tree NavNodes are reachable through tree structure
 				foreach (var visualNode in visualTreeNavNodes)
 				{
-					// Walk up Parent chain from visualNode - should eventually reach this node
+					// Walk up Parent chain from visualParentNode - should eventually reach this node
 					bool reachable = false;
 					var ancestor = visualNode.Parent;
 					while (ancestor != null && ancestor.TryGetTarget(out var ancestorNode))
@@ -511,7 +607,9 @@ namespace AcManager.UiObserver
 				if (!center.HasValue) continue;
 				
 				if (!node.TryGetVisual(out var fe)) continue;
-				if (!fe.IsLoaded || !fe.IsVisible) continue;
+				// ✓ CHANGED: Removed IsVisible check - allow elements in non-active tabs
+				// GetCenterDip() already validates element is usable
+				if (!fe.IsLoaded) continue;
 				
 				try {
 					var topLeft = fe.PointToScreen(new Point(0, 0));
@@ -628,6 +726,43 @@ namespace AcManager.UiObserver
 		private static void ClearHighlighting()
 		{
 			try { _overlay?.ClearDebugRects(); } catch { }
+		}
+
+		/// <summary>
+		/// Checks if a given DependencyObject is a visual descendant of a parent.
+		/// </summary>
+		private static bool IsVisualDescendant(DependencyObject descendant, DependencyObject parent)
+		{
+			if (descendant == null || parent == null) return false;
+			
+			try
+			{
+				var stack = new Stack<DependencyObject>();
+				stack.Push(parent);
+				
+				while (stack.Count > 0)
+				{
+					var current = stack.Pop();
+					
+					if (ReferenceEquals(current, descendant))
+					{
+						return true;
+					}
+					
+					int childCount = VisualTreeHelper.GetChildrenCount(current);
+					for (int i = 0; i < childCount; i++)
+					{
+						var child = VisualTreeHelper.GetChild(current, i);
+						if (child != null)
+						{
+							stack.Push(child);
+						}
+					}
+				}
+			}
+			catch { }
+			
+			return false;
 		}
 
 		#endregion
