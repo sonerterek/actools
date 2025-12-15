@@ -650,36 +650,29 @@ namespace AcManager.UiObserver
 
 		#region Helper Methods
 
+		/// <summary>
+		/// Checks if a child node is a descendant of an ancestor node by comparing hierarchical paths.
+		/// This is a simple string prefix check - if the child's path starts with the ancestor's path,
+		/// then the child is a descendant.
+		/// </summary>
 		internal static bool IsDescendantOf(NavNode child, NavNode ancestor)
 		{
 			if (child == null || ancestor == null) return false;
+			if (ReferenceEquals(child, ancestor)) return false; // A node is not its own descendant
 			
-			// ? FIX: If checking against root window (no parent), accept all nodes
-			// This handles the common case where we're in the root modal context
-			if (ancestor.Parent == null || !ancestor.Parent.TryGetTarget(out _)) {
-				return true; // Root context accepts all nodes
-			}
+			// Simple string prefix check:
+			// Child path: "Window:MainWindow > ... > Button:MyButton"
+			// Ancestor path: "Window:MainWindow"
+			// If child.path.StartsWith(ancestor.path + " > "), child is a descendant
 			
-			// Walk up the Parent chain (which includes PlacementTarget bridges!)
-			var current = child.Parent;
-			int depth = 0;
-			const int MAX_DEPTH = 50; // Prevent infinite loops
+			var ancestorPath = ancestor.HierarchicalPath;
+			var childPath = child.HierarchicalPath;
 			
-			while (current != null && current.TryGetTarget(out var parentNode) && depth < MAX_DEPTH)
-			{
-				if (ReferenceEquals(parentNode, ancestor)) return true;
-				current = parentNode.Parent;
-				depth++;
-			}
+			if (string.IsNullOrEmpty(ancestorPath) || string.IsNullOrEmpty(childPath)) return false;
 			
-			// ? FALLBACK: If we couldn't traverse the parent chain (incomplete linking),
-			// but the ancestor is a Window/MainWindow (root modal), accept the node.
-			// This handles race conditions during batch node discovery.
-			if (ancestor.TryGetVisual(out var ancestorVisual) && ancestorVisual is Window) {
-				return true;
-			}
-			
-			return false;
+			// Check if child path starts with ancestor path followed by " > "
+			// This ensures we match complete path segments, not partial names
+			return childPath.StartsWith(ancestorPath + " > ", StringComparison.Ordinal);
 		}
 
 		internal static bool IsInActiveModalScope(NavNode node)
