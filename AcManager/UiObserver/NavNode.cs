@@ -1,4 +1,5 @@
 using AcManager.Pages.Dialogs;
+using AcTools.Windows.Input;
 using FirstFloor.ModernUI.Windows.Controls;
 using System;
 using System.Collections.Generic;
@@ -684,10 +685,13 @@ namespace AcManager.UiObserver
         /// Activates this navigation node by performing its default action.
         /// Behavior depends on the control type and current state.
         /// 
+        /// For MenuItem specifically, uses mouse-click simulation to let WPF handle
+        /// all internal state management (_userInitiatedPress, IsPressed, timers, etc.)
+        /// 
         /// Leaf controls:
         ///   - Button/RepeatButton: raises Click event
         ///   - ToggleButton/CheckBox/RadioButton: toggles IsChecked
-        ///   - MenuItem: raises Click event
+        ///   - MenuItem: simulates mouse click at element center
         ///   - ComboBox: opens dropdown
         ///   - Menu: opens first menu item
         ///   - ContextMenu: opens menu
@@ -719,10 +723,9 @@ namespace AcManager.UiObserver
                     return true;
                 }
 
-                // Menu items
+                // Menu items - use mouse simulation for maximum reliability
                 if (fe is MenuItem menuItem) {
-                    menuItem.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
-                    return true;
+                    return SimulateMouseClick(fe);
                 }
 
                 // ? NEW: ComboBox, Menu, ContextMenu are leaves - open them when activated
@@ -775,6 +778,60 @@ namespace AcManager.UiObserver
                 // Default: try to focus
                 return fe.Focus();
             } catch {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Simulates a mouse click at the center of the element.
+        /// This is the most robust way to activate complex controls like MenuItem,
+        /// as it lets WPF's internal machinery handle all state management.
+        /// </summary>
+        private bool SimulateMouseClick(FrameworkElement fe)
+        {
+            try {
+                // Get element center in screen coordinates
+                var centerPoint = GetCenterDip();
+                if (!centerPoint.HasValue) {
+                    if (VerboseDebug) Debug.WriteLine($"[NavNode] SimulateMouseClick failed: Could not get center point for {SimpleName}");
+                    return false;
+                }
+
+                // Convert DIP to screen coordinates (device pixels)
+                var ps = PresentationSource.FromVisual(fe);
+                if (ps?.CompositionTarget == null) {
+                    if (VerboseDebug) Debug.WriteLine($"[NavNode] SimulateMouseClick failed: No PresentationSource for {SimpleName}");
+                    return false;
+                }
+
+                var transformToDevice = ps.CompositionTarget.TransformToDevice;
+                var centerDevice = transformToDevice.Transform(centerPoint.Value);
+
+                // Get screen size for absolute positioning (SendInput uses 0-65535 range)
+                var screenWidth = System.Windows.Forms.Screen.PrimaryScreen.Bounds.Width;
+                var screenHeight = System.Windows.Forms.Screen.PrimaryScreen.Bounds.Height;
+
+                // Calculate absolute position in SendInput's coordinate space (0-65535)
+                var absoluteX = (int)(centerDevice.X * 65536.0 / screenWidth);
+                var absoluteY = (int)(centerDevice.Y * 65536.0 / screenHeight);
+
+                if (VerboseDebug) {
+                    Debug.WriteLine($"[NavNode] SimulateMouseClick: {SimpleName}");
+                    Debug.WriteLine($"  DIP: ({centerPoint.Value.X:F1}, {centerPoint.Value.Y:F1})");
+                    Debug.WriteLine($"  Device: ({centerDevice.X:F1}, {centerDevice.Y:F1})");
+                    Debug.WriteLine($"  Absolute: ({absoluteX}, {absoluteY})");
+                }
+
+                // Use MouseSimulator to perform the click
+                var mouse = new MouseSimulator();
+                mouse.MoveMouseTo(absoluteX, absoluteY);
+                mouse.LeftButtonClick();
+
+                return true;
+            } catch (Exception ex) {
+                if (VerboseDebug) {
+                    Debug.WriteLine($"[NavNode] SimulateMouseClick exception for {SimpleName}: {ex.Message}");
+                }
                 return false;
             }
         }

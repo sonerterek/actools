@@ -80,6 +80,14 @@ namespace AcManager.UiObserver
 		// Highlighting overlay (used by both production focus and debug visualization)
 		internal static HighlightOverlay _overlay;
 
+		// Tooltip management - saved state for restoration
+		private static int _originalTooltipDelay = 500;
+		private static bool _tooltipsDisabled = false;
+
+		// Mouse tracking control - moves mouse once on focus change, then allows free movement
+		// Mouse only moves on explicit focus changes (arrow keys), not on layout updates (resize)
+		private static bool _enableMouseTracking = true;
+
 		/// <summary>
 		/// Gets whether verbose navigation debug output is enabled.
 		/// Controlled by Ctrl+Shift+F9 hotkey in debug builds.
@@ -103,6 +111,9 @@ namespace AcManager.UiObserver
 
 			// Initialize navigation rules
 			InitializeNavigationRules();
+
+			// Disable tooltips globally during navigation
+			DisableTooltips();
 
 			// Subscribe to Observer events
 			Observer.ModalGroupOpened += OnModalGroupOpened;
@@ -159,6 +170,56 @@ namespace AcManager.UiObserver
 			}
 		}
 
+		/// <summary>
+		/// Disables tooltips globally by setting an extremely high InitialShowDelay.
+		/// Saves the original delay for potential restoration.
+		/// 
+		/// This prevents tooltips from appearing when the mouse is programmatically moved
+		/// to track the focused NavNode during keyboard navigation.
+		/// </summary>
+		private static void DisableTooltips()
+		{
+			try {
+				// Get current default delay
+				var metadata = System.Windows.Controls.ToolTipService.InitialShowDelayProperty.GetMetadata(typeof(DependencyObject)) 
+					as FrameworkPropertyMetadata;
+				if (metadata != null) {
+					_originalTooltipDelay = (int)metadata.DefaultValue;
+				}
+
+				// Set to very high value to effectively disable tooltips
+				const int disabledDelay = 999999;
+				System.Windows.Controls.ToolTipService.InitialShowDelayProperty.OverrideMetadata(
+					typeof(DependencyObject), 
+					new FrameworkPropertyMetadata(disabledDelay));
+
+				_tooltipsDisabled = true;
+				Debug.WriteLine($"[Navigator] Tooltips disabled (original delay: {_originalTooltipDelay}ms, new: {disabledDelay}ms)");
+			} catch (Exception ex) {
+				Debug.WriteLine($"[Navigator] Failed to disable tooltips: {ex.Message}");
+			}
+		}
+
+		/// <summary>
+		/// Restores the original tooltip delay.
+		/// Currently not called, but available for cleanup/shutdown if needed.
+		/// </summary>
+		private static void RestoreTooltips()
+		{
+			if (!_tooltipsDisabled) return;
+
+			try {
+				System.Windows.Controls.ToolTipService.InitialShowDelayProperty.OverrideMetadata(
+					typeof(DependencyObject), 
+					new FrameworkPropertyMetadata(_originalTooltipDelay));
+
+				_tooltipsDisabled = false;
+				Debug.WriteLine($"[Navigator] Tooltips restored (delay: {_originalTooltipDelay}ms)");
+			} catch (Exception ex) {
+				Debug.WriteLine($"[Navigator] Failed to restore tooltips: {ex.Message}");
+			}
+		}
+
 		internal static void EnsureOverlay()
 		{
 			if (_overlay == null) {
@@ -179,6 +240,19 @@ namespace AcManager.UiObserver
 			if (modalNode == null) return;
 			
 			Debug.WriteLine($"[Navigator] Modal opened: {modalNode.SimpleName} @ {modalNode.HierarchicalPath}");
+			
+			// Check if modal has any navigable children
+			// Display-only popups (tooltips, previews, etc.) should not create navigation contexts
+			var potentialCandidates = Observer.GetAllNavNodes()
+				.Where(n => IsNavigableForSelection(n) && IsDescendantOf(n, modalNode))
+				.ToList();
+			
+			if (potentialCandidates.Count == 0) {
+				Debug.WriteLine($"[Navigator] Modal '{modalNode.SimpleName}' has no navigable children - treating as non-modal overlay (ignoring)");
+				return; // Don't push empty modals to stack
+			}
+			
+			Debug.WriteLine($"[Navigator] Modal has {potentialCandidates.Count} navigable children - creating navigation context");
 			
 			// Validate linear chain (except for root context AND nodes with no parent yet)
 			if (_modalContextStack.Count > 0) {
@@ -370,6 +444,7 @@ namespace AcManager.UiObserver
 		/// <summary>
 		/// Updates visual feedback (overlay) for focused node.
 		/// Separated from focus state management for clarity.
+		/// Also moves mouse to the focused node on initial focus setup.
 		/// </summary>
 		private static void SetFocusVisuals(NavNode node)
 		{
@@ -377,6 +452,11 @@ namespace AcManager.UiObserver
 			{
 				node.HasFocus = true;
 				UpdateFocusRect(node);
+				
+				// Move mouse on initial focus setup (modal opened, context switched)
+				if (_enableMouseTracking) {
+					MoveMouseToFocusedNode(node);
+				}
 			}
 			else
 			{
@@ -430,6 +510,12 @@ namespace AcManager.UiObserver
 				newNode.HasFocus = true;
 				CurrentContext.FocusedNode = newNode;
 				UpdateFocusRect(newNode);
+				
+				// Move mouse to new focus (only on explicit focus change, not on layout updates)
+				if (_enableMouseTracking) {
+					MoveMouseToFocusedNode(newNode);
+				}
+				
 				try { FocusChanged?.Invoke(oldNode, newNode); } catch { }
 				return true;
 			}
@@ -462,11 +548,61 @@ namespace AcManager.UiObserver
 
 				if (rect.Width >= 1.0 && rect.Height >= 1.0) {
 					_overlay.ShowFocusRect(rect);
+					
+					// DO NOT move mouse here - this gets called on resize/layout changes
+					// Mouse should only move on explicit focus changes (in SetFocus)
 				} else {
 					_overlay.HideFocusRect();
 				}
 			} catch {
 				_overlay.HideFocusRect();
+			}
+		}
+
+		/// <summary>
+		/// Moves the mouse cursor to the center of the focused NavNode.
+		/// This provides visual feedback during keyboard navigation and prepares
+		/// the mouse position for potential click-based activation.
+		/// 
+		/// Tooltips are already disabled globally, so no popup interference.
+		/// </summary>
+		private static void MoveMouseToFocusedNode(NavNode node)
+		{
+			if (node == null) return;
+
+			try {
+				var centerDip = node.GetCenterDip();
+				if (!centerDip.HasValue) return;
+
+				// Get the visual element to access PresentationSource
+				if (!node.TryGetVisual(out var fe)) return;
+
+				// Convert DIP to screen coordinates (device pixels)
+				var ps = PresentationSource.FromVisual(fe);
+				if (ps?.CompositionTarget == null) return;
+
+				var transformToDevice = ps.CompositionTarget.TransformToDevice;
+				var centerDevice = transformToDevice.Transform(centerDip.Value);
+
+				// Get screen size for absolute positioning (SendInput uses 0-65535 range)
+				var screenWidth = System.Windows.Forms.Screen.PrimaryScreen.Bounds.Width;
+				var screenHeight = System.Windows.Forms.Screen.PrimaryScreen.Bounds.Height;
+
+				// Calculate absolute position in SendInput's coordinate space (0-65535)
+				var absoluteX = (int)(centerDevice.X * 65536.0 / screenWidth);
+				var absoluteY = (int)(centerDevice.Y * 65536.0 / screenHeight);
+
+				// Move mouse to focused element
+				var mouse = new AcTools.Windows.Input.MouseSimulator();
+				mouse.MoveMouseTo(absoluteX, absoluteY);
+
+				if (VerboseNavigationDebug) {
+					Debug.WriteLine($"[Navigator] Mouse moved to '{node.SimpleName}' @ DIP({centerDip.Value.X:F0},{centerDip.Value.Y:F0}) Device({centerDevice.X:F0},{centerDevice.Y:F0})");
+				}
+			} catch (Exception ex) {
+				if (VerboseNavigationDebug) {
+					Debug.WriteLine($"[Navigator] Failed to move mouse to '{node?.SimpleName}': {ex.Message}");
+				}
 			}
 		}
 
@@ -530,7 +666,7 @@ namespace AcManager.UiObserver
 
 		private static NavNode FindBestInCandidates(
 			NavNode current, Point currentCenter, NavDirection dir, Point dirVector, List<NavNode> candidates,
-			string phase = "")
+			String phase = "")
 		{
 			if (candidates.Count == 0) return null;
 
