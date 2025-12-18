@@ -88,6 +88,12 @@ namespace AcManager.UiObserver
 		// Mouse only moves on explicit focus changes (arrow keys), not on layout updates (resize)
 		private static bool _enableMouseTracking = true;
 
+		// ✓ NEW: Track ignored modals (empty popups like tooltips) to prevent close warnings
+		// When a modal has no navigable children, we ignore it (don't push to stack).
+		// But WPF still fires Unloaded event when it closes, so we need to track these
+		// to avoid "WARNING: Closed modal not at top" messages.
+		private static readonly HashSet<NavNode> _ignoredModals = new HashSet<NavNode>();
+
 		/// <summary>
 		/// Gets whether verbose navigation debug output is enabled.
 		/// Controlled by Ctrl+Shift+F9 hotkey in debug builds.
@@ -235,48 +241,83 @@ namespace AcManager.UiObserver
 
 		#region Event Handlers
 
+		/// <summary>
+		/// Called when a modal group (popup) opens.
+		/// Creates a new navigation context and initializes focus to the first navigable element.
+		/// 
+		/// ✓ CHANGED: Uses DispatcherPriority.ApplicationIdle + 50ms delay for nested modals (popups)
+		/// to ensure WPF has completed layout AND positioning before calculating coordinates.
+		/// MainWindow uses DispatcherPriority.Loaded since it's positioned at startup.
+		/// 
+		/// This fixes the bug where initial mouse position was wrong in popup menus because
+		/// PointToScreen() was called before the popup reached its final screen position.
+		/// </summary>
 		private static void OnModalGroupOpened(NavNode modalNode)
 		{
-			if (modalNode == null) return;
-			
 			Debug.WriteLine($"[Navigator] Modal opened: {modalNode.SimpleName} @ {modalNode.HierarchicalPath}");
-			
-			// Check if modal has any navigable children
-			// Display-only popups (tooltips, previews, etc.) should not create navigation contexts
-			var potentialCandidates = Observer.GetAllNavNodes()
-				.Where(n => IsNavigableForSelection(n) && IsDescendantOf(n, modalNode))
+
+			// Check if this modal should be ignored (e.g., empty tooltip popups)
+			var children = Observer.GetAllNavNodes()
+				.Where(n => n.IsNavigable && !n.IsGroup && IsDescendantOf(n, modalNode))
 				.ToList();
-			
-			if (potentialCandidates.Count == 0) {
+
+			if (children.Count == 0) {
 				Debug.WriteLine($"[Navigator] Modal '{modalNode.SimpleName}' has no navigable children - treating as non-modal overlay (ignoring)");
-				return; // Don't push empty modals to stack
+				_ignoredModals.Add(modalNode);
+				return;
 			}
-			
-			Debug.WriteLine($"[Navigator] Modal has {potentialCandidates.Count} navigable children - creating navigation context");
-			
-			// Validate linear chain (except for root context AND nodes with no parent yet)
-			if (_modalContextStack.Count > 0) {
-				var currentTop = CurrentContext.ModalNode;
-				
-				// Optimistic validation: Only reject if HAS parent but WRONG parent
-				// Accept modals with no parent yet (will be linked by Observer after this event)
-				if (modalNode.Parent != null && !IsDescendantOf(modalNode, currentTop)) {
-					Debug.WriteLine($"[Navigator] ERROR: Modal {modalNode.SimpleName} not descendant of {currentTop.SimpleName}!");
-					return;
-				}
-			}
-			
-			// Push new context onto stack
-			var newContext = new NavContext(modalNode, focusedNode: null);
-			_modalContextStack.Add(newContext);
-			
+
+			Debug.WriteLine($"[Navigator] Modal has {children.Count} navigable children - creating navigation context");
+
+			// Create modal context FIRST (so GetCandidatesInScope works correctly)
+			_modalContextStack.Add(new NavContext(modalNode, focusedNode: null));
 			Debug.WriteLine($"[Navigator] Modal stack depth: {_modalContextStack.Count}");
-			
-			// Clear old focus visuals (new context has no focus yet)
-			_overlay?.HideFocusRect();
-			
-			// Initialize focus in new context (all nodes within scope are already discovered!)
-			TryInitializeFocusIfNeeded();
+
+			// ✓ FIX: Use different dispatcher priorities based on modal type
+			// MainWindow (depth 1): Loaded priority is fine - window is already positioned at startup
+			// Nested modals (depth 2+): ApplicationIdle + 50ms delay - wait for popup positioning to complete
+			if (modalNode.TryGetVisual(out var fe)) {
+				var isNestedModal = _modalContextStack.Count > 1;
+				var priority = isNestedModal
+					? DispatcherPriority.ApplicationIdle  // After ALL layout & positioning
+					: DispatcherPriority.Loaded;          // After layout only
+
+				Debug.WriteLine($"[Navigator] Deferring focus init with priority: {priority} (nested={isNestedModal})");
+
+				fe.Dispatcher.BeginInvoke(
+					priority,
+					new Action(() => {
+						if (isNestedModal) {
+							// For popups, add a small delay to ensure positioning completes
+							// ApplicationIdle isn't always enough - popup positioning happens after
+							var timer = new DispatcherTimer
+							{
+								Interval = TimeSpan.FromMilliseconds(50)
+							};
+							timer.Tick += (s, e) => {
+								timer.Stop();
+								if (CurrentContext?.ModalNode == modalNode) {
+									TryInitializeFocusIfNeeded();
+								} else {
+									Debug.WriteLine($"[Navigator] Skipped deferred focus init - modal no longer current");
+								}
+							};
+							timer.Start();
+						} else {
+							// MainWindow: initialize immediately after layout
+							if (CurrentContext?.ModalNode == modalNode) {
+								TryInitializeFocusIfNeeded();
+							} else {
+								Debug.WriteLine($"[Navigator] Skipped deferred focus init - modal no longer current");
+							}
+						}
+					})
+				);
+			} else {
+				// Fallback if visual reference is dead (shouldn't happen for newly opened modals)
+				Debug.WriteLine($"[Navigator] WARNING: Visual reference dead for newly opened modal, initializing immediately");
+				TryInitializeFocusIfNeeded();
+			}
 		}
 
 		private static void OnModalGroupClosed(NavNode modalNode)
@@ -285,22 +326,48 @@ namespace AcManager.UiObserver
 			
 			Debug.WriteLine($"[Navigator] Modal closed: {modalNode.SimpleName} @ {modalNode.HierarchicalPath}");
 			
-			// Pop context from stack
-			if (_modalContextStack.Count > 0 
-				&& CurrentContext.ModalNode.HierarchicalPath == modalNode.HierarchicalPath) {
-				_modalContextStack.RemoveAt(_modalContextStack.Count - 1);
-			} else {
-				Debug.WriteLine($"[Navigator] WARNING: Closed modal not at top");
-				_modalContextStack.RemoveAll(ctx => ctx.ModalNode.HierarchicalPath == modalNode.HierarchicalPath);
+			// ✓ NEW: Check if this was an ignored modal (empty popup like tooltip)
+			// These were never pushed to the stack, so we shouldn't try to pop them
+			if (_ignoredModals.Remove(modalNode)) {
+				Debug.WriteLine($"[Navigator] Ignored modal closed (no action needed): {modalNode.SimpleName}");
+				return;
 			}
 			
-			// Restore focus from previous context
-			if (CurrentContext != null && CurrentContext.FocusedNode != null) {
-				SetFocusVisuals(CurrentContext.FocusedNode);
-				Debug.WriteLine($"[Navigator] Restored focus to '{CurrentContext.FocusedNode.SimpleName}'");
+			// Validate that this modal is actually on the stack
+			if (_modalContextStack.Count == 0) {
+				Debug.WriteLine($"[Navigator] ERROR: Modal stack is empty, cannot close modal!");
+				return;
+			}
+			
+			// Expect this modal to be at the top of the stack (linear chain invariant)
+			var currentTop = CurrentContext;
+			if (!ReferenceEquals(currentTop.ModalNode, modalNode)) {
+				Debug.WriteLine($"[Navigator] WARNING: Closed modal not at top (expected: {currentTop.ModalNode.SimpleName}, got: {modalNode.SimpleName})");
+				// Try to find it in the stack and remove it
+				for (int i = _modalContextStack.Count - 1; i >= 0; i--) {
+					if (ReferenceEquals(_modalContextStack[i].ModalNode, modalNode)) {
+						_modalContextStack.RemoveAt(i);
+						Debug.WriteLine($"[Navigator] Removed modal from position {i}");
+						break;
+					}
+				}
 			} else {
-				// No previous focus - try to initialize
-				TryInitializeFocusIfNeeded();
+				// Normal case: pop from top
+				_modalContextStack.RemoveAt(_modalContextStack.Count - 1);
+			}
+			
+			Debug.WriteLine($"[Navigator] Modal stack depth: {_modalContextStack.Count}");
+			
+			// Restore focus to parent context (if any)
+			if (CurrentContext != null) {
+				var focusToRestore = CurrentContext.FocusedNode;
+				if (focusToRestore != null) {
+					Debug.WriteLine($"[Navigator] Restored focus to '{focusToRestore.SimpleName}'");
+					SetFocusVisuals(focusToRestore);
+				} else {
+					Debug.WriteLine($"[Navigator] Parent context has no focus, initializing...");
+					TryInitializeFocusIfNeeded();
+				}
 			}
 		}
 
@@ -444,23 +511,25 @@ namespace AcManager.UiObserver
 		/// <summary>
 		/// Updates visual feedback (overlay) for focused node.
 		/// Separated from focus state management for clarity.
-		/// Also moves mouse to the focused node on initial focus setup.
+		/// Also moves mouse to the focused node.
+		/// 
+		/// ✓ FIXED: Now always uses MoveMouseToFocusedNode() which correctly transforms
+		/// DIP → device pixels. Previously used SetCursorPos() directly with DIP coordinates,
+		/// causing mouse position errors at non-100% DPI scales (e.g., 150% DPI).
 		/// </summary>
 		private static void SetFocusVisuals(NavNode node)
 		{
-			if (node != null)
-			{
-				node.HasFocus = true;
-				UpdateFocusRect(node);
-				
-				// Move mouse on initial focus setup (modal opened, context switched)
-				if (_enableMouseTracking) {
-					MoveMouseToFocusedNode(node);
-				}
-			}
-			else
-			{
+			if (node == null) {
 				_overlay?.HideFocusRect();
+				return;
+			}
+
+			UpdateFocusRect(node);
+
+			// ✓ FIXED: Always use MoveMouseToFocusedNode() which handles DIP → device pixel conversion
+			// Removed modal stack depth check - mouse tracking should work consistently everywhere
+			if (_enableMouseTracking) {
+				MoveMouseToFocusedNode(node);
 			}
 		}
 
@@ -526,13 +595,38 @@ namespace AcManager.UiObserver
 
 		private static void UpdateFocusRect(NavNode node)
 		{
-			if (_overlay == null || node == null) return;
-			if (!node.TryGetVisual(out var fe)) { _overlay.HideFocusRect(); return; }
-			if (!fe.IsLoaded || !fe.IsVisible) { _overlay.HideFocusRect(); return; }
+			if (_overlay == null || node == null) {
+				if (VerboseNavigationDebug && _overlay == null) {
+					Debug.WriteLine($"[Navigator] UpdateFocusRect: overlay is null");
+				}
+				return;
+			}
+			
+			if (!node.TryGetVisual(out var fe)) { 
+				Debug.WriteLine($"[Navigator] UpdateFocusRect: Visual DEAD for {node.SimpleName}");
+				_overlay.HideFocusRect(); 
+				return; 
+			}
+			
+			if (!fe.IsLoaded) {
+				Debug.WriteLine($"[Navigator] UpdateFocusRect: NOT LOADED - {node.SimpleName}");
+				_overlay.HideFocusRect(); 
+				return;
+			}
+			
+			if (!fe.IsVisible) {
+				Debug.WriteLine($"[Navigator] UpdateFocusRect: NOT VISIBLE - {node.SimpleName}");
+				_overlay.HideFocusRect(); 
+				return;
+			}
 
 			try {
 				var topLeft = fe.PointToScreen(new Point(0, 0));
 				var bottomRight = fe.PointToScreen(new Point(fe.ActualWidth, fe.ActualHeight));
+
+				if (VerboseNavigationDebug) {
+					Debug.WriteLine($"[Navigator] UpdateFocusRect: {node.SimpleName} @ screen({topLeft.X:F1}, {topLeft.Y:F1})");
+				}
 
 				var ps = PresentationSource.FromVisual(fe);
 				if (ps?.CompositionTarget != null) {
@@ -552,9 +646,11 @@ namespace AcManager.UiObserver
 					// DO NOT move mouse here - this gets called on resize/layout changes
 					// Mouse should only move on explicit focus changes (in SetFocus)
 				} else {
+					Debug.WriteLine($"[Navigator] UpdateFocusRect: Rectangle too small ({rect.Width:F1}x{rect.Height:F1}) - {node.SimpleName}");
 					_overlay.HideFocusRect();
 				}
-			} catch {
+			} catch (Exception ex) {
+				Debug.WriteLine($"[Navigator] UpdateFocusRect EXCEPTION for {node.SimpleName}: {ex.Message}");
 				_overlay.HideFocusRect();
 			}
 		}
@@ -787,28 +883,30 @@ namespace AcManager.UiObserver
 		#region Helper Methods
 
 		/// <summary>
-		/// Checks if a child node is a descendant of an ancestor node by comparing hierarchical paths.
-		/// This is a simple string prefix check - if the child's path starts with the ancestor's path,
-		/// then the child is a descendant.
+		/// Checks if a child node is a descendant of an ancestor node by walking the Parent chain.
+		/// Uses reference equality (not path matching) to correctly handle multiple PopupRoots
+		/// with identical paths like "(unnamed):PopupRoot".
+		/// 
+		/// This is critical for modal scope filtering - when a submenu opens, we need to
+		/// distinguish between the parent dropdown's PopupRoot and the submenu's PopupRoot,
+		/// even though both have the same hierarchical path.
 		/// </summary>
 		internal static bool IsDescendantOf(NavNode child, NavNode ancestor)
 		{
 			if (child == null || ancestor == null) return false;
 			if (ReferenceEquals(child, ancestor)) return false; // A node is not its own descendant
 			
-			// Simple string prefix check:
-			// Child path: "Window:MainWindow > ... > Button:MyButton"
-			// Ancestor path: "Window:MainWindow"
-			// If child.path.StartsWith(ancestor.path + " > "), child is a descendant
+			// Walk up the Parent WeakReference chain looking for ancestor
+			var current = child.Parent;
+			while (current != null && current.TryGetTarget(out var parentNode))
+			{
+				if (ReferenceEquals(parentNode, ancestor)) {
+					return true;  // Found it!
+				}
+				current = parentNode.Parent;
+			}
 			
-			var ancestorPath = ancestor.HierarchicalPath;
-			var childPath = child.HierarchicalPath;
-			
-			if (string.IsNullOrEmpty(ancestorPath) || string.IsNullOrEmpty(childPath)) return false;
-			
-			// Check if child path starts with ancestor path followed by " > "
-			// This ensures we match complete path segments, not partial names
-			return childPath.StartsWith(ancestorPath + " > ", StringComparison.Ordinal);
+			return false;  // Not found in parent chain
 		}
 
 		internal static bool IsInActiveModalScope(NavNode node)

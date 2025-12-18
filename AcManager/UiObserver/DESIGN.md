@@ -1,4 +1,4 @@
-# Navigation System (UiObserver) - Design Document
+﻿# Navigation System (UiObserver) - Design Document
 
 ## ?? Table of Contents
 1. [Architecture Overview](#architecture-overview)
@@ -27,9 +27,9 @@
 ?  - Focus highlighting overlay                           ?
 ???????????????????????????????????????????????????????????
                            ? events (Observer ? Navigator)
-                           ? � ModalGroupOpened
-                           ? � ModalGroupClosed
-                           ? � WindowLayoutChanged
+                           ? • ModalGroupOpened
+                           ? • ModalGroupClosed
+                           ? • WindowLayoutChanged
 ???????????????????????????????????????????????????????????
 ?                      Observer                           ?
 ?  (Discovery Engine - Silent Scanning)                   ?
@@ -701,7 +701,7 @@ private static void TryInitializeFocusIfNeeded() {
 - `OnModalGroupOpened` ? New context created, initialize focus with complete node list
 - `OnModalGroupClosed` ? Previous context may need focus if it had none
 
-**Selection Strategy:** Top-left position preferred (Y-coordinate has 10,000� weight)
+**Selection Strategy:** Top-left position preferred (Y-coordinate has 10,000× weight)
 
 **Key Improvement:** Unlike the old per-node event model, this executes **once per modal** with a **complete candidate list**, ensuring optimal selection every time.
 
@@ -713,7 +713,7 @@ private static void TryInitializeFocusIfNeeded() {
 
 **Problem:** ScrollBars inside dropdown menus were winning focus selection because they had lower Y-coordinates than menu items.
 
-**Why:** Top-left preference algorithm (Y weight = 10,000�) made ScrollBar (Y=0) beat MenuItem (Y=50).
+**Why:** Top-left preference algorithm (Y weight = 10,000×) made ScrollBar (Y=0) beat MenuItem (Y=50).
 
 **Solution:** Added exclusion rules to filter ScrollBars from navigation:
 ```csharp
@@ -937,6 +937,34 @@ Modal Stack (2 contexts):
 ```
 
 This helped identify the ScrollBar hijacking issue.
+
+---
+
+## DPI Scaling & Coordinate Systems
+
+### WPF Coordinate Systems
+- **DIP (Device Independent Pixels):** WPF's native unit (96 DPI base)
+- **Device Pixels:** Physical screen pixels (scaled by Windows DPI setting)
+- **Screen Coordinates:** Absolute position on screen
+
+### Transformation Rules
+1. **Overlay positioning:** Uses DIP (screen-absolute)
+2. **Mouse input (Win32):** Requires device pixels
+3. **Coordinate calculations:** Always done in DIP first
+4. **Final conversion:** `TransformToDevice` before Win32 API calls
+
+### WPF Popup Timing
+Popup positioning happens AFTER `DispatcherPriority.ApplicationIdle`:
+- `Loaded` event: Popup created, temporary position
+- `Measure/Arrange`: Layout calculated
+- `ApplicationIdle`: Pending UI updates processed
+- **Popup positioning:** PlacementTarget calculations, screen bounds checks ← HAPPENS HERE
+- Use 50ms timer after ApplicationIdle to get final coordinates
+
+### Critical Methods
+- `GetCenterDip()`: Returns DIP (screen-absolute) - for overlays
+- `MoveMouseToFocusedNode()`: DIP → device pixels → mouse input
+- `UpdateFocusRect()`: Device pixels → DIP for overlay
 
 ---
 

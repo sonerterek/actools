@@ -21,7 +21,7 @@ namespace AcManager.UiObserver
     /// 
     /// Leaf elements: buttons, menu items, etc. - actual navigation targets.
     /// Group elements: containers like ListBox, TabControl - hold navigable children.
-    /// Dual-role groups: ComboBox, ContextMenu - navigable when closed, containers when open.
+    /// Dual-role groups: ComboBox, ContextMenu - navigable when closed, container when open.
     /// </summary>
     internal class NavNode
     {
@@ -609,7 +609,7 @@ namespace AcManager.UiObserver
         }
 
         /// <summary>
-        /// Computes the center point of this node in device-independent pixels (DIP).
+        /// Computes the center point of this node in device-independent pixels (DIP), screen-absolute.
         /// Returns null if bounds cannot be computed.
         /// 
         /// Note: Returns value even for groups (for debug visualization purposes).
@@ -618,6 +618,18 @@ namespace AcManager.UiObserver
         /// ? CHANGED: Removed IsVisible check to support elements in non-active tabs.
         /// WPF's IsVisible returns false for tab content that's loaded but not currently selected,
         /// even though the elements are rendered and have valid screen coordinates.
+        /// 
+        /// ? SEMANTIC: Returns DIP (Device Independent Pixels) in screen-absolute coordinate space.
+        /// This is the correct coordinate system for WPF UI elements and overlay positioning.
+        /// Mouse input code should convert DIP ? device pixels as needed.
+        /// 
+        /// ? ADDED: IsArrangeValid check to wait for WPF layout completion.
+        /// This prevents calculating coordinates before popup/dropdown positioning is finalized.
+        /// 
+        /// ? COORDINATE FLOW:
+        /// 1. PointToScreen() returns device pixels (screen-absolute)
+        /// 2. TransformFromDevice converts device pixels ? DIP
+        /// 3. Return DIP (screen-absolute) for UI overlay positioning
         /// </summary>
         public Point? GetCenterDip()
         {
@@ -635,9 +647,19 @@ namespace AcManager.UiObserver
                 return null;
             }
 
+            // ? NEW: Check if layout is complete before calculating coordinates
+            // This prevents wrong coordinates during popup/dropdown initial positioning
+            if (!fe.IsArrangeValid)
+            {
+                if (VerboseDebug) Debug.WriteLine($"[NavNode] GetCenterDip failed: Layout not ready (IsArrangeValid=false) - {SimpleName}");
+                return null;
+            }
+
+            // Verify we have a presentation source for coordinate transformation
+            PresentationSource ps;
             try {
-                var ps = PresentationSource.FromVisual(fe);
-                if (ps == null)
+                ps = PresentationSource.FromVisual(fe);
+                if (ps?.CompositionTarget == null)
                 {
                     if (VerboseDebug) Debug.WriteLine($"[NavNode] GetCenterDip failed: No PresentationSource - {SimpleName}");
                     return null;
@@ -654,29 +676,31 @@ namespace AcManager.UiObserver
             }
 
             try {
+                // ? Step 1: Get element corners in device pixels (screen-absolute)
                 var topLeftDevice = fe.PointToScreen(new Point(0, 0));
                 var bottomRightDevice = fe.PointToScreen(new Point(fe.ActualWidth, fe.ActualHeight));
 
-                var ps2 = PresentationSource.FromVisual(fe);
-                if (ps2?.CompositionTarget != null) {
-                    var transform = ps2.CompositionTarget.TransformFromDevice;
-                    var topLeftDip = transform.Transform(topLeftDevice);
-                    var bottomRightDip = transform.Transform(bottomRightDevice);
+                // ? Step 2: Transform device pixels ? DIP (screen-absolute)
+                var transform = ps.CompositionTarget.TransformFromDevice;
+                var topLeftDip = transform.Transform(topLeftDevice);
+                var bottomRightDip = transform.Transform(bottomRightDevice);
 
-                    var centerX = (topLeftDip.X + bottomRightDip.X) / 2.0;
-                    var centerY = (topLeftDip.Y + bottomRightDip.Y) / 2.0;
+                // ? Step 3: Calculate center in DIP
+                var centerX = (topLeftDip.X + bottomRightDip.X) / 2.0;
+                var centerY = (topLeftDip.Y + bottomRightDip.Y) / 2.0;
 
-                    if (VerboseDebug) Debug.WriteLine($"[NavNode] GetCenterDip success: {SimpleName} @ ({centerX:F1},{centerY:F1})");
-                    return new Point(centerX, centerY);
-                } else {
-                    var centerX = (topLeftDevice.X + bottomRightDevice.X) / 2.0;
-                    var centerY = (topLeftDevice.Y + bottomRightDevice.Y) / 2.0;
-                    
-                    if (VerboseDebug) Debug.WriteLine($"[NavNode] GetCenterDip success (device): {SimpleName} @ ({centerX:F1},{centerY:F1})");
-                    return new Point(centerX, centerY);
+                // ? Viewport bounds check in DIP coordinates
+                // Reject items scrolled off-screen or far outside viewport
+                // Note: These bounds are approximate and in DIP space
+                if (centerY < -100 || centerY > 2000) {
+                    if (VerboseDebug) Debug.WriteLine($"[NavNode] GetCenterDip rejected: off-screen Y={centerY:F1} DIP - {SimpleName}");
+                    return null;
                 }
+
+                if (VerboseDebug) Debug.WriteLine($"[NavNode] GetCenterDip success: {SimpleName} @ ({centerX:F1},{centerY:F1}) DIP [screen-absolute]");
+                return new Point(centerX, centerY);
             } catch (Exception ex) {
-                if (VerboseDebug) Debug.WriteLine($"[NavNode] GetCenterDip failed: PointToScreen exception - {SimpleName}: {ex.Message}");
+                if (VerboseDebug) Debug.WriteLine($"[NavNode] GetCenterDip failed: Exception - {SimpleName}: {ex.Message}");
                 return null;
             }
         }
@@ -693,7 +717,7 @@ namespace AcManager.UiObserver
         ///   - ToggleButton/CheckBox/RadioButton: toggles IsChecked
         ///   - MenuItem: simulates mouse click at element center
         ///   - ComboBox: opens dropdown
-        ///   - Menu: opens first menu item
+        ///   - Menu: simulates mouse click to open dropdown (not submenu!)
         ///   - ContextMenu: opens menu
         ///   - ListBoxItem/ComboBoxItem/TreeViewItem: selects the item
         ///   - TabItem: selects the tab
@@ -728,7 +752,14 @@ namespace AcManager.UiObserver
                     return SimulateMouseClick(fe);
                 }
 
-                // ? NEW: ComboBox, Menu, ContextMenu are leaves - open them when activated
+                // ? Menu control - should open its own dropdown, not try to open submenu
+                // The Menu may not have MenuItem children (could have HierarchicalItem or other types)
+                // Use mouse click to trigger the dropdown
+                if (fe is Menu menu) {
+                    return SimulateMouseClick(fe);
+                }
+
+                // ? NEW: ComboBox, ContextMenu are leaves - open them when activated
                 if (fe is ComboBox comboBox) {
                     comboBox.IsDropDownOpen = true;
                     return true;
@@ -737,15 +768,6 @@ namespace AcManager.UiObserver
                 if (fe is ContextMenu contextMenu) {
                     contextMenu.IsOpen = true;
                     return true;
-                }
-
-                if (fe is Menu menu) {
-                    var firstItem = menu.Items.OfType<MenuItem>().FirstOrDefault();
-                    if (firstItem != null) {
-                        firstItem.IsSubmenuOpen = true;
-                        return true;
-                    }
-                    return false;
                 }
 
                 // Selection items
@@ -786,43 +808,50 @@ namespace AcManager.UiObserver
         /// Simulates a mouse click at the center of the element.
         /// This is the most robust way to activate complex controls like MenuItem,
         /// as it lets WPF's internal machinery handle all state management.
+        /// 
+        /// ? COORDINATE FLOW:
+        /// 1. GetCenterDip() returns DIP (screen-absolute)
+        /// 2. TransformToDevice converts DIP ? device pixels
+        /// 3. Device pixels used for mouse input (SendInput API)
         /// </summary>
         private bool SimulateMouseClick(FrameworkElement fe)
         {
             try {
-                // Get element center in screen coordinates
-                var centerPoint = GetCenterDip();
-                if (!centerPoint.HasValue) {
+                // ? Step 1: Get center in DIP (screen-absolute coordinate space)
+                var centerDip = GetCenterDip();
+                if (!centerDip.HasValue) {
                     if (VerboseDebug) Debug.WriteLine($"[NavNode] SimulateMouseClick failed: Could not get center point for {SimpleName}");
                     return false;
                 }
 
-                // Convert DIP to screen coordinates (device pixels)
+                // ? Step 2: Get presentation source for DIP ? device pixel conversion
                 var ps = PresentationSource.FromVisual(fe);
                 if (ps?.CompositionTarget == null) {
                     if (VerboseDebug) Debug.WriteLine($"[NavNode] SimulateMouseClick failed: No PresentationSource for {SimpleName}");
                     return false;
                 }
 
+                // ? Step 3: Convert DIP ? device pixels (screen-absolute)
                 var transformToDevice = ps.CompositionTarget.TransformToDevice;
-                var centerDevice = transformToDevice.Transform(centerPoint.Value);
+                var centerDevice = transformToDevice.Transform(centerDip.Value);
 
-                // Get screen size for absolute positioning (SendInput uses 0-65535 range)
-                var screenWidth = System.Windows.Forms.Screen.PrimaryScreen.Bounds.Width;
-                var screenHeight = System.Windows.Forms.Screen.PrimaryScreen.Bounds.Height;
+                // ? Step 4: Get screen dimensions in device pixels for SendInput normalization
+                // SendInput uses 0-65535 normalized coordinate space
+                var screenWidthDevice = System.Windows.Forms.Screen.PrimaryScreen.Bounds.Width;
+                var screenHeightDevice = System.Windows.Forms.Screen.PrimaryScreen.Bounds.Height;
 
-                // Calculate absolute position in SendInput's coordinate space (0-65535)
-                var absoluteX = (int)(centerDevice.X * 65536.0 / screenWidth);
-                var absoluteY = (int)(centerDevice.Y * 65536.0 / screenHeight);
+                // ? Step 5: Normalize to SendInput's 0-65535 coordinate space
+                var absoluteX = (int)(centerDevice.X * 65536.0 / screenWidthDevice);
+                var absoluteY = (int)(centerDevice.Y * 65536.0 / screenHeightDevice);
 
                 if (VerboseDebug) {
                     Debug.WriteLine($"[NavNode] SimulateMouseClick: {SimpleName}");
-                    Debug.WriteLine($"  DIP: ({centerPoint.Value.X:F1}, {centerPoint.Value.Y:F1})");
-                    Debug.WriteLine($"  Device: ({centerDevice.X:F1}, {centerDevice.Y:F1})");
-                    Debug.WriteLine($"  Absolute: ({absoluteX}, {absoluteY})");
+                    Debug.WriteLine($"  DIP (screen-absolute): ({centerDip.Value.X:F1}, {centerDip.Value.Y:F1})");
+                    Debug.WriteLine($"  Device pixels: ({centerDevice.X:F1}, {centerDevice.Y:F1})");
+                    Debug.WriteLine($"  SendInput normalized: ({absoluteX}, {absoluteY})");
                 }
 
-                // Use MouseSimulator to perform the click
+                // ? Step 6: Move mouse and click
                 var mouse = new MouseSimulator();
                 mouse.MoveMouseTo(absoluteX, absoluteY);
                 mouse.LeftButtonClick();
