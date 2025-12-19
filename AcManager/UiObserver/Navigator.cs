@@ -134,6 +134,9 @@ namespace AcManager.UiObserver
 			// Startup Observer (it will hook windows itself and fire ModalGroupOpened)
 			Observer.Initialize();
 
+			// ✅ NEW: Install focus guard to prevent WPF from stealing focus to non-navigable elements
+			InstallFocusGuard();
+
 			// Register keyboard handler
 			try {
 				EventManager.RegisterClassHandler(typeof(Window), UIElement.PreviewKeyDownEvent, 
@@ -609,13 +612,33 @@ namespace AcManager.UiObserver
 				_overlay.HideFocusRect(); 
 				return; 
 			}
-			
-			if (!fe.IsLoaded) {
-				Debug.WriteLine($"[Navigator] UpdateFocusRect: NOT LOADED - {node.SimpleName}");
-				_overlay.HideFocusRect(); 
+
+			// Check if element is in visual tree (connected to window)
+			if (PresentationSource.FromVisual(fe) == null) {
+				if (VerboseNavigationDebug) {
+					Debug.WriteLine($"[Navigator] UpdateFocusRect: NO PRESENTATION SOURCE - {node.SimpleName}");
+				}
 				return;
 			}
-			
+
+			// Try to get bounds - handles async image loading gracefully
+			Point? centerDip = null;
+			try {
+				centerDip = node.GetCenterDip();
+			} catch (InvalidOperationException ex) {
+				if (VerboseNavigationDebug) {
+					Debug.WriteLine($"[Navigator] UpdateFocusRect: BOUNDS ERROR - {node.SimpleName}: {ex.Message}");
+				}
+				return;
+			}
+
+			if (!centerDip.HasValue) {
+				if (VerboseNavigationDebug) {
+					Debug.WriteLine($"[Navigator] UpdateFocusRect: NO BOUNDS - {node.SimpleName}");
+				}
+				return;
+			}
+
 			if (!fe.IsVisible) {
 				Debug.WriteLine($"[Navigator] UpdateFocusRect: NOT VISIBLE - {node.SimpleName}");
 				_overlay.HideFocusRect(); 
@@ -999,6 +1022,122 @@ namespace AcManager.UiObserver
 
 		// Partial method declaration - implemented in Navigator.Debug.cs
 		static partial void OnDebugHotkey(KeyEventArgs e);
+
+		#endregion
+
+		#region Focus Guard
+
+		/// <summary>
+		/// Installs a global focus monitor to prevent WPF from stealing focus to non-navigable elements.
+		/// 
+		/// Problem:
+		/// WPF automatically moves keyboard focus to text inputs (TextBox, etc.) when they load or become visible.
+		/// These elements are excluded from our navigation system (not NavNodes), so we lose track of focus.
+		/// 
+		/// Solution:
+		/// Monitor WPF's focus changes globally. If focus moves to a non-tracked element, restore it
+		/// to our last known focused NavNode.
+		/// 
+		/// This acts as a "focus guard" that keeps keyboard focus aligned with our navigation system.
+		/// </summary>
+		private static void InstallFocusGuard()
+		{
+			try {
+				// Subscribe to global keyboard focus changes (tunneling event - fires before Loaded/GotFocus)
+				EventManager.RegisterClassHandler(
+					typeof(UIElement),
+					Keyboard.GotKeyboardFocusEvent,
+					new KeyboardFocusChangedEventHandler(OnGlobalKeyboardFocusChanged),
+					handledEventsToo: true  // ← Monitor even if event is marked as handled
+				);
+
+				Debug.WriteLine("[Navigator] Focus guard installed");
+			} catch (Exception ex) {
+				Debug.WriteLine($"[Navigator] Failed to install focus guard: {ex.Message}");
+			}
+		}
+
+		/// <summary>
+		/// Global keyboard focus change handler.
+		/// Restores focus to our tracked NavNode if WPF tries to focus a non-navigable element.
+		/// </summary>
+		private static void OnGlobalKeyboardFocusChanged(object sender, KeyboardFocusChangedEventArgs e)
+		{
+			// Get the newly focused element
+			if (!(e.NewFocus is FrameworkElement newFocusedElement)) {
+				// Focus moved to non-FrameworkElement (or null) - ignore
+				return;
+			}
+
+			// Check if this element is a tracked NavNode
+			if (Observer.TryGetNavNode(newFocusedElement, out var navNode)) {
+				// Focus moved to a tracked NavNode - this is expected behavior
+				// Update our focus tracking to match WPF's focus
+				if (CurrentContext != null && !ReferenceEquals(CurrentContext.FocusedNode, navNode)) {
+					if (VerboseNavigationDebug) {
+						Debug.WriteLine($"[Navigator] Focus moved to tracked NavNode: {navNode.SimpleName}");
+					}
+
+					// Sync our tracking with WPF's focus (don't trigger visual update - already focused)
+					var oldNode = CurrentContext.FocusedNode;
+					if (oldNode != null) oldNode.HasFocus = false;
+
+					navNode.HasFocus = true;
+					CurrentContext.FocusedNode = navNode;
+
+					try { FocusChanged?.Invoke(oldNode, navNode); } catch { }
+				}
+				return;
+			}
+
+			// ❌ Focus moved to a NON-tracked element (e.g., excluded TextBox)
+			// Restore focus to our last known focused NavNode
+
+			if (CurrentContext?.FocusedNode == null) {
+				// No previous focus to restore - let WPF do its thing
+				if (VerboseNavigationDebug) {
+					Debug.WriteLine($"[Navigator] Focus moved to non-tracked element '{newFocusedElement.GetType().Name}' (no previous focus to restore)");
+				}
+				return;
+			}
+
+			// We have a focused NavNode - restore focus to it
+			if (!CurrentContext.FocusedNode.TryGetVisual(out var ourFocusedElement)) {
+				// Our focused element is dead - clear focus tracking
+				if (VerboseNavigationDebug) {
+					Debug.WriteLine($"[Navigator] Focus moved to non-tracked element, but our focused NavNode is dead");
+				}
+				CurrentContext.FocusedNode.HasFocus = false;
+				CurrentContext.FocusedNode = null;
+				return;
+			}
+
+			// Restore focus to our tracked element
+			Debug.WriteLine($"[Navigator] ⚠ Focus stolen by non-tracked '{newFocusedElement.GetType().Name}' - restoring to '{CurrentContext.FocusedNode.SimpleName}'");
+
+			// Use Dispatcher to avoid re-entrancy issues (focus change during focus change)
+			ourFocusedElement.Dispatcher.BeginInvoke(
+				DispatcherPriority.Input,  // High priority - restore focus ASAP
+				new Action(() => {
+					try {
+						// Re-check that our focused node is still valid
+						if (CurrentContext?.FocusedNode == null) return;
+						if (!CurrentContext.FocusedNode.TryGetVisual(out var elementToFocus)) return;
+
+						// Restore keyboard focus to our tracked element
+						Keyboard.Focus(elementToFocus);
+
+						if (VerboseNavigationDebug) {
+							Debug.WriteLine($"[Navigator] Focus restored to '{CurrentContext.FocusedNode.SimpleName}'");
+						}
+					} catch (Exception ex) {
+						if (VerboseNavigationDebug) {
+							Debug.WriteLine($"[Navigator] Failed to restore focus: {ex.Message}");
+						}
+					}
+				})
+			);
+		}
 
 		#endregion
 	}

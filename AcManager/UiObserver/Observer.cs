@@ -371,9 +371,26 @@ namespace AcManager.UiObserver {
 						// ✅ NEW: Scan descendants if this is a container type that might have virtualized children
 						if (ShouldScanDescendants(fe)) {
 							if (_verboseDebug) {
-								Debug.WriteLine($"[Observer] Scanning descendants of {fe.GetType().Name} for virtualized children");
+								Debug.WriteLine($"[Observer] Deferring descendant scan for {fe.GetType().Name} to allow layout completion");
 							}
-							ScanDescendants(fe);
+
+							// Defer to next dispatcher cycle to allow WPF layout to complete
+							fe.Dispatcher.BeginInvoke(new Action(() => {
+								try {
+									if (!fe.IsLoaded) return; // Element was unloaded before scan ran
+									if (PresentationSource.FromVisual(fe) == null) return; // Not in visual tree
+
+									if (_verboseDebug) {
+										Debug.WriteLine($"[Observer] Scanning descendants of {fe.GetType().Name} for virtualized children");
+									}
+
+									ScanDescendants(fe);
+								} catch (Exception ex) {
+									if (_verboseDebug) {
+										Debug.WriteLine($"[Observer] Deferred ScanDescendants error: {ex.Message}");
+									}
+								}
+							}), DispatcherPriority.ApplicationIdle); // Run after current layout pass
 						}
 					} else if (_verboseDebug) {
                         Debug.WriteLine($"[Observer] TryCreate: {fe.GetType().Name} - TryAdd failed (race condition?)");
