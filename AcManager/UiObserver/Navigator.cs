@@ -885,54 +885,34 @@ namespace AcManager.UiObserver
 		#region Helper Methods
 
 		/// <summary>
-		/// Checks if a child node is a descendant of an ancestor node by walking the Parent chain.
-		/// Uses reference equality (not path matching) to correctly handle multiple PopupRoots
-		/// with identical paths like "(unnamed):PopupRoot".
-		/// 
-		/// This is critical for modal scope filtering - when a submenu opens, we need to
-		/// distinguish between the parent dropdown's PopupRoot and the submenu's PopupRoot,
-		/// even though both have the same hierarchical path.
+		/// Checks if a child node is a descendant of an ancestor node.
+		/// Uses HierarchicalPath string comparison for efficiency and consistency.
 		/// </summary>
 		internal static bool IsDescendantOf(NavNode child, NavNode ancestor)
 		{
 			if (child == null || ancestor == null) return false;
-			if (ReferenceEquals(child, ancestor)) return false; // A node is not its own descendant
-			
-			// Walk up the Parent WeakReference chain looking for ancestor
-			var current = child.Parent;
-			while (current != null && current.TryGetTarget(out var parentNode))
-			{
-				if (ReferenceEquals(parentNode, ancestor)) {
-					return true;  // Found it!
-				}
-				current = parentNode.Parent;
-			}
-			
-			return false;  // Not found in parent chain
+
+			var ancestorPath = ancestor.HierarchicalPath;
+			var childPath = child.HierarchicalPath;
+
+			// Exact match (child IS the ancestor)
+			if (childPath == ancestorPath) return true;
+
+			// Descendant match (child is inside ancestor's scope)
+			return childPath.StartsWith(ancestorPath + " > ");
 		}
 
 		/// <summary>
-		/// Checks if a node is within the active modal context by comparing cached hierarchical paths.
-		/// Uses string prefix matching on the pre-computed HierarchicalPath instead of walking the Parent chain.
-		/// This is O(1) string comparison vs O(depth) tree walking.
+		/// Checks if a node is within the current active modal scope.
+		/// Delegates to IsDescendantOf() for consistency.
 		/// </summary>
 		internal static bool IsInActiveModalScope(NavNode node)
 		{
 			if (CurrentContext == null) return true;
 			if (node == null) return false;
-			
-			// A node is in scope if its path starts with (or equals) the modal node's path
-			// Example: Modal path = "Window:MainWindow > Frame:ModernFrame"
-			//          Node path  = "Window:MainWindow > Frame:ModernFrame > Button:SaveButton" ✓
-			var modalPath = CurrentContext.ModalNode.HierarchicalPath;
-			var nodePath = node.HierarchicalPath;
-			
-			// Exact match (node IS the modal root)
-			if (nodePath == modalPath) return true;
-			
-			// Descendant match (node is inside modal scope)
-			// Must start with modal path + separator to avoid false prefix matches
-			return nodePath.StartsWith(modalPath + " > ", StringComparison.Ordinal);
+
+			// Reuse IsDescendantOf() - single source of truth for hierarchy checks
+			return IsDescendantOf(node, CurrentContext.ModalNode);
 		}
 
 		internal static List<NavNode> GetCandidatesInScope()

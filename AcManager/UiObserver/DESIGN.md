@@ -195,28 +195,108 @@ User closes dropdown:
 - **Performance:** Compute once during creation, not repeatedly
 - **Consistency:** Path never changes after creation (element's position in tree is fixed)
 
-**Format:** `"WindowName:Window > PanelName:StackPanel > ButtonName:Button"`
+**Format:** `"ElementName:ElementType[:WindowHandle] > ChildName:ChildType > ..."`
 
 **Key Insight:** Path includes ALL ancestors in visual tree, not just NavNode ancestors.
 
+**✅ CRITICAL: SimpleName with WindowHandle for Uniqueness**
+
+**Problem Solved:** Multiple PopupRoots (main menu, submenus) had identical paths `(unnamed):PopupRoot`, causing scope filtering failures. Navigator couldn't distinguish between different popups because they looked identical.
+
+**Solution:** SimpleName includes WindowHandle (HWND) as a third component for top-level elements (Window, PopupRoot):
+```
+Name:Type[:WindowHandle]
+```
+
+**Examples:**
+- Regular element: `SaveButton:Button`
+- Main window: `Window:MainWindow:2E04AE` ← includes HWND
+- Main menu popup: `(unnamed):PopupRoot:1A02D4` ← unique HWND
+- Submenu popup: `(unnamed):PopupRoot:3703EA` ← different HWND!
+
+**Why It Works:**
+- Every WPF Popup creates its own OS-level window (HWND)
+- HWND is guaranteed unique at OS level
+- No complex PlacementTarget bridging needed for uniqueness
+- Clean, simple solution leveraging OS guarantees
+
+**Result:** Each popup has a unique path, making `IsDescendantOf()` correctly filter candidates by scope.
+
+**Debug Output:**
+```
+[Observer] Modal opened: (unnamed):PopupRoot:1A02D4
+[Observer] Modal opened: (unnamed):PopupRoot:3703EA  ← Different!
+[Navigator] Modal closed: (unnamed):PopupRoot:3703EA
+[Navigator] Restored focus correctly  ← Works!
+```
+
 ---
 
-### 6. Popup?PlacementTarget Bridging
+### 6. Parent/Child Relationships - Cleanup & Diagnostics
 
-**Decision:** `Observer.LinkToParent()` walks through `Popup.PlacementTarget` to bridge visual tree gaps.
+**Decision:** `Observer.LinkToParent()` builds bidirectional Parent/Child WeakReference chains when nodes are created.
 
-**Why:**
-- **WPF Limitation:** Elements inside a Popup have NO visual tree parent (VisualTreeHelper.GetParent returns null)
-- **Logical Parent:** Popup's `PlacementTarget` points to the owner control outside the Popup
-- **Navigation Correctness:** MenuItem inside a Popup should be able to navigate back to the Button that opened it
+**Current Primary Uses:**
+1. **Memory Management (`UnlinkNode()`):** Removes child from parent's Children list when nodes are disposed, preventing memory leaks
+2. **Debug Validation (DEBUG builds only):** Consistency checks verify Parent/Child relationships match the actual visual tree
+3. **Diagnostic Logging:** Parent chain information aids in debugging hierarchy issues
 
-**Implementation:**
+**⚠️ IMPORTANT: Navigation Logic Does NOT Use Parent/Child!**
+- `IsDescendantOf()` uses **HierarchicalPath string comparison** (not Parent chain walking)
+- Scope filtering uses **path prefix matching** (not Parent references)
+- Modal validation uses **path comparison** (not Parent traversal)
+
+**Why Parent/Child Still Exists:**
+The bidirectional references serve as a **cleanup aid** and **diagnostic safety net**, but are **not required for navigation functionality**.
+
+**PlacementTarget Bridging:**
+When walking the visual tree to build Parent/Child links, we use `Popup.PlacementTarget` to bridge visual tree gaps:
+
 ```csharp
-// If we hit a Popup boundary during parent walk:
-if (current is Popup popup && popup.PlacementTarget != null) {
-    current = popup.PlacementTarget; // Jump across boundary
+// Walk up visual tree to find first parent NavNode
+while (current != null) {
+    current = VisualTreeHelper.GetParent(current);
+    
+    // If we hit a Popup boundary, bridge using PlacementTarget
+    if (current is Popup popup && popup.PlacementTarget != null) {
+        current = popup.PlacementTarget; // Jump across visual tree gap
+        continue; // Continue walking up from PlacementTarget
+    }
 }
 ```
+
+**Current Implementation:**
+```csharp
+// Establish bidirectional link
+childNode.Parent = new WeakReference<NavNode>(parentNode);
+parentNode.Children.Add(new WeakReference<NavNode>(childNode));
+```
+
+**Cleanup Implementation:**
+```csharp
+// UnlinkNode() removes child from parent's Children list
+if (node.Parent != null && node.Parent.TryGetTarget(out var parent)) {
+    parent.Children.RemoveAll(wr => {
+        if (!wr.TryGetTarget(out var child)) return true; // Dead reference
+        return ReferenceEquals(child, node);
+    });
+}
+```
+
+**Future Simplification Potential:**
+
+The system could potentially be simplified by:
+1. **Removing Children list:** Only cleanup uses it, and we could scan all nodes to find children instead
+2. **Keeping Parent reference:** Still useful for diagnostic output ("what's my parent?")
+3. **Path-only navigation:** Already implemented - paths work everywhere except across Popup boundaries
+
+**Blocker for Full Removal:**
+HierarchicalPath is computed by walking the **visual tree** (includes Popups with PlacementTarget bridging), so paths already encode the full ancestry. However, Parent/Child references provide:
+- Fast cleanup without scanning all nodes
+- Debug validation that visual tree matches our data structure
+- Minimal memory overhead (WeakReferences are lightweight)
+
+**Recommendation:** Keep for now - the complexity cost is low, and it provides valuable diagnostic capabilities.
 
 ---
 
@@ -302,7 +382,7 @@ _overlay?.Hide(); // Reuse same instance
 
 ---
 
-### Observer.cs - Discovery Engine
+### Observer.js - Discovery Engine
 
 **Purpose:** Scans visual trees silently, creates NavNodes, builds hierarchy, emits events only for modal lifecycle and layout changes.
 
@@ -446,17 +526,19 @@ CLASSIFY: ** > *:SelectCarDialog => role=group; modal=true
 4. **Complete Information:** Focus selection sees all candidates at once (not incremental)
 5. **Weak References Everywhere:** Prevent memory leaks in Parent/Child links
 6. **Compute Once, Store Forever:** HierarchicalPath computed at creation
-7. **Popup Bridging is Critical:** Jump across Popup boundaries via PlacementTarget
-8. **Modal Context = Scope + Focus:** Atomic bundling prevents desync
-9. **Stack Never Empty:** Root context always present after initialization
-10. **Single-Pass Initialization:** Focus initialized once per modal with complete candidate list
-11. **Persistent Resources:** Reuse windows/objects instead of recreate
-12. **Finalizers Are Dangerous:** Always suppress when implementing Dispose()
-13. **? Optimistic Validation:** Accept unlinked modals, reject only provably wrong hierarchies
-14. **? Pattern-Based Exclusion:** Context-aware filtering better than global type rules
-15. **? Silent Discovery:** Node tracking is internal, events signal user-facing state changes only
-16. **? Minimal Public API:** Only expose what external code needs (`Initialize()` + navigation commands)
-17. **? Clean Separation:** Observer handles discovery, Navigator handles navigation - NO overlap!
+7. **Path-Based Hierarchy:** Use HierarchicalPath string comparison for all navigation logic (IsDescendantOf, scope filtering)
+8. **Parent/Child for Cleanup Only:** Bidirectional WeakReference chains used for memory management and diagnostics, NOT navigation
+9. **Popup Bridging via PlacementTarget:** Jump across Popup boundaries when building Parent/Child links and computing paths
+10. **Modal Context = Scope + Focus:** Atomic bundling prevents desync
+11. **Stack Never Empty:** Root context always present after initialization
+12. **Single-Pass Initialization:** Focus initialized once per modal with complete candidate list
+13. **Persistent Resources:** Reuse windows/objects instead of recreate
+14. **Finalizers Are Dangerous:** Always suppress when implementing Dispose()
+15. **✅ Optimistic Validation:** Accept unlinked modals, reject only provably wrong hierarchies
+16. **✅ Pattern-Based Exclusion:** Context-aware filtering better than global type rules
+17. **✅ Silent Discovery:** Node tracking is internal, events signal user-facing state changes only
+18. **✅ Minimal Public API:** Only expose what external code needs (`Initialize()` + navigation commands)
+19. **✅ Clean Separation:** Observer handles discovery, Navigator handles navigation - NO overlap!
 
 ---
 

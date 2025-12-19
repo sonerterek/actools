@@ -491,12 +491,16 @@ namespace AcManager.UiObserver
             
             public bool MatchesNode(string node)
             {
-                // Node format is "Name:Type"
-                var colonIndex = node.IndexOf(':');
-                if (colonIndex < 0) return false;
+                // Node format is "Name:Type" or "Name:Type:WindowHandle"
+                // We need to extract Name and Type, ignoring WindowHandle for matching
                 
-                var nodeName = node.Substring(0, colonIndex);
-                var nodeType = node.Substring(colonIndex + 1);
+                // Split by ALL colons
+                var parts = node.Split(':');
+                if (parts.Length < 2) return false;
+                
+                string nodeName = parts[0];
+                string nodeType = parts[1];
+                // parts[2] would be WindowHandle (if present) - we ignore it for matching!
                 
                 bool nameMatches = MatchesPattern(NamePattern, nodeName);
                 bool typeMatches = MatchesPattern(TypePattern, nodeType);
