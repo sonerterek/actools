@@ -106,6 +106,12 @@ namespace AcManager.UiObserver {
         /// </summary>
         public static event EventHandler WindowLayoutChanged;
 
+        /// <summary>
+        /// Fired when a NavNode's element is being unloaded from the visual tree.
+        /// This allows consumers (like Navigator) to react to nodes disappearing.
+        /// </summary>
+        internal static event Action<NavNode> NodeUnloaded;
+
         #endregion
 
         #region Initialize
@@ -525,13 +531,16 @@ namespace AcManager.UiObserver {
         /// Removes the element and all its descendants from tracking to prevent
         /// stale references when content is swapped (e.g., tab changes in ModernFrame).
         /// 
-        /// FIX: Handles the case where ContentPresenter replaces its content without firing
-        /// individual Unloaded events for every descendant. When QuickDrive_Weekend tab is
-        /// replaced by QuickDrive_Practice tab:
-        /// 1. QuickDrive_Weekend's Unloaded event fires
-        /// 2. We remove it from _nodesByElement
-        /// 3. We scan _nodesByElement for all descendants and remove them too
-        /// 4. This prevents parent mismatch errors in ValidateNodeConsistency()
+        /// FIX: Handles the case where a GROUP element (like ListBox) unloads without
+        /// being tracked itself, but has tracked descendants (like ListBoxItem children).
+        /// When PART_ListBox unloads:
+        /// 1. PART_ListBox fires Unloaded event (but it's NOT in _nodesByElement - it's a group)
+        /// 2. We fire NodeUnloaded for all tracked descendants FIRST
+        /// 3. Navigator gets notified and can clear focus/re-initialize
+        /// 4. Then we remove all descendants from tracking
+        /// 
+        /// This ensures Navigator is notified before the nodes are removed, so it can
+        /// react while the nodes are still in _nodesByElement.
         /// </summary>
         private static void OnElementUnloaded(object sender, RoutedEventArgs e) {
             if (!(sender is FrameworkElement fe)) return;
@@ -540,8 +549,67 @@ namespace AcManager.UiObserver {
                 // Unhook the event to prevent memory leaks
                 fe.Unloaded -= OnElementUnloaded;
                 
-                // Remove this element and all its descendants
+                // ✅ STEP 1: Check if the element itself is tracked
+                bool isTrackedElement = _nodesByElement.TryGetValue(fe, out var node);
+                
+                if (isTrackedElement) {
+                    if (_verboseDebug) {
+                        Debug.WriteLine($"[Observer] Element unloaded: {node.SimpleName}");
+                    }
+
+                    // Fire NodeUnloaded event for the element itself
+                    try {
+                        NodeUnloaded?.Invoke(node);
+                    } catch (Exception ex) {
+                        if (_verboseDebug) {
+                            Debug.WriteLine($"[Observer] NodeUnloaded event handler threw exception: {ex.Message}");
+                        }
+                    }
+                }
+                
+                // ✅ STEP 2: Find all tracked descendants (even if parent is not tracked)
+                // This handles the case where a group element (ListBox) unloads with tracked children (ListBoxItem)
+                var descendantElements = new List<FrameworkElement>();
+                var descendantNodes = new List<NavNode>();
+                
+                foreach (var kvp in _nodesByElement) {
+                    var element = kvp.Key;
+                    var descendantNode = kvp.Value;
+                    
+                    if (ReferenceEquals(element, fe)) continue; // Skip the element itself (already handled above)
+                    
+                    // Check if this element is a visual descendant of the unloading element
+                    if (IsVisualDescendantOf(element, fe)) {
+                        descendantElements.Add(element);
+                        descendantNodes.Add(descendantNode);
+                    }
+                }
+                
+                // ✅ STEP 3: Fire NodeUnloaded for all descendants BEFORE removing them
+                if (descendantNodes.Count > 0) {
+                    if (_verboseDebug) {
+                        Debug.WriteLine($"[Observer] Found {descendantNodes.Count} tracked descendants of {node?.SimpleName ?? fe.GetType().Name}");
+                    }
+                    
+                    for (int i = 0; i < descendantNodes.Count; i++) {
+                        var descendantNode = descendantNodes[i];
+                        if (_verboseDebug) {
+                            Debug.WriteLine($"[Observer] Descendant unloading: {descendantNode.SimpleName}");
+                        }
+                        
+                        try {
+                            NodeUnloaded?.Invoke(descendantNode);
+                        } catch (Exception ex) {
+                            if (_verboseDebug) {
+                                Debug.WriteLine($"[Observer] NodeUnloaded event handler threw exception for {descendantNode.SimpleName}: {ex.Message}");
+                            }
+                        }
+                    }
+                }
+                
+                // ✅ STEP 4: Now safe to remove the element and all its descendants
                 RemoveElementAndDescendants(fe);
+                
             } catch (Exception ex) {
                 Debug.WriteLine($"[Observer] OnElementUnloaded error: {ex.Message}");
             }
@@ -614,7 +682,7 @@ namespace AcManager.UiObserver {
 
         /// <summary>
         /// Checks if a child element is a visual descendant of an ancestor element.
-        /// Uses the CURRENT visual tree (not cached relationships).
+        /// Uses theCURRENT visual tree (not cached relationships).
         /// </summary>
         private static bool IsVisualDescendantOf(DependencyObject child, DependencyObject ancestor) {
             if (child == null || ancestor == null) return false;

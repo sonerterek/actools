@@ -125,8 +125,9 @@ namespace AcManager.UiObserver
 			Observer.ModalGroupOpened += OnModalGroupOpened;
 			Observer.ModalGroupClosed += OnModalGroupClosed;
 			Observer.WindowLayoutChanged += OnWindowLayoutChanged;
+			Observer.NodeUnloaded += OnNodeUnloaded;  // ✅ NEW: Subscribe to node unload events
 			
-			// ? FIX: Create overlay BEFORE starting Observer to avoid race condition
+			// ✅ FIX: Create overlay BEFORE starting Observer to avoid race condition
 			// When Observer discovers MainWindow and fires ModalGroupOpened, the overlay
 			// must already exist so focus initialization can show the blue rectangle
 			EnsureOverlay();
@@ -243,6 +244,60 @@ namespace AcManager.UiObserver
 		#endregion
 
 		#region Event Handlers
+
+		/// <summary>
+		/// Called by Observer when any NavNode's element is being unloaded from the visual tree.
+		/// We check if this is our currently focused node and handle the in-modal navigation case.
+		/// </summary>
+		private static void OnNodeUnloaded(NavNode unloadingNode)
+		{
+			if (CurrentContext == null) return;
+
+			// Check if the unloading node is our currently focused node
+			if (!ReferenceEquals(CurrentContext.FocusedNode, unloadingNode)) {
+				// Not our focused node - ignore
+				return;
+			}
+
+			// Our focused node is being unloaded!
+			Debug.WriteLine($"[Navigator] ⚠ Focused node is unloading: {unloadingNode.SimpleName} - will re-initialize focus when new content loads");
+
+			// Clear the focused node (it's about to be dead)
+			unloadingNode.HasFocus = false;
+			CurrentContext.FocusedNode = null;
+
+			// Schedule focus re-initialization for after the new content loads
+			// Use a short delay to allow the new content to be discovered by Observer
+			Application.Current?.Dispatcher.BeginInvoke(
+				DispatcherPriority.Loaded,
+				new Action(() => {
+					try {
+						// Re-check that we're still in the same modal context and still have no focus
+						if (CurrentContext == null) {
+							if (VerboseNavigationDebug) {
+								Debug.WriteLine($"[Navigator] Focus re-init skipped - no current context");
+							}
+							return;
+						}
+
+						if (CurrentContext.FocusedNode != null) {
+							if (VerboseNavigationDebug) {
+								Debug.WriteLine($"[Navigator] Focus re-init skipped - focus already set to '{CurrentContext.FocusedNode.SimpleName}'");
+							}
+							return;
+						}
+
+						// Try to initialize focus to the new content
+						Debug.WriteLine($"[Navigator] Re-initializing focus after in-modal navigation");
+						TryInitializeFocusIfNeeded();
+					} catch (Exception ex) {
+						if (VerboseNavigationDebug) {
+							Debug.WriteLine($"[Navigator] Error re-initializing focus: {ex.Message}");
+						}
+					}
+				})
+			);
+		}
 
 		/// <summary>
 		/// Called when a modal group (popup) opens.
@@ -516,11 +571,14 @@ namespace AcManager.UiObserver
 		/// <summary>
 		/// Updates visual feedback (overlay) for focused node.
 		/// Separated from focus state management for clarity.
-		/// Also moves mouse to the focused node.
+		/// Also moves mouse to the focused node AND sets WPF keyboard focus.
 		/// 
 		/// ✓ FIXED: Now always uses MoveMouseToFocusedNode() which correctly transforms
 		/// DIP → device pixels. Previously used SetCursorPos() directly with DIP coordinates,
 		/// causing mouse position errors at non-100% DPI scales (e.g., 150% DPI).
+		/// 
+		/// ✅ NEW: Also sets WPF keyboard focus to sync with Navigator's focus tracking.
+		/// This prevents WPF from stealing focus to excluded elements like TextBox.
 		/// </summary>
 		private static void SetFocusVisuals(NavNode node)
 		{
@@ -530,6 +588,20 @@ namespace AcManager.UiObserver
 			}
 
 			UpdateFocusRect(node);
+
+			// ✅ NEW: Set WPF's keyboard focus to sync with Navigator's focus tracking
+			if (node.TryGetVisual(out var element)) {
+				try {
+					Keyboard.Focus(element);
+					if (VerboseNavigationDebug) {
+						Debug.WriteLine($"[Navigator] Set keyboard focus to '{node.SimpleName}'");
+					}
+				} catch (Exception ex) {
+					if (VerboseNavigationDebug) {
+						Debug.WriteLine($"[Navigator] Failed to set keyboard focus: {ex.Message}");
+					}
+				}
+			}
 
 			// ✓ FIXED: Always use MoveMouseToFocusedNode() which handles DIP → device pixel conversion
 			// Removed modal stack depth check - mouse tracking should work consistently everywhere
@@ -1091,7 +1163,6 @@ namespace AcManager.UiObserver
 			}
 
 			// ❌ Focus moved to a NON-tracked element (e.g., excluded TextBox)
-			// Restore focus to our last known focused NavNode
 
 			if (CurrentContext?.FocusedNode == null) {
 				// No previous focus to restore - let WPF do its thing
@@ -1101,18 +1172,26 @@ namespace AcManager.UiObserver
 				return;
 			}
 
-			// We have a focused NavNode - restore focus to it
+			// ✅ UPDATED: Check if our focused NavNode's element is still alive
 			if (!CurrentContext.FocusedNode.TryGetVisual(out var ourFocusedElement)) {
-				// Our focused element is dead - clear focus tracking
-				if (VerboseNavigationDebug) {
-					Debug.WriteLine($"[Navigator] Focus moved to non-tracked element, but our focused NavNode is dead");
-				}
+				// Our focused element is DEAD - OnNodeUnloaded should have already handled this
+				Debug.WriteLine($"[Navigator] Focus stolen but our focused NavNode is dead (element unloaded) - allowing focus to move");
+
 				CurrentContext.FocusedNode.HasFocus = false;
 				CurrentContext.FocusedNode = null;
 				return;
 			}
 
-			// Restore focus to our tracked element
+			// ✅ UPDATED: Check if element is still in visual tree
+			if (PresentationSource.FromVisual(ourFocusedElement) == null) {
+				Debug.WriteLine($"[Navigator] Focus stolen but our focused element is no longer in visual tree - allowing focus to move");
+
+				CurrentContext.FocusedNode.HasFocus = false;
+				CurrentContext.FocusedNode = null;
+				return;
+			}
+
+			// Element is alive and in visual tree - restore focus to it
 			Debug.WriteLine($"[Navigator] ⚠ Focus stolen by non-tracked '{newFocusedElement.GetType().Name}' - restoring to '{CurrentContext.FocusedNode.SimpleName}'");
 
 			// Use Dispatcher to avoid re-entrancy issues (focus change during focus change)
@@ -1120,11 +1199,33 @@ namespace AcManager.UiObserver
 				DispatcherPriority.Input,  // High priority - restore focus ASAP
 				new Action(() => {
 					try {
-						// Re-check that our focused node is still valid
-						if (CurrentContext?.FocusedNode == null) return;
-						if (!CurrentContext.FocusedNode.TryGetVisual(out var elementToFocus)) return;
+						// ✅ UPDATED: Re-check that our focused node is STILL valid
+						if (CurrentContext?.FocusedNode == null) {
+							if (VerboseNavigationDebug) {
+								Debug.WriteLine($"[Navigator] Focus restore cancelled - focused node cleared");
+							}
+							return;
+						}
 
-						// Restore keyboard focus to our tracked element
+						if (!CurrentContext.FocusedNode.TryGetVisual(out var elementToFocus)) {
+							if (VerboseNavigationDebug) {
+								Debug.WriteLine($"[Navigator] Focus restore cancelled - element died");
+							}
+							CurrentContext.FocusedNode.HasFocus = false;
+							CurrentContext.FocusedNode = null;
+							return;
+						}
+
+						if (PresentationSource.FromVisual(elementToFocus) == null) {
+							if (VerboseNavigationDebug) {
+								Debug.WriteLine($"[Navigator] Focus restore cancelled - element removed from tree");
+							}
+							CurrentContext.FocusedNode.HasFocus = false;
+							CurrentContext.FocusedNode = null;
+							return;
+						}
+
+						// Restore keyboard focus
 						Keyboard.Focus(elementToFocus);
 
 						if (VerboseNavigationDebug) {
