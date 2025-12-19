@@ -458,22 +458,50 @@ namespace AcManager.UiObserver
 
         private static string ComputeDefaultId(FrameworkElement fe)
         {
-            // Try AutomationId first (most stable)
-            var automationId = System.Windows.Automation.AutomationProperties.GetAutomationId(fe);
-            if (!string.IsNullOrEmpty(automationId))
-                return $"A:{automationId}";
-
-            // Try Name (stable if set)
-            if (!string.IsNullOrEmpty(fe.Name))
-                return $"N:{fe.Name}";
-
-            // Fallback to type + hash (not stable across sessions, but unique)
-            return $"G:{fe.GetType().Name}:{fe.GetHashCode():X8}";
+            var typeName = fe.GetType().Name;
+            var elementName = string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name;
+            
+            // Start with simple Name:Type format
+            string baseId = $"{elementName}:{typeName}";
+            
+            // ? For top-level elements (Window, PopupRoot), append WindowHandle as third component
+            // This makes each popup window unique: (unnamed):PopupRoot:12345
+            bool isTopLevel = fe is Window || typeName == "PopupRoot";
+            
+            if (isTopLevel) {
+                try {
+                    var hwndSource = PresentationSource.FromVisual(fe) as System.Windows.Interop.HwndSource;
+                    if (hwndSource != null) {
+                        var hwnd = hwndSource.Handle.ToInt32();
+                        baseId = $"{baseId}:{hwnd:X}";
+                        
+                        if (VerboseDebug) {
+                            Debug.WriteLine($"[NavNode] ComputeDefaultId: Top-level {typeName} has HWND, ID={baseId}");
+                        }
+                    }
+                } catch {
+                    // If we can't get HWND, just use the baseId without it
+                    // This can happen if element isn't fully initialized yet
+                }
+            }
+            
+            return baseId;
         }
 
         /// <summary>
         /// Gets the hierarchical path of an element in the visual tree.
-        /// Format: Name:Type > ChildName:ChildType > ...
+        /// Format: Name:Type[:HWND] > ChildName:ChildType > ...
+        /// 
+        /// ? FIXED: Includes WindowHandle in SimpleName for top-level elements (Window, PopupRoot).
+        /// Each WPF Popup creates its own OS-level window (HWND), so PopupRoots for main menu
+        /// and submenu will have different window handles in their SimpleName, making paths unique.
+        /// 
+        /// Example paths with WindowHandles in SimpleName:
+        /// - Main menu: "(unnamed):PopupRoot:3F4A21B > ... > (unnamed):MenuItem"
+        /// - Submenu: "(unnamed):PopupRoot:5C8D943 > ... > (unnamed):HierarchicalItem"
+        /// 
+        /// This ensures different PopupRoots have unique paths for scope filtering.
+        /// Handles both NavNode elements (uses their SimpleName) and non-NavNode intermediate elements.
         /// </summary>
         public static string GetHierarchicalPath(FrameworkElement fe)
         {
@@ -481,14 +509,42 @@ namespace AcManager.UiObserver
 
             try {
                 DependencyObject current = fe;
+                
                 while (current != null) {
                     if (current is FrameworkElement parent) {
-                        var typeName = parent.GetType().Name;
-                        var elementName = string.IsNullOrEmpty(parent.Name) ? "(unnamed)" : parent.Name;
-                        path.Insert(0, $"{elementName}:{typeName}");
+                        string pathSegment;
+                        
+                        // Check if this element is a NavNode (has been discovered)
+                        if (Observer.TryGetNavNode(parent, out var existingNode)) {
+                            // Use the pre-computed SimpleName from the NavNode
+                            pathSegment = existingNode.SimpleName;
+                        } else {
+                            // Not a NavNode - compute path segment manually
+                            // This handles intermediate elements in the visual tree
+                            var typeName = parent.GetType().Name;
+                            var elementName = string.IsNullOrEmpty(parent.Name) ? "(unnamed)" : parent.Name;
+                            pathSegment = $"{elementName}:{typeName}";
+                            
+                            // For top-level elements, include HWND even if not yet a NavNode
+                            bool isTopLevel = parent is Window || typeName == "PopupRoot";
+                            if (isTopLevel) {
+                                try {
+                                    var hwndSource = PresentationSource.FromVisual(parent) as System.Windows.Interop.HwndSource;
+                                    if (hwndSource != null) {
+                                        var hwnd = hwndSource.Handle.ToInt32();
+                                        pathSegment = $"{pathSegment}:{hwnd:X}";
+                                    }
+                                } catch {
+                                    // HWND not available yet, use base format
+                                }
+                            }
+                        }
+                        
+                        path.Insert(0, pathSegment);
                     }
 
                     try {
+                        // Walk up the visual tree
                         current = VisualTreeHelper.GetParent(current);
                     } catch {
                         break;

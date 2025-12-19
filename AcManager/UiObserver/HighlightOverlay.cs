@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Shapes;
 
@@ -10,6 +12,16 @@ namespace AcManager.UiObserver {
     /// Persistent topmost transparent overlay for navigation feedback.
     /// - Always shows the focused node with a highlighted rectangle
     /// - Can toggle debug mode to show all navigable elements
+    /// 
+    /// ? CRITICAL FIX: Window is shown ONCE at construction and NEVER hidden again.
+    /// This prevents triggering Loaded/Unloaded events that Observer's global handlers catch,
+    /// which would cause circular reference (overlay observes UI, Observer tracks overlay).
+    /// 
+    /// An empty transparent window is invisible anyway, so hiding provides no benefit.
+    /// 
+    /// ? CRITICAL FIX: Uses Win32 SetWindowPos to enforce TOPMOST at Z-order level.
+    /// WPF's Topmost property can be bypassed by windows opened after the overlay.
+    /// Win32 API ensures overlay stays above ALL windows including future ones.
     /// </summary>
     internal class HighlightOverlay : Window {
         private readonly Canvas _canvas;
@@ -21,6 +33,16 @@ namespace AcManager.UiObserver {
 
         // ? NEW: Limit maximum debug shapes to prevent OOM
         private const int MAX_DEBUG_SHAPES = 500;
+
+        // ? NEW: Win32 API for Z-order management
+        private const int HWND_TOPMOST = -1;
+        private const uint SWP_NOSIZE = 0x0001;
+        private const uint SWP_NOMOVE = 0x0002;
+        private const uint SWP_NOACTIVATE = 0x0010;
+        private const uint SWP_SHOWWINDOW = 0x0040;
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
 
         public HighlightOverlay() {
             AllowsTransparency = true;
@@ -57,8 +79,17 @@ namespace AcManager.UiObserver {
             };
             _canvas.Children.Add(_focusRect);
 
-            // ? NEW: Hook Closed event to ensure cleanup
-            Closed += (s, e) => Dispose();
+            // ? FIX: Show window ONCE at construction, NEVER hide/close it again
+            // This prevents Loaded/Unloaded events that Observer's global handlers catch.
+            // Window will remain visible but empty (transparent) when not in use.
+            Show();
+            
+            // ? FIX: Enforce TOPMOST at Win32 level after window is shown
+            // This must happen after Show() when the window handle exists
+            EnsureTopmost();
+            
+            // ? REMOVED: Closed event hook (we never close the window anymore except in Dispose)
+            // Closed += (s, e) => Dispose();
         }
 
         // Convert system virtual screen values (usually in device pixels) to DIP and assign to window bounds.
@@ -91,6 +122,34 @@ namespace AcManager.UiObserver {
         }
 
         /// <summary>
+        /// Enforces TOPMOST at Win32 Z-order level.
+        /// Call this whenever the overlay needs to be guaranteed topmost,
+        /// especially after showing or when windows are opened above it.
+        /// </summary>
+        private void EnsureTopmost() {
+            if (_isDisposed) return;
+            
+            try {
+                var hwnd = new WindowInteropHelper(this).Handle;
+                if (hwnd != IntPtr.Zero) {
+                    // Place window at TOPMOST Z-order position
+                    // SWP_NOSIZE | SWP_NOMOVE: Don't change size/position
+                    // SWP_NOACTIVATE: Don't steal focus
+                    // SWP_SHOWWINDOW: Ensure visible
+                    SetWindowPos(
+                        hwnd,
+                        new IntPtr(HWND_TOPMOST),
+                        0, 0, 0, 0,
+                        SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_SHOWWINDOW
+                    );
+                }
+            } catch {
+                // Fallback to WPF property if Win32 call fails
+                Topmost = true;
+            }
+        }
+
+        /// <summary>
         /// Shows the focused node rectangle at the specified position.
         /// </summary>
         /// <param name="rectDip">Rectangle in DIP coordinates for the focused node</param>
@@ -117,6 +176,7 @@ namespace AcManager.UiObserver {
 
         /// <summary>
         /// Hides the focused node rectangle.
+        /// ? FIX: Only collapses rectangle visibility, NEVER hides the window.
         /// </summary>
         public void HideFocusRect() {
             // ? NEW: Check if disposed
@@ -124,10 +184,15 @@ namespace AcManager.UiObserver {
             
             _focusRect.Visibility = Visibility.Collapsed;
             
-            // If no debug shapes are shown, hide the overlay window
-            if (_debugShapes.Count == 0) {
-                try { if (IsVisible) Hide(); } catch { }
-            }
+            // ? FIX: DO NOT hide the window! Keep it visible but empty.
+            // Hiding the window triggers Unloaded events that Observer catches,
+            // causing circular reference (overlay observes UI, Observer tracks overlay).
+            // An empty transparent window is invisible anyway.
+            
+            // REMOVED:
+            // if (_debugShapes.Count == 0) {
+            //     try { if (IsVisible) Hide(); } catch { }
+            // }
         }
 
         /// <summary>
@@ -231,6 +296,7 @@ namespace AcManager.UiObserver {
 
         /// <summary>
         /// Clears all debug rectangles (keeps focus rectangle visible if shown).
+        /// ? FIX: Only clears shapes, NEVER hides the window.
         /// </summary>
         public void ClearDebugRects() {
             if (_isDisposed) return;
@@ -240,10 +306,11 @@ namespace AcManager.UiObserver {
             }
             _debugShapes.Clear();
             
-            // If no focus rect is shown, hide the overlay
-            if (_focusRect != null && _focusRect.Visibility == Visibility.Collapsed) {
-                try { if (IsVisible) Hide(); } catch { }
-            }
+            // ? FIX: DO NOT hide the window!
+            // REMOVED:
+            // if (_focusRect != null && _focusRect.Visibility == Visibility.Collapsed) {
+            //     try { if (IsVisible) Hide(); } catch { }
+            // }
         }
 
         /// <summary>
@@ -271,10 +338,11 @@ namespace AcManager.UiObserver {
                 }
             }
             
-            // If no focus rect is shown, hide the overlay
-            if (_focusRect != null && _focusRect.Visibility == Visibility.Collapsed) {
-                try { if (IsVisible) Hide(); } catch { }
-            }
+            // ? FIX: DO NOT hide the window!
+            // REMOVED:
+            // if (_focusRect != null && _focusRect.Visibility == Visibility.Collapsed) {
+            //     try { if (IsVisible) Hide(); } catch { }
+            // }
         }
 
         /// <summary>
@@ -318,22 +386,27 @@ namespace AcManager.UiObserver {
         }
 
         /// <summary>
-        /// Ensures the overlay window is visible.
+        /// Ensures the overlay window is visible and positioned correctly.
+        /// ? FIX: Window is always visible, uses Win32 SetWindowPos for Z-order.
         /// </summary>
         private void EnsureVisible() {
             if (_isDisposed) return;
             
             try {
-                Topmost = true;
-                if (!IsVisible) {
-                    // ? FIX: Defer Show() to avoid WPF rendering deadlock when called during modal dialog event handling.
-                    // Synchronous Show() can block on MediaContext.CompleteRender() when a modal dialog is active.
-                    Dispatcher.BeginInvoke(new Action(() => {
-                        if (!_isDisposed && !IsVisible) {
-                            Show();
-                        }
-                    }), System.Windows.Threading.DispatcherPriority.Loaded);
-                }
+                // Enforce TOPMOST at Win32 level (more reliable than WPF property)
+                EnsureTopmost();
+                
+                // ? FIX: Window is already shown in constructor and never hidden.
+                // No need to call Show() again - it's always visible.
+                
+                // REMOVED:
+                // if (!IsVisible) {
+                //     Dispatcher.BeginInvoke(new Action(() => {
+                //         if (!_isDisposed && !IsVisible) {
+                //             Show();
+                //         }
+                //     }), System.Windows.Threading.DispatcherPriority.Loaded);
+                // }
             } catch { }
         }
     }

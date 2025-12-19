@@ -271,28 +271,30 @@ namespace AcManager.UiObserver
 
 			// Create modal context FIRST (so GetCandidatesInScope works correctly)
 			_modalContextStack.Add(new NavContext(modalNode, focusedNode: null));
-			Debug.WriteLine($"[Navigator] Modal stack depth: {_modalContextStack.Count}");
+			var modalDepth = _modalContextStack.Count;
+			Debug.WriteLine($"[Navigator] Modal stack depth: {modalDepth}");
 
 			// ✓ FIX: Use different dispatcher priorities based on modal type
-			// MainWindow (depth 1): Loaded priority is fine - window is already positioned at startup
+			// MainWindow (depth 1): Loaded priority - window is already positioned at startup
 			// Nested modals (depth 2+): ApplicationIdle + 50ms delay - wait for popup positioning to complete
 			if (modalNode.TryGetVisual(out var fe)) {
-				var isNestedModal = _modalContextStack.Count > 1;
+				var isNestedModal = modalDepth > 1;
 				var priority = isNestedModal
 					? DispatcherPriority.ApplicationIdle  // After ALL layout & positioning
 					: DispatcherPriority.Loaded;          // After layout only
 
-				Debug.WriteLine($"[Navigator] Deferring focus init with priority: {priority} (nested={isNestedModal})");
+				var delayMs = isNestedModal ? 50 : 0;
+
+				Debug.WriteLine($"[Navigator] Deferring focus init with priority: {priority} (depth={modalDepth}, delay={delayMs}ms)");
 
 				fe.Dispatcher.BeginInvoke(
 					priority,
 					new Action(() => {
-						if (isNestedModal) {
-							// For popups, add a small delay to ensure positioning completes
-							// ApplicationIdle isn't always enough - popup positioning happens after
+						if (delayMs > 0) {
+							// For popups, add delay to ensure positioning completes
 							var timer = new DispatcherTimer
 							{
-								Interval = TimeSpan.FromMilliseconds(50)
+								Interval = TimeSpan.FromMilliseconds(delayMs)
 							};
 							timer.Tick += (s, e) => {
 								timer.Stop();
@@ -909,10 +911,28 @@ namespace AcManager.UiObserver
 			return false;  // Not found in parent chain
 		}
 
+		/// <summary>
+		/// Checks if a node is within the active modal context by comparing cached hierarchical paths.
+		/// Uses string prefix matching on the pre-computed HierarchicalPath instead of walking the Parent chain.
+		/// This is O(1) string comparison vs O(depth) tree walking.
+		/// </summary>
 		internal static bool IsInActiveModalScope(NavNode node)
 		{
 			if (CurrentContext == null) return true;
-			return IsDescendantOf(node, CurrentContext.ModalNode);
+			if (node == null) return false;
+			
+			// A node is in scope if its path starts with (or equals) the modal node's path
+			// Example: Modal path = "Window:MainWindow > Frame:ModernFrame"
+			//          Node path  = "Window:MainWindow > Frame:ModernFrame > Button:SaveButton" ✓
+			var modalPath = CurrentContext.ModalNode.HierarchicalPath;
+			var nodePath = node.HierarchicalPath;
+			
+			// Exact match (node IS the modal root)
+			if (nodePath == modalPath) return true;
+			
+			// Descendant match (node is inside modal scope)
+			// Must start with modal path + separator to avoid false prefix matches
+			return nodePath.StartsWith(modalPath + " > ", StringComparison.Ordinal);
 		}
 
 		internal static List<NavNode> GetCandidatesInScope()

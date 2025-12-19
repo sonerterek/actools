@@ -526,6 +526,7 @@ namespace AcManager.UiObserver
 		/// <summary>
 		/// Toggles debug rectangle visualization overlay.
 		/// Shows colored rectangles for all navigable elements (leaves = orange, groups = gray).
+		/// ✓ FIX: Never hides the overlay window, only clears/shows debug rectangles.
 		/// </summary>
 		/// <param name="filterByModalScope">If true, only show nodes in active modal scope. If false, show all discovered nodes.</param>
 		private static void ToggleHighlighting(bool filterByModalScope)
@@ -536,13 +537,19 @@ namespace AcManager.UiObserver
 				
 				long memBefore = GC.GetTotalMemory(forceFullCollection: false);
 				
-				try {
-					if (_overlay != null && _overlay.IsVisible) {
-						_overlay.Hide();
-					}
-				} catch (Exception ex) {
-					Debug.WriteLine($"[Navigator] Hide error: {ex.Message}");
-				}
+				// ✓ FIX: DO NOT hide the overlay window!
+				// Hiding triggers Unloaded events that Observer's global handlers catch,
+				// causing circular reference (overlay observes UI, Observer tracks overlay).
+				// Just clear the rectangles - empty transparent window is invisible anyway.
+				
+				// REMOVED:
+				// try {
+				//     if (_overlay != null && _overlay.IsVisible) {
+				//         _overlay.Hide();
+				//     }
+				// } catch (Exception ex) {
+				//     Debug.WriteLine($"[Navigator] Hide error: {ex.Message}");
+				// }
 
 				long memAfter = GC.GetTotalMemory(forceFullCollection: false);
 				Debug.WriteLine($"[Navigator] Memory: Before={memBefore:N0}, After={memAfter:N0}, Delta={memAfter - memBefore:N0} bytes");

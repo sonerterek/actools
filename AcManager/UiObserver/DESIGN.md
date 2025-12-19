@@ -1,12 +1,13 @@
 ﻿# Navigation System (UiObserver) - Design Document
 
-## ?? Table of Contents
+## 📋 Table of Contents
 1. [Architecture Overview](#architecture-overview)
 2. [Key Design Decisions](#key-design-decisions)
 3. [File Responsibilities](#file-responsibilities)
 4. [Critical Implementation Details](#critical-implementation-details)
 5. [Known Issues & Solutions](#known-issues--solutions)
 6. [Pattern Syntax Reference](#pattern-syntax-reference)
+7. [StreamDeck Integration](#streamdeck-integration)
 
 ---
 
@@ -978,4 +979,19 @@ Popup positioning happens AFTER `DispatcherPriority.ApplicationIdle`:
 
 ---
 
-**Last Updated:** After architectural cleanup (Observer self-sufficient, Navigator purely reactive, WindowLayoutChanged event added)
+## 🎮 StreamDeck Integration
+
+**Integration Approach:** StreamDeck SDK code will be imported from another existing project and compiled directly into AcManager.exe. No external processes, plugins, or IPC mechanisms required.
+
+**Navigator API:** The existing public methods in Navigator are sufficient for external input sources:
+- `MoveInDirection(NavDirection dir)` - Directional navigation
+- `ActivateFocusedNode()` - Activate current focus
+- `ExitGroup()` - Exit current modal
+
+**Threading:** StreamDeck button events fire on background threads. Input handlers must marshal to WPF UI thread before calling Navigator methods.
+
+**Initialization:** StreamDeck bridge initializes after `Navigator.Initialize()` completes.
+
+---
+
+**Last Updated:** After StreamDeck integration note (embedded SDK, reuses existing Navigator API)

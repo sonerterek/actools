@@ -624,39 +624,47 @@ namespace AcManager.UiObserver {
 
         public static void RegisterRoot(FrameworkElement root) {
             if (root == null) return;
-            
-            try {
-                var ps = PresentationSource.FromVisual(root);
-                if (ps == null) return;
-                
-                var psRootVisual = ps.RootVisual as FrameworkElement;
-                if (psRootVisual == null) return;
-                
-                if (!object.ReferenceEquals(root, psRootVisual)) {
-                    if (_presentationSourceRoots.TryGetValue(ps, out var existingRoot)) {
-                        ScheduleDebouncedSync(existingRoot);
-                        return;
-                    }
-                    
-                    root = psRootVisual;
-                }
-                
-                var isNew = _presentationSourceRoots.TryAdd(ps, root);
-                _rootIndex.GetOrAdd(root, _ => new HashSet<FrameworkElement>());
-                
-                try {
-                    var typeName = root.GetType().Name;
-                    var elementName = string.IsNullOrEmpty(root.Name) ? "(unnamed)" : root.Name;
-                    var status = isNew ? "NEW" : "existing";
-                    Debug.WriteLine($"[Observer] RegisterRoot: {typeName} '{elementName}' ({status})");
-                } catch { }
-                
-                if (isNew) {
-                    AttachCleanupHandlers(root);
-                }
-                
-                ScheduleDebouncedSync(root);
-            } catch { }
+	
+			// ? FIX: Reject HighlightOverlay by static reference comparison (primary defense)
+			// This prevents circular reference: overlay observes UI, Observer would track overlay.
+			// More reliable than path-based filtering since it uses object identity.
+			if (root is Window && ReferenceEquals(root, Navigator._overlay)) {
+				Debug.WriteLine("[Observer] Skipping HighlightOverlay (static reference check)");
+				return;
+			}
+	
+			try {
+				var ps = PresentationSource.FromVisual(root);
+				if (ps == null) return;
+				
+				var psRootVisual = ps.RootVisual as FrameworkElement;
+				if (psRootVisual == null) return;
+				
+				if (!object.ReferenceEquals(root, psRootVisual)) {
+					if (_presentationSourceRoots.TryGetValue(ps, out var existingRoot)) {
+						ScheduleDebouncedSync(existingRoot);
+						return;
+					}
+					
+					root = psRootVisual;
+				}
+				
+				var isNew = _presentationSourceRoots.TryAdd(ps, root);
+				_rootIndex.GetOrAdd(root, _ => new HashSet<FrameworkElement>());
+				
+				try {
+					var typeName = root.GetType().Name;
+					var elementName = string.IsNullOrEmpty(root.Name) ? "(unnamed)" : root.Name;
+					var status = isNew ? "NEW" : "existing";
+					Debug.WriteLine($"[Observer] RegisterRoot: {typeName} '{elementName}' ({status})");
+				} catch { }
+				
+				if (isNew) {
+					AttachCleanupHandlers(root);
+				}
+				
+				ScheduleDebouncedSync(root);
+			} catch { }
         }
 
         private static void AttachCleanupHandlers(FrameworkElement root) {
@@ -828,6 +836,23 @@ namespace AcManager.UiObserver {
                 var node = stack.Pop();
 
                 if (node is FrameworkElement fe) {
+                    // ? FIX: Skip HighlightOverlay and all its children (secondary defense)
+                    // Primary defense is in RegisterRoot(), but this catches children during tree scan.
+                    if (ReferenceEquals(fe, Navigator._overlay)) {
+                        continue; // Skip overlay itself
+                    }
+					
+					// Check if this element is a child of the overlay window
+					// (Canvas, Rectangle shapes, etc. inside HighlightOverlay)
+					if (Navigator._overlay != null) {
+						try {
+							var window = Window.GetWindow(fe);
+							if (window != null && ReferenceEquals(window, Navigator._overlay)) {
+								continue; // Skip all overlay children
+							}
+						} catch { }
+					}
+					
                     if (!IsTrulyVisible(fe)) {
                         continue;
                     }
