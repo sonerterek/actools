@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -368,7 +368,14 @@ namespace AcManager.UiObserver {
                             // Modal events should only fire during bulk SyncRoot() after all children are linked
                             // If this is a problem for dynamically opened popups, we can schedule a re-sync instead
                         }
-                    } else if (_verboseDebug) {
+						// ✅ NEW: Scan descendants if this is a container type that might have virtualized children
+						if (ShouldScanDescendants(fe)) {
+							if (_verboseDebug) {
+								Debug.WriteLine($"[Observer] Scanning descendants of {fe.GetType().Name} for virtualized children");
+							}
+							ScanDescendants(fe);
+						}
+					} else if (_verboseDebug) {
                         Debug.WriteLine($"[Observer] TryCreate: {fe.GetType().Name} - TryAdd failed (race condition?)");
                     }
                 } else if (_verboseDebug) {
@@ -392,6 +399,106 @@ namespace AcManager.UiObserver {
             try { ModalGroupOpened?.Invoke(node); } catch { }
         }
 
+		/// <summary>
+		/// Determines if we should recursively scan an element's descendants when it loads.
+		/// Returns true for controls that might have virtualized children that don't fire
+		/// individual Loaded events (e.g., ListBoxItem in ListBox, ComboBoxItem in ComboBox).
+		/// 
+		/// Rationale:
+		/// - ItemsControl subclasses use virtualization and their item containers don't fire Loaded
+		/// - When tab content switches in ModernFrame, only the container fires Loaded
+		/// - We need to proactively scan the subtree to discover these virtualized children
+		/// </summary>
+		private static bool ShouldScanDescendants(FrameworkElement element)
+		{
+			if (element == null) return false;
+
+			// ✅ Scan descendants for all ItemsControl subclasses (handles virtualization)
+			// This covers: ListBox, ComboBox, DataGrid, TreeView, ListView, TabControl, etc.
+			if (element is System.Windows.Controls.ItemsControl) {
+				return true;
+			}
+
+			// ✅ Scan descendants for custom navigation controls that might replace content
+			// ModernTab and ModernFrame can swap content without children firing Loaded
+			var typeName = element.GetType().Name;
+			if (typeName == "ModernTab" || typeName == "ModernFrame") {
+				return true;
+			}
+
+			// Add other custom types here as needed
+			// Example: if (element is MyCustomContainer) return true;
+
+			return false;
+		}
+
+		/// <summary>
+		/// Recursively scans the visual tree starting from root to discover descendant elements.
+		/// Called when a container element loads that might have virtualized children.
+		/// Similar to ScanVisualTree but limited to a subtree and doesn't handle PresentationSource boundaries.
+		/// </summary>
+		private static void ScanDescendants(FrameworkElement root)
+		{
+			if (root == null) return;
+
+			try {
+				var visited = new HashSet<DependencyObject>();
+				var stack = new Stack<DependencyObject>();
+
+				// Start with root's visual children (don't re-process root itself)
+				int visualCount = 0;
+				try { visualCount = VisualTreeHelper.GetChildrenCount(root); } catch { }
+
+				for (int i = 0; i < visualCount; i++) {
+					try {
+						var child = VisualTreeHelper.GetChild(root, i);
+						if (child != null && !visited.Contains(child)) {
+							visited.Add(child);
+							stack.Push(child);
+						}
+					} catch { }
+				}
+
+				// Walk the visual tree
+				while (stack.Count > 0) {
+					var node = stack.Pop();
+
+					if (node is FrameworkElement fe) {
+						// Skip elements that aren't visible
+						if (!IsTrulyVisible(fe)) {
+							continue;
+						}
+
+						// Try to create a NavNode for this element
+						// TryCreateNavNodeForElement will handle:
+						// - Checking if already discovered
+						// - Creating the NavNode
+						// - Linking to parent
+						// - Adding to indexes
+						TryCreateNavNodeForElement(fe);
+					}
+
+					// Continue walking down the tree
+					int childCount = 0;
+					try { childCount = VisualTreeHelper.GetChildrenCount(node); } catch { }
+
+					for (int i = 0; i < childCount; i++) {
+						try {
+							var child = VisualTreeHelper.GetChild(node, i);
+							if (child != null && !visited.Contains(child)) {
+								visited.Add(child);
+								stack.Push(child);
+							}
+						} catch { }
+					}
+				}
+			} catch (Exception ex) {
+				if (_verboseDebug) {
+					Debug.WriteLine($"[Observer] ScanDescendants error: {ex.Message}");
+				}
+			}
+		}
+        
         #endregion
 
         #region Hierarchy Management
