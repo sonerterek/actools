@@ -1,4 +1,5 @@
 ﻿using FirstFloor.ModernUI.Windows.Controls;
+using FirstFloor.ModernUI.Windows.Media;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -655,11 +656,31 @@ namespace AcManager.UiObserver
 			if (newNode != null) {
 				newNode.HasFocus = true;
 				CurrentContext.FocusedNode = newNode;
-				UpdateFocusRect(newNode);
 				
-				// Move mouse to new focus (only on explicit focus change, not on layout updates)
+				SetFocusVisuals(newNode);
+				
+				// ✅ NEW: Ensure the item is scrolled into view if in a virtualized container
+				EnsureScrolledIntoView(newNode);
+				
+				// ✅ FIX: Defer mouse movement until after layout completes
+				// EnsureScrolledIntoView() triggers a layout pass, but returns immediately.
+				// If we move the mouse now, PointToScreen() returns the OLD position (before scroll).
+				// Schedule mouse movement on Dispatcher with Render priority (after layout, before render).
 				if (_enableMouseTracking) {
-					MoveMouseToFocusedNode(newNode);
+					if (newNode.TryGetVisual(out var element)) {
+						element.Dispatcher.BeginInvoke(
+							DispatcherPriority.Render,  // After layout updates element position
+							new Action(() => {
+								// Re-check that focus hasn't changed while waiting
+								if (CurrentContext?.FocusedNode == newNode) {
+									MoveMouseToFocusedNode(newNode);
+								}
+							})
+						);
+					} else {
+						// Fallback if visual reference is dead (shouldn't happen for newly focused node)
+						MoveMouseToFocusedNode(newNode);
+					}
 				}
 				
 				try { FocusChanged?.Invoke(oldNode, newNode); } catch { }
@@ -668,6 +689,63 @@ namespace AcManager.UiObserver
 
 			CurrentContext.FocusedNode = null;
 			return false;
+		}
+
+		/// <summary>
+		/// Ensures that the given node's container is scrolled into view if it's inside a virtualized list.
+		/// Uses ListBox.ScrollIntoView() which works correctly with virtualization - it will generate
+		/// the container if needed and scroll it into view.
+		/// 
+		/// This is called after setting focus to ensure off-screen items become visible.
+		/// </summary>
+		private static void EnsureScrolledIntoView(NavNode node)
+		{
+			if (node == null) return;
+			if (!node.TryGetVisual(out var element)) return;
+
+			try {
+				// Find parent ListBox (most common virtualized container)
+				var listBox = element.GetParent<ListBox>();
+				if (listBox != null) {
+					// Get the data item from the container
+					var item = listBox.ItemContainerGenerator.ItemFromContainer(element);
+					if (item != null && item != DependencyProperty.UnsetValue) {
+						// Scroll the item into view
+						listBox.ScrollIntoView(item);
+
+						if (VerboseNavigationDebug) {
+							Debug.WriteLine($"[Navigator] Scrolled '{node.SimpleName}' into view in ListBox");
+						}
+						return;
+					}
+				}
+
+				// Fallback: Try ItemsControl (base class for ListBox, ListView, etc.)
+				var itemsControl = element.GetParent<ItemsControl>();
+				if (itemsControl != null) {
+					// ItemsControl doesn't have ScrollIntoView, but we can try BringIntoView on the element
+					element.BringIntoView();
+
+					if (VerboseNavigationDebug) {
+						Debug.WriteLine($"[Navigator] Called BringIntoView on '{node.SimpleName}' in ItemsControl");
+					}
+					return;
+				}
+
+				// Last resort: Try BringIntoView on any scrollable parent
+				var scrollViewer = element.GetParent<ScrollViewer>();
+				if (scrollViewer != null) {
+					element.BringIntoView();
+
+					if (VerboseNavigationDebug) {
+						Debug.WriteLine($"[Navigator] Called BringIntoView on '{node.SimpleName}' in ScrollViewer");
+					}
+				}
+			} catch (Exception ex) {
+				if (VerboseNavigationDebug) {
+					Debug.WriteLine($"[Navigator] Failed to scroll '{node.SimpleName}' into view: {ex.Message}");
+				}
+			}
 		}
 
 		private static void UpdateFocusRect(NavNode node)
