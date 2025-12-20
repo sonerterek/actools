@@ -590,12 +590,27 @@ namespace AcManager.UiObserver
 
 			UpdateFocusRect(node);
 
-			// ✅ NEW: Set WPF's keyboard focus to sync with Navigator's focus tracking
+			// ✅ NEW: Only set WPF keyboard focus for interactive controls, not list items
+			// ListBoxItems should not receive keyboard focus during navigation because
+			// WPF's ListBox automatically selects items when they receive keyboard focus.
+			// We track Navigator focus separately from WPF keyboard focus.
 			if (node.TryGetVisual(out var element)) {
 				try {
-					Keyboard.Focus(element);
-					if (VerboseNavigationDebug) {
-						Debug.WriteLine($"[Navigator] Set keyboard focus to '{node.SimpleName}'");
+					// Check if this is a list item (ListBoxItem, ComboBoxItem, etc.)
+					var isListItem = element is System.Windows.Controls.ListBoxItem ||
+									 element is System.Windows.Controls.ComboBoxItem ||
+									 element.GetType().Name.Contains("ListBoxItem");
+					
+					if (!isListItem) {
+						// Only set keyboard focus for non-list items (buttons, textboxes, etc.)
+						Keyboard.Focus(element);
+						if (VerboseNavigationDebug) {
+							Debug.WriteLine($"[Navigator] Set keyboard focus to '{node.SimpleName}'");
+						}
+					} else {
+						if (VerboseNavigationDebug) {
+							Debug.WriteLine($"[Navigator] Skipped keyboard focus for list item '{node.SimpleName}' (would trigger selection)");
+						}
 					}
 				} catch (Exception ex) {
 					if (VerboseNavigationDebug) {

@@ -1,4 +1,4 @@
-using AcManager.Pages.Dialogs;
+﻿using AcManager.Pages.Dialogs;
 using AcTools.Windows.Input;
 using FirstFloor.ModernUI.Windows.Controls;
 using System;
@@ -35,6 +35,33 @@ namespace AcManager.UiObserver
 
         #endregion
 
+        #region Mouse Simulation
+
+        /// <summary>
+        /// Cached MouseSimulator instance to avoid creating new instances for every click.
+        /// Thread-safe singleton pattern.
+        /// </summary>
+        private static readonly MouseSimulator _mouseSimulator = new MouseSimulator();
+
+        /// <summary>
+        /// Delay in milliseconds after moving mouse before sending click.
+        /// WPF needs time to process the mouse position update before the click event.
+        /// 
+        /// Set to 0 for immediate click (no delay).
+        /// Testing showed 10ms was insufficient for some scenarios.
+        /// Can be increased if clicks are being missed.
+        /// </summary>
+        private const int MousePositionSettleDelayMs = 0;
+
+        /// <summary>
+        /// Delay in milliseconds between button down and button up events.
+        /// This mimics a real human click where there's a small delay between pressing and releasing.
+        /// Real mouse clicks typically have 10-50ms between down and up events.
+        /// </summary>
+        private const int MouseButtonPressDelayMs = 10;
+
+        #endregion
+
         #region Type Classification
 
         // Leaf elements - actual navigation targets (buttons, inputs, items, etc.)
@@ -56,7 +83,7 @@ namespace AcManager.UiObserver
             // Menu items
             typeof(MenuItem),
             
-            // ? Menu controls (WPF Menu is a leaf that triggers dropdown, not a dual-role group)
+            // ✓ Menu controls (WPF Menu is a leaf that triggers dropdown, not a dual-role group)
             typeof(Menu),
             typeof(ContextMenu),
             typeof(ComboBox),
@@ -448,10 +475,10 @@ namespace AcManager.UiObserver
 
             Debug.WriteLine("???????????????????????????????????????????????????????????????????????????????");
             Debug.WriteLine("? RECOMMENDATION:");
-            Debug.WriteLine("?   � Remove CHILD from _groupTypes if it shouldn't be a group");
-            Debug.WriteLine("?   � Remove PARENT from _groupTypes if it shouldn't be a group");
-            Debug.WriteLine("?   � Add to PathFilter.AddExcludeRule() if one shouldn't be navigable");
-            Debug.WriteLine("?   � Make one of them modal if the nesting is intentional");
+            Debug.WriteLine("?   • Remove CHILD from _groupTypes if it shouldn't be a group");
+            Debug.WriteLine("?   • Remove PARENT from _groupTypes if it shouldn't be a group");
+            Debug.WriteLine("?   • Add to PathFilter.AddExcludeRule() if one shouldn't be navigable");
+            Debug.WriteLine("?   • Make one of them modal if the nesting is intentional");
             Debug.WriteLine("???????????????????????????????????????????????????????????????????????????????");
             Debug.WriteLine("");
         }
@@ -464,7 +491,7 @@ namespace AcManager.UiObserver
             // Start with simple Name:Type format
             string baseId = $"{elementName}:{typeName}";
             
-            // ? For top-level elements (Window, PopupRoot), append WindowHandle as third component
+            // ✓ For top-level elements (Window, PopupRoot), append WindowHandle as third component
             // This makes each popup window unique: (unnamed):PopupRoot:12345
             bool isTopLevel = fe is Window || typeName == "PopupRoot";
             
@@ -492,7 +519,7 @@ namespace AcManager.UiObserver
         /// Gets the hierarchical path of an element in the visual tree.
         /// Format: Name:Type[:HWND] > ChildName:ChildType > ...
         /// 
-        /// ? FIXED: Includes WindowHandle in SimpleName for top-level elements (Window, PopupRoot).
+        /// ✓ FIXED: Includes WindowHandle in SimpleName for top-level elements (Window, PopupRoot).
         /// Each WPF Popup creates its own OS-level window (HWND), so PopupRoots for main menu
         /// and submenu will have different window handles in their SimpleName, making paths unique.
         /// 
@@ -671,20 +698,20 @@ namespace AcManager.UiObserver
         /// Note: Returns value even for groups (for debug visualization purposes).
         /// Navigation logic should check IsNavigable separately.
         /// 
-        /// ? CHANGED: Removed IsVisible check to support elements in non-active tabs.
+        /// ✓ CHANGED: Removed IsVisible check to support elements in non-active tabs.
         /// WPF's IsVisible returns false for tab content that's loaded but not currently selected,
         /// even though the elements are rendered and have valid screen coordinates.
         /// 
-        /// ? SEMANTIC: Returns DIP (Device Independent Pixels) in screen-absolute coordinate space.
+        /// ✓ SEMANTIC: Returns DIP (Device Independent Pixels) in screen-absolute coordinate space.
         /// This is the correct coordinate system for WPF UI elements and overlay positioning.
-        /// Mouse input code should convert DIP ? device pixels as needed.
+        /// Mouse input code should convert DIP → device pixels as needed.
         /// 
-        /// ? ADDED: IsArrangeValid check to wait for WPF layout completion.
+        /// ✓ ADDED: IsArrangeValid check to wait for WPF layout completion.
         /// This prevents calculating coordinates before popup/dropdown positioning is finalized.
         /// 
-        /// ? COORDINATE FLOW:
+        /// ✓ COORDINATE FLOW:
         /// 1. PointToScreen() returns device pixels (screen-absolute)
-        /// 2. TransformFromDevice converts device pixels ? DIP
+        /// 2. TransformFromDevice converts device pixels → DIP
         /// 3. Return DIP (screen-absolute) for UI overlay positioning
         /// </summary>
         public Point? GetCenterDip()
@@ -695,7 +722,7 @@ namespace AcManager.UiObserver
                 return null;
             }
 
-            // ? CHANGED: Only check IsLoaded, not IsVisible
+            // ✓ CHANGED: Only check IsLoaded, not IsVisible
             // Elements in inactive tabs have IsVisible=false but are still navigable
             if (!fe.IsLoaded)
             {
@@ -703,7 +730,7 @@ namespace AcManager.UiObserver
                 return null;
             }
 
-            // ? NEW: Check if layout is complete before calculating coordinates
+            // ✓ NEW: Check if layout is complete before calculating coordinates
             // This prevents wrong coordinates during popup/dropdown initial positioning
             if (!fe.IsArrangeValid)
             {
@@ -732,20 +759,20 @@ namespace AcManager.UiObserver
             }
 
             try {
-                // ? Step 1: Get element corners in device pixels (screen-absolute)
+                // ✓ Step 1: Get element corners in device pixels (screen-absolute)
                 var topLeftDevice = fe.PointToScreen(new Point(0, 0));
                 var bottomRightDevice = fe.PointToScreen(new Point(fe.ActualWidth, fe.ActualHeight));
 
-                // ? Step 2: Transform device pixels ? DIP (screen-absolute)
+                // ✓ Step 2: Transform device pixels → DIP (screen-absolute)
                 var transform = ps.CompositionTarget.TransformFromDevice;
                 var topLeftDip = transform.Transform(topLeftDevice);
                 var bottomRightDip = transform.Transform(bottomRightDevice);
 
-                // ? Step 3: Calculate center in DIP
+                // ✓ Step 3: Calculate center in DIP
                 var centerX = (topLeftDip.X + bottomRightDip.X) / 2.0;
                 var centerY = (topLeftDip.Y + bottomRightDip.Y) / 2.0;
 
-                // ? Viewport bounds check in DIP coordinates
+                // ✓ Viewport bounds check in DIP coordinates
                 // Reject items scrolled off-screen or far outside viewport
                 // Note: These bounds are approximate and in DIP space
                 if (centerY < -100 || centerY > 2000) {
@@ -763,22 +790,17 @@ namespace AcManager.UiObserver
 
         /// <summary>
         /// Activates this navigation node by performing its default action.
-        /// Behavior depends on the control type and current state.
         /// 
-        /// For MenuItem specifically, uses mouse-click simulation to let WPF handle
-        /// all internal state management (_userInitiatedPress, IsPressed, timers, etc.)
+        /// Uses mouse-click simulation for all single-action controls to provide
+        /// the most reliable activation by letting WPF handle the full event chain:
+        ///   - Button/RepeatButton: Click event with full state management
+        ///   - ToggleButton/CheckBox/RadioButton: Toggle with proper visual states
+        ///   - MenuItem/Menu: Full WPF internal state (_userInitiatedPress, IsPressed, timers)
+        ///   - ListBoxItem/ComboBoxItem/TreeViewItem/TabItem: Selection + any attached behaviors
         /// 
-        /// Leaf controls:
-        ///   - Button/RepeatButton: raises Click event
-        ///   - ToggleButton/CheckBox/RadioButton: toggles IsChecked
-        ///   - MenuItem: simulates mouse click at element center
-        ///   - ComboBox: opens dropdown
-        ///   - Menu: simulates mouse click to open dropdown (not submenu!)
-        ///   - ContextMenu: opens menu
-        ///   - ListBoxItem/ComboBoxItem/TreeViewItem: selects the item
-        ///   - TabItem: selects the tab
-        ///   - Expander: toggles IsExpanded
-        ///   - Default: tries to set WPF focus
+        /// Direct property manipulation only for controls that don't benefit from click simulation:
+        ///   - ComboBox/ContextMenu: Simple open/close (no complex state)
+        ///   - Expander: Simple toggle (expand/collapse header click is complex)
         /// </summary>
         public bool Activate()
         {
@@ -787,35 +809,23 @@ namespace AcManager.UiObserver
             }
 
             try {
-                // Buttons
-                if (fe is Button btn) {
-                    btn.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                    return true;
-                }
-
-                if (fe is RepeatButton repeatBtn) {
-                    repeatBtn.RaiseEvent(new RoutedEventArgs(RepeatButton.ClickEvent));
-                    return true;
-                }
-
-                if (fe is ToggleButton toggle) {
-                    toggle.IsChecked = !toggle.IsChecked;
-                    return true;
-                }
-
-                // Menu items - use mouse simulation for maximum reliability
-                if (fe is MenuItem menuItem) {
+                // ✅ Single-action controls - use mouse click simulation
+                // This triggers the full WPF event chain (PreviewMouseDown → MouseDown → Click)
+                // which ensures all behaviors, animations, and handlers are invoked properly
+                
+                if (fe is Button ||
+                    fe is RepeatButton ||
+                    fe is ToggleButton ||  // Includes CheckBox, RadioButton
+                    fe is MenuItem ||
+                    fe is Menu ||
+                    fe is ListBoxItem ||
+                    fe is ComboBoxItem ||
+                    fe is TreeViewItem ||
+                    fe is TabItem) {
                     return SimulateMouseClick(fe);
                 }
 
-                // ? Menu control - should open its own dropdown, not try to open submenu
-                // The Menu may not have MenuItem children (could have HierarchicalItem or other types)
-                // Use mouse click to trigger the dropdown
-                if (fe is Menu menu) {
-                    return SimulateMouseClick(fe);
-                }
-
-                // ? NEW: ComboBox, ContextMenu are leaves - open them when activated
+                // Direct property manipulation for simple open/close controls
                 if (fe is ComboBox comboBox) {
                     comboBox.IsDropDownOpen = true;
                     return true;
@@ -826,28 +836,7 @@ namespace AcManager.UiObserver
                     return true;
                 }
 
-                // Selection items
-                if (fe is ListBoxItem listBoxItem) {
-                    listBoxItem.IsSelected = true;
-                    return true;
-                }
-
-                if (fe is ComboBoxItem comboBoxItem) {
-                    comboBoxItem.IsSelected = true;
-                    return true;
-                }
-
-                if (fe is TreeViewItem treeViewItem) {
-                    treeViewItem.IsSelected = true;
-                    return true;
-                }
-
-                if (fe is TabItem tabItem) {
-                    tabItem.IsSelected = true;
-                    return true;
-                }
-
-                // Expander
+                // Expander - direct toggle (clicking the header is more complex than we need)
                 if (fe is Expander expander) {
                     expander.IsExpanded = !expander.IsExpanded;
                     return true;
@@ -865,38 +854,107 @@ namespace AcManager.UiObserver
         /// This is the most robust way to activate complex controls like MenuItem,
         /// as it lets WPF's internal machinery handle all state management.
         /// 
-        /// ? COORDINATE FLOW:
+        /// ✓ COORDINATE FLOW:
         /// 1. GetCenterDip() returns DIP (screen-absolute)
-        /// 2. TransformToDevice converts DIP ? device pixels
+        /// 2. TransformToDevice converts DIP → device pixels
         /// 3. Device pixels used for mouse input (SendInput API)
+        /// 
+        /// ✓ NO DELAY: Mouse position and click sent immediately (0ms delay).
+        /// If clicks are missed, increase MousePositionSettleDelayMs constant.
         /// </summary>
         private bool SimulateMouseClick(FrameworkElement fe)
         {
             try {
-                // ? Step 1: Get center in DIP (screen-absolute coordinate space)
-                var centerDip = GetCenterDip();
+				// ✓ Step 1: Force-release modifier keys before clicking
+				// This ensures WPF doesn't interpret the click as Shift+Click (range selection)
+				// even if the user is still physically holding down modifier keys from the debug hotkey
+
+				var modifierKeysToRelease = new List<AcTools.Windows.User32.KeyboardInput>();
+
+				// Check and release Shift keys
+				if (AcTools.Windows.User32.IsAsyncKeyPressed(System.Windows.Forms.Keys.LShiftKey)) {
+					modifierKeysToRelease.Add(new AcTools.Windows.User32.KeyboardInput
+					{
+						VirtualKeyCode = (ushort)System.Windows.Forms.Keys.LShiftKey,
+						Flags = AcTools.Windows.User32.KeyboardFlag.KeyUp
+					});
+				}
+				if (AcTools.Windows.User32.IsAsyncKeyPressed(System.Windows.Forms.Keys.RShiftKey)) {
+					modifierKeysToRelease.Add(new AcTools.Windows.User32.KeyboardInput
+					{
+						VirtualKeyCode = (ushort)System.Windows.Forms.Keys.RShiftKey,
+						Flags = AcTools.Windows.User32.KeyboardFlag.KeyUp
+					});
+				}
+
+				// Check and release Ctrl keys
+				if (AcTools.Windows.User32.IsAsyncKeyPressed(System.Windows.Forms.Keys.LControlKey)) {
+					modifierKeysToRelease.Add(new AcTools.Windows.User32.KeyboardInput
+					{
+						VirtualKeyCode = (ushort)System.Windows.Forms.Keys.LControlKey,
+						Flags = AcTools.Windows.User32.KeyboardFlag.KeyUp | AcTools.Windows.User32.KeyboardFlag.ExtendedKey
+					});
+				}
+				if (AcTools.Windows.User32.IsAsyncKeyPressed(System.Windows.Forms.Keys.RControlKey)) {
+					modifierKeysToRelease.Add(new AcTools.Windows.User32.KeyboardInput
+					{
+						VirtualKeyCode = (ushort)System.Windows.Forms.Keys.RControlKey,
+						Flags = AcTools.Windows.User32.KeyboardFlag.KeyUp | AcTools.Windows.User32.KeyboardFlag.ExtendedKey
+					});
+				}
+
+				// Check and release Alt keys
+				if (AcTools.Windows.User32.IsAsyncKeyPressed(System.Windows.Forms.Keys.LMenu)) {
+					modifierKeysToRelease.Add(new AcTools.Windows.User32.KeyboardInput
+					{
+						VirtualKeyCode = (ushort)System.Windows.Forms.Keys.LMenu,
+						Flags = AcTools.Windows.User32.KeyboardFlag.KeyUp | AcTools.Windows.User32.KeyboardFlag.ExtendedKey
+					});
+				}
+				if (AcTools.Windows.User32.IsAsyncKeyPressed(System.Windows.Forms.Keys.RMenu)) {
+					modifierKeysToRelease.Add(new AcTools.Windows.User32.KeyboardInput
+					{
+						VirtualKeyCode = (ushort)System.Windows.Forms.Keys.RMenu,
+						Flags = AcTools.Windows.User32.KeyboardFlag.KeyUp | AcTools.Windows.User32.KeyboardFlag.ExtendedKey
+					});
+				}
+
+				// Send the key-up events if any modifiers were pressed
+				if (modifierKeysToRelease.Count > 0) {
+					AcTools.Windows.User32.SendInput(modifierKeysToRelease);
+
+					// Small delay to let the key-up events be processed by Windows/WPF
+					System.Threading.Thread.Sleep(20);
+
+					if (VerboseDebug) {
+						Debug.WriteLine($"[NavNode] Released {modifierKeysToRelease.Count} modifier keys before click");
+					}
+				}
+
+				// ✓ Step 2: Get center in DIP (screen-absolute coordinate space)
+				var centerDip = GetCenterDip();
                 if (!centerDip.HasValue) {
                     if (VerboseDebug) Debug.WriteLine($"[NavNode] SimulateMouseClick failed: Could not get center point for {SimpleName}");
                     return false;
                 }
 
-                // ? Step 2: Get presentation source for DIP ? device pixel conversion
+                // ✓ Step 3: Get presentation source for DIP → device pixel conversion
                 var ps = PresentationSource.FromVisual(fe);
                 if (ps?.CompositionTarget == null) {
                     if (VerboseDebug) Debug.WriteLine($"[NavNode] SimulateMouseClick failed: No PresentationSource for {SimpleName}");
                     return false;
                 }
 
-                // ? Step 3: Convert DIP ? device pixels (screen-absolute)
+                // ✓ Step 4: Convert DIP → device pixels (screen-absolute)
                 var transformToDevice = ps.CompositionTarget.TransformToDevice;
                 var centerDevice = transformToDevice.Transform(centerDip.Value);
 
-                // ? Step 4: Get screen dimensions in device pixels for SendInput normalization
+                // ✓ Step 5: Get screen dimensions in device pixels for SendInput normalization
                 // SendInput uses 0-65535 normalized coordinate space
                 var screenWidthDevice = System.Windows.Forms.Screen.PrimaryScreen.Bounds.Width;
                 var screenHeightDevice = System.Windows.Forms.Screen.PrimaryScreen.Bounds.Height;
 
-                // ? Step 5: Normalize to SendInput's 0-65535 coordinate space
+                // ✓ Step 6: Normalize to SendInput's 0-65535 coordinate space
                 var absoluteX = (int)(centerDevice.X * 65536.0 / screenWidthDevice);
                 var absoluteY = (int)(centerDevice.Y * 65536.0 / screenHeightDevice);
 
@@ -907,10 +965,20 @@ namespace AcManager.UiObserver
                     Debug.WriteLine($"  SendInput normalized: ({absoluteX}, {absoluteY})");
                 }
 
-                // ? Step 6: Move mouse and click
-                var mouse = new MouseSimulator();
-                mouse.MoveMouseTo(absoluteX, absoluteY);
-                mouse.LeftButtonClick();
+                // ✓ Step 7: Simulate left mouse button press with realistic timing
+                // Split into separate ButtonDown and ButtonUp with delay to mimic real human click
+                _mouseSimulator.LeftButtonDown();
+                
+                // Delay between button down and up (mimics real human click)
+                if (MouseButtonPressDelayMs > 0) {
+                    System.Threading.Thread.Sleep(MouseButtonPressDelayMs);
+                }
+                
+                _mouseSimulator.LeftButtonUp();
+
+                if (VerboseDebug) {
+                    Debug.WriteLine($"[NavNode] Click sent successfully to '{SimpleName}' (focus cleared, no move)");
+                }
 
                 return true;
             } catch (Exception ex) {
