@@ -1,0 +1,164 @@
+{
+  "Actions": [
+    {
+      "Icon": "Images/Blank",
+      "Name": "NWRS AC - Virtual Key",
+      "States": [
+        {
+          "Image": "Images/Blank-Image",
+          "TitleAlignment": "middle",
+          "FontSize": "17"
+        }
+      ],
+      "SupportedInMultiActions": false,
+      "Tooltip": "Blank key for virtual pages",
+      "UUID": "com.nwracingsims.acuic.virtualkey"
+    },
+    {
+      "Icon": "Images/Back",
+      "Name": "NWRS AC - Back Key",
+      "States": [
+        {
+          "Image": "Images/Back-Image",
+          "TitleAlignment": "middle",
+          "FontSize": "17"
+        }
+      ],
+      "SupportedInMultiActions": false,
+      "Tooltip": "Back key to use in other profiles",
+      "UUID": "com.nwracingsims.acuic.backkey"
+    },
+    {
+      "Icon": "Images/Back",
+      "Name": "NWRS AC - Esc Key",
+      "States": [
+        {
+          "Image": "Images/Esc-Image",
+          "TitleAlignment": "middle",
+          "FontSize": "17"
+        }
+      ],
+      "SupportedInMultiActions": false,
+      "Tooltip": "Esc key",
+      "UUID": "com.nwracingsims.acuic.esckey"
+    },
+    {
+      "Icon": "Images/Left",
+      "Name": "NWRS AC - Left Key",
+      "States": [
+        {
+          "Image": "Images/Left-Image",
+          "TitleAlignment": "middle",
+          "FontSize": "17"
+        }
+      ],
+      "SupportedInMultiActions": false,
+      "Tooltip": "Left key",
+      "UUID": "com.nwracingsims.acuic.leftkey"
+    },
+    {
+      "Icon": "Images/Right",
+      "Name": "NWRS AC - Right Key",
+      "States": [
+        {
+          "Image": "Images/Right-Image",
+          "TitleAlignment": "middle",
+          "FontSize": "17"
+        }
+      ],
+      "SupportedInMultiActions": false,
+      "Tooltip": "Right key",
+      "UUID": "com.nwracingsims.acuic.rightkey"
+    },
+    {
+      "Icon": "Images/Enter",
+      "Name": "NWRS AC - Enter Key",
+      "States": [
+        {
+          "Image": "Images/Enter-Image",
+          "TitleAlignment": "middle",
+          "FontSize": "17"
+        }
+      ],
+      "SupportedInMultiActions": false,
+      "Tooltip": "Enter key",
+      "UUID": "com.nwracingsims.acuic.enterkey"
+    },
+    {
+      "Icon": "Images/Up",
+      "Name": "NWRS AC - Up Key",
+      "States": [
+        {
+          "Image": "Images/Up-Image",
+          "TitleAlignment": "middle",
+          "FontSize": "17"
+        }
+      ],
+      "SupportedInMultiActions": false,
+      "Tooltip": "Up key to",
+      "UUID": "com.nwracingsims.acuic.backspacekey"
+    },
+    {
+      "Icon": "Images/Down",
+      "Name": "NWRS AC - Down Key",
+      "States": [
+        {
+          "Image": "Images/Down-Image",
+          "TitleAlignment": "middle",
+          "FontSize": "17"
+        }
+      ],
+      "SupportedInMultiActions": false,
+      "Tooltip": "Down key",
+      "UUID": "com.nwracingsims.acuic.downkey"
+    },
+    {
+      "Icon": "Images/Close",
+      "Name": "NWRS AC - Close Key",
+      "States": [
+        {
+          "Image": "Images/Close-Image",
+          "TitleAlignment": "middle",
+          "FontSize": "17"
+        }
+      ],
+      "SupportedInMultiActions": false,
+      "Tooltip": "Close key",
+      "UUID": "com.nwracingsims.acuic.closekey"
+    },
+    {
+      "Icon": "Images/QuickSelect",
+      "Name": "NWRS AC - QuickSelect Key",
+      "States": [
+        {
+          "Image": "Images/Blank",
+          "TitleAlignment": "middle",
+          "FontSize": "17"
+        }
+      ],
+      "SupportedInMultiActions": false,
+      "Tooltip": "QuickSelect key",
+      "UUID": "com.nwracingsims.acuic.quickselectkey"
+    }
+  ],
+  "Author": "Soner Terek",
+  "Description": "Used by NWRS AC UiController",
+  "Name": "NWRS AC SD Plugin",
+  "Icon": "Images/nwrs_acuic",
+  "URL": "https://github.com/sonerterek/NWRS/ACUiC",
+  "Version": "0.9",
+  "CodePath": "nwrs-ac-sd-plugin.exe",
+  "Category": "NWRS",
+  "CategoryIcon": "Images/NWRS",
+  "SDKVersion": 2,
+  "Software": {
+    "MinimumVersion": "4.1"
+  },
+  "OS": [
+    {
+      "Platform": "windows",
+      "MinimumVersion": "10"
+    }
+  ],
+  "UUID": "com.nwracingsims.acuic"
+}
