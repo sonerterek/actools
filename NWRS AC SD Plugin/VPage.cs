@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 
 namespace NWRS_AC_SDPlugin
 {
@@ -47,6 +48,31 @@ namespace NWRS_AC_SDPlugin
 			Debug.Assert(name is null || activeVPage.Name == name);
 			var nextPage = _vPageStack.Peek();
 			nextPage.Activate();
+		}
+
+		/// <summary>
+		/// Get a VPage by name
+		/// </summary>
+		public static VPage GetByName(string name)
+		{
+			return _vPages.TryGetValue(name, out var vPage) ? vPage as VPage : null;
+		}
+
+		/// <summary>
+		/// Get all pages - used when updating key definitions
+		/// </summary>
+		public static List<VPage> GetAllPages()
+		{
+			return _vPages.Values.OfType<VPage>().ToList();
+		}
+
+		/// <summary>
+		/// Clear all pages - used when client disconnects
+		/// </summary>
+		public static void ClearAll()
+		{
+			_vPages.Clear();
+			_vPageStack.Clear();
 		}
 	}
 

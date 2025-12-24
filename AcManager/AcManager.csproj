@@ -973,6 +973,7 @@
     <Compile Include="UiObserver\NavNode.cs" />
     <Compile Include="UiObserver\NavPathFilter.cs" />
     <Compile Include="UiObserver\Observer.cs" />
+    <Compile Include="UiObserver\SDPClient.cs" />
     <Compile Include="UserControls\AdditionalContentEntryTemplateSelector.cs" />
     <Compile Include="UserControls\BakedShadowsSettings.xaml.cs">
       <DependentUpon>BakedShadowsSettings.xaml</DependentUpon>

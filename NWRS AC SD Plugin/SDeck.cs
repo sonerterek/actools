@@ -5,16 +5,15 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net;
 using System.Drawing;
+using System.Drawing.Imaging;
 using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.IO;
 
 namespace NWRS_AC_SDPlugin
 {
-	using System.Drawing.Imaging;
-	using System.IO;
-
 	// It would be nice to have a map of these so that
 	// base64 images do not have a ton of copies
 	public class SDImage
@@ -55,11 +54,28 @@ namespace NWRS_AC_SDPlugin
 		public SDImage(string image, bool inverted = false)
 		{
 			if (image.StartsWith("data:image/png;base64,")) {
+				// Direct base64 image
 				_image = image;
 			} else if (image.StartsWith("!")) {
+				// Text-based icon: "!TextHere"
 				_image = CreateBase64PngFromText(image[1..], inverted);
 				_imageCache[image] = _image;
+			} else if (Path.IsPathRooted(image)) {
+				// Absolute file path
+				string imageName = $"{image}{(inverted ? "-inv" : "")}";
+				if (!_imageCache.TryGetValue(imageName, out _image)) {
+					try {
+						byte[] imageBytes = File.ReadAllBytes(image);
+						_image = "data:image/png;base64," + Convert.ToBase64String(imageBytes);
+						_imageCache[imageName] = _image;
+					} catch (Exception ex) {
+						Debug.WriteLine($"Failed to read image from absolute path {image}: {ex.Message}");
+						_image = CreateBase64PngFromText(Path.GetFileNameWithoutExtension(image), inverted);
+						_imageCache[imageName] = _image;
+					}
+				}
 			} else {
+				// Relative path - search in assets folder (legacy support)
 				int startIndex = image.IndexOf('_') + 1;
 				if (startIndex > 0)
 					image = image[startIndex..];

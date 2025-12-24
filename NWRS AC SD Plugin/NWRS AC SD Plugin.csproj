@@ -68,6 +68,7 @@
     <None Include="manifest.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Include="Protocol.md" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="CommandLineParser">
