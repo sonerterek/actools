@@ -364,14 +364,14 @@ namespace AcManager.UiObserver
             {
                 if (IsConnected)
                 {
-                    if (VerboseDebug) Debug.WriteLine("[SDPClient] Already connected");
+                    Debug.WriteLine("[SDPClient] Already connected");
                     return true;
                 }
 
                 // Clean up old connection
                 DisconnectInternal();
 
-                if (VerboseDebug) Debug.WriteLine($"[SDPClient] Connecting to pipe: {PipeName}");
+                Debug.WriteLine($"[SDPClient] Connecting to pipe: {PipeName}");
 
                 // Create new pipe client
                 _pipe = new NamedPipeClientStream(
@@ -380,39 +380,77 @@ namespace AcManager.UiObserver
                     direction: PipeDirection.InOut,
                     options: PipeOptions.Asynchronous);
 
+                Debug.WriteLine("[SDPClient] Pipe client created, attempting connection...");
+
                 // Connect with timeout (synchronous Connect doesn't support cancellation in .NET 4.5.2)
                 // Use Task.Run to avoid blocking
                 bool connected = await Task.Run(() =>
                 {
                     try
                     {
+                        Debug.WriteLine($"[SDPClient] Calling Connect() with timeout={ConnectionTimeoutMs}ms...");
                         _pipe.Connect(ConnectionTimeoutMs);
+                        Debug.WriteLine($"[SDPClient] Connect() returned, IsConnected={_pipe.IsConnected}");
                         return _pipe.IsConnected;
                     }
-                    catch (TimeoutException)
+                    catch (TimeoutException ex)
                     {
+                        Debug.WriteLine($"[SDPClient] Connect() timed out: {ex.Message}");
                         return false;
                     }
-                    catch (IOException)
+                    catch (IOException ex)
                     {
+                        Debug.WriteLine($"[SDPClient] Connect() IOException: {ex.Message}");
+                        return false;
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.WriteLine($"[SDPClient] Connect() unexpected exception: {ex.GetType().Name}: {ex.Message}");
                         return false;
                     }
                 });
 
                 if (!connected)
                 {
-                    if (VerboseDebug) Debug.WriteLine("[SDPClient] Connection timeout - is plugin running?");
+                    Debug.WriteLine("[SDPClient] Connection failed - is plugin running?");
                     DisconnectInternal();
                     return false;
                 }
 
-                // Setup streams
-                _writer = new StreamWriter(_pipe, Encoding.UTF8) { AutoFlush = true };
-                _reader = new StreamReader(_pipe, Encoding.UTF8);
+                Debug.WriteLine("[SDPClient] Pipe connected, creating streams...");
+
+                // Setup streams with explicit buffer sizes to match plugin
+                try
+                {
+                    Debug.WriteLine("[SDPClient] Creating StreamWriter with UTF8 encoding...");
+                    _writer = new StreamWriter(_pipe, new UTF8Encoding(false), 1024) { AutoFlush = true };
+                    Debug.WriteLine("[SDPClient] StreamWriter created successfully");
+                    
+                    Debug.WriteLine("[SDPClient] Creating StreamReader with UTF8 encoding...");
+                    _reader = new StreamReader(_pipe, new UTF8Encoding(false), false, 1024);
+                    Debug.WriteLine("[SDPClient] StreamReader created successfully");
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[SDPClient] Failed to create streams: {ex.GetType().Name}: {ex.Message}");
+                    Debug.WriteLine($"[SDPClient] Stack trace: {ex.StackTrace}");
+                    throw;
+                }
+
+                Debug.WriteLine("[SDPClient] Streams created successfully, starting listener...");
 
                 // Start listener for incoming events
                 _listenerCts = new CancellationTokenSource();
+                Debug.WriteLine("[SDPClient] Created CancellationTokenSource");
+                
                 _listenerTask = Task.Run(() => ListenForEventsAsync(_listenerCts.Token));
+                Debug.WriteLine("[SDPClient] Listener task started");
+                
+                // Give the listener a moment to start (use Task.Delay for .NET 4.5.2 compatibility)
+                Debug.WriteLine("[SDPClient] Waiting 100ms for listener to start...");
+                await Task.Delay(100).ConfigureAwait(false);
+                
+                Debug.WriteLine($"[SDPClient] After delay - Pipe still connected: {_pipe.IsConnected}");
 
                 Debug.WriteLine("[SDPClient] Connected successfully");
                 OnConnected();
@@ -421,7 +459,8 @@ namespace AcManager.UiObserver
             }
             catch (Exception ex)
             {
-                if (VerboseDebug) Debug.WriteLine($"[SDPClient] Connection error: {ex.Message}");
+                Debug.WriteLine($"[SDPClient] Connection error: {ex.GetType().Name}: {ex.Message}");
+                Debug.WriteLine($"[SDPClient] Stack trace: {ex.StackTrace}");
                 DisconnectInternal();
                 return false;
             }
@@ -863,43 +902,60 @@ namespace AcManager.UiObserver
         /// </summary>
         private async Task ListenForEventsAsync(CancellationToken cancellationToken)
         {
-            if (VerboseDebug) Debug.WriteLine("[SDPClient] Event listener started");
+            Debug.WriteLine("[SDPClient] Event listener started");
 
             try
             {
+                Debug.WriteLine("[SDPClient] Listener: Starting to read from pipe...");
+                
                 while (!cancellationToken.IsCancellationRequested && _pipe?.IsConnected == true)
                 {
                     try
                     {
+                        Debug.WriteLine("[SDPClient] Listener: Calling ReadLineAsync()...");
                         var line = await _reader.ReadLineAsync();
+                        Debug.WriteLine($"[SDPClient] Listener: ReadLineAsync() returned: {(line == null ? "NULL" : $"\"{line}\"")}");
+
                         if (line == null)
                         {
                             // Connection closed
-                            if (VerboseDebug) Debug.WriteLine("[SDPClient] Plugin disconnected");
+                            Debug.WriteLine("[SDPClient] Plugin disconnected (ReadLineAsync returned null)");
                             break;
                         }
 
                         // Process event
                         ProcessEvent(line);
                     }
-                    catch (IOException)
+                    catch (IOException ex)
                     {
                         // Connection lost
-                        if (VerboseDebug) Debug.WriteLine("[SDPClient] Connection lost while reading");
+                        Debug.WriteLine($"[SDPClient] Connection lost while reading: {ex.Message}");
+                        Debug.WriteLine($"[SDPClient] IOException stack trace: {ex.StackTrace}");
                         break;
                     }
                     catch (Exception ex)
                     {
-                        if (VerboseDebug) Debug.WriteLine($"[SDPClient] Event processing error: {ex.Message}");
+                        Debug.WriteLine($"[SDPClient] Event processing error: {ex.GetType().Name}: {ex.Message}");
+                        Debug.WriteLine($"[SDPClient] Stack trace: {ex.StackTrace}");
+                        
+                        // Don't break on processing errors, continue listening
                     }
                 }
+                
+                Debug.WriteLine($"[SDPClient] Listener loop exited. Cancelled={cancellationToken.IsCancellationRequested}, PipeConnected={_pipe?.IsConnected}");
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[SDPClient] Listener fatal error: {ex.GetType().Name}: {ex.Message}");
+                Debug.WriteLine($"[SDPClient] Stack trace: {ex.StackTrace}");
             }
             finally
             {
-                if (VerboseDebug) Debug.WriteLine("[SDPClient] Event listener stopped");
+                Debug.WriteLine("[SDPClient] Event listener stopped");
                 // Trigger disconnect if not already disconnecting
                 if (_pipe?.IsConnected == true)
                 {
+                    Debug.WriteLine("[SDPClient] Listener triggering disconnect...");
                     Task.Run(() => Disconnect());
                 }
             }
@@ -916,6 +972,12 @@ namespace AcManager.UiObserver
         private void ProcessEvent(string message)
         {
             if (string.IsNullOrWhiteSpace(message)) return;
+
+            // Strip UTF-8 BOM if present (0xFEFF / U+FEFF)
+            if (message.Length > 0 && message[0] == '\uFEFF')
+            {
+                message = message.Substring(1);
+            }
 
             if (VerboseDebug) Debug.WriteLine($"[SDPClient] Received: {message}");
 

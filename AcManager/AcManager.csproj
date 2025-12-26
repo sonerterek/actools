@@ -234,6 +234,11 @@
     <Reference Include="WindowsFormsIntegration" />
   </ItemGroup>
   <ItemGroup>
+    <Content Include="Assets\SDIcons\*.png">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+  <ItemGroup>
     <ApplicationDefinition Include="App.xaml">
       <Generator>MSBuild:Compile</Generator>
       <SubType>Designer</SubType>
@@ -970,6 +975,7 @@
     <Compile Include="UiObserver\IDebugRect.cs" />
     <Compile Include="UiObserver\Navigator.cs" />
     <Compile Include="UiObserver\Navigator.Debug.cs" />
+    <Compile Include="UiObserver\Navigator.SD.cs" />
     <Compile Include="UiObserver\NavNode.cs" />
     <Compile Include="UiObserver\NavPathFilter.cs" />
     <Compile Include="UiObserver\Observer.cs" />

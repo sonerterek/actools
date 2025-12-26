@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -115,6 +116,9 @@ namespace AcManager.UiObserver
 		{
 			if (_initialized) return;
 			_initialized = true;
+
+			// Initialize StreamDeck early, since it is expensive but async
+			InitializeStreamDeck();
 
 			// Initialize navigation rules
 			InitializeNavigationRules();
@@ -1265,7 +1269,7 @@ namespace AcManager.UiObserver
 				return;
 			}
 
-			// ✅ UPDATED: Check if our focused NavNode's element is still alive
+			// CHECK IF OUR FOCUSED NAVNODE IS STILL VALID
 			if (!CurrentContext.FocusedNode.TryGetVisual(out var ourFocusedElement)) {
 				// Our focused element is DEAD - OnNodeUnloaded should have already handled this
 				Debug.WriteLine($"[Navigator] Focus stolen but our focused NavNode is dead (element unloaded) - allowing focus to move");
@@ -1275,7 +1279,7 @@ namespace AcManager.UiObserver
 				return;
 			}
 
-			// ✅ UPDATED: Check if element is still in visual tree
+			// CHECK IF ELEMENT IS STILL IN VISUAL TREE
 			if (PresentationSource.FromVisual(ourFocusedElement) == null) {
 				Debug.WriteLine($"[Navigator] Focus stolen but our focused element is no longer in visual tree - allowing focus to move");
 

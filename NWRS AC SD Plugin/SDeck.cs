@@ -775,18 +775,29 @@ namespace NWRS_AC_SDPlugin
 			
 			if (shouldBeInNWRS && !hasVirtualKeys)
 			{
-				// Check if enough time has passed since we last switched to NWRS
 				var timeSinceLastNWRSSwitch = DateTime.Now - _lastProfileSwitchToNWRS;
-				bool enoughTimeHasPassed = timeSinceLastNWRSSwitch > TimeSpan.FromSeconds(3);
 				
-				if (enoughTimeHasPassed)
+				// Only try recovery for 30 seconds, then give up
+				if (timeSinceLastNWRSSwitch < TimeSpan.FromSeconds(30))
 				{
-					Debug.WriteLine("🔧 SDeck: Profile mismatch detected while active");
-					Debug.WriteLine($"🔧 SDeck: Current state - Connected={_deviceConnected}, Profile={_currentProfile}, Desired={_desiredProfile}, VKeys={_virtualKeysReady}");
-					Debug.WriteLine($"🔧 SDeck: Time since last NWRS switch: {timeSinceLastNWRSSwitch.TotalSeconds:F1}s");
+					// Wait 5 seconds between recovery attempts (increased from 3)
+					bool enoughTimeHasPassed = timeSinceLastNWRSSwitch > TimeSpan.FromSeconds(5);
 					
-					Debug.WriteLine($"🔧 SDeck: Forcing profile switch to {PROFILE_NAME} to recover virtual keys");
-					_pendingCommands.Enqueue(() => ExecuteProfileSwitch(PROFILE_NAME));
+					if (enoughTimeHasPassed)
+					{
+						Debug.WriteLine($"🔧 SDeck: Virtual keys not ready after {timeSinceLastNWRSSwitch.TotalSeconds:F1}s, attempting recovery");
+						_pendingCommands.Enqueue(() => ExecuteProfileSwitch(PROFILE_NAME));
+					}
+				}
+				else
+				{
+					// After 30 seconds, log a single warning and stop trying
+					if (timeSinceLastNWRSSwitch < TimeSpan.FromSeconds(31))
+					{
+						Debug.WriteLine($"⚠️ SDeck: Virtual keys did not appear after 30 seconds");
+						Debug.WriteLine($"ℹ️ SDeck: This is expected if the '{PROFILE_NAME}' profile doesn't have plugin keys configured");
+						Debug.WriteLine($"ℹ️ SDeck: Plugin will continue to function for profile switching and other features");
+					}
 				}
 			}
 		}
@@ -810,21 +821,43 @@ namespace NWRS_AC_SDPlugin
 				
 				if (_conn != null && _deviceID != null)
 				{
+					// Check if we're already in the target profile and keys are ready
+					bool alreadyInProfile = _currentProfile == profileName;
+					bool keysAlreadyReady = _virtualKeysReady && profileName == PROFILE_NAME;
+					
+					// If we're already in NWRS AC profile with keys ready, no need to switch
+					if (alreadyInProfile && keysAlreadyReady)
+					{
+						Debug.WriteLine($"✅ SDeck.ExecuteProfileSwitch: Already in {profileName} with keys ready, skipping switch");
+						return;
+					}
+					
 					_conn.SwitchToProfileAsync(_deviceID, profileName, _pluginUUID);
+					
+					// Only update state if we're actually changing profiles
+					bool profileChanged = _currentProfile != profileName;
 					_currentProfile = profileName;
 					
 					// Track when we switch to NWRS for recovery logic
 					if (profileName == PROFILE_NAME)
 					{
-						_lastProfileSwitchToNWRS = DateTime.Now;
-						_virtualKeysReady = false;
+						// Only reset keys and timestamp if we actually changed profiles
+						if (profileChanged)
+						{
+							_lastProfileSwitchToNWRS = DateTime.Now;
+							_virtualKeysReady = false;
+							Debug.WriteLine($"✅ SDeck.ExecuteProfileSwitch: Switched to {profileName} (profile changed, waiting for keys)");
+						}
+						else
+						{
+							Debug.WriteLine($"✅ SDeck.ExecuteProfileSwitch: Already in {profileName}, keeping key status: {_virtualKeysReady}");
+						}
 					}
 					else
 					{
 						_virtualKeysReady = false;
+						Debug.WriteLine($"✅ SDeck.ExecuteProfileSwitch: Switched to {profileName}");
 					}
-					
-					Debug.WriteLine($"✅ SDeck.ExecuteProfileSwitch: Switched to {profileName}");
 				}
 				else
 				{
@@ -988,7 +1021,19 @@ namespace NWRS_AC_SDPlugin
 				lock (_stateLock)
 				{
 					_virtualKeysReady = true;
-					Debug.WriteLine($"✅ SDeck: Virtual keys now ready! Current profile: {_currentProfile}");
+					
+					// If we don't know what profile we're in yet, but keys are appearing, 
+					// we must be in the NWRS AC profile already
+					if (_currentProfile == null)
+					{
+						_currentProfile = PROFILE_NAME;
+						_lastProfileSwitchToNWRS = DateTime.Now;
+						Debug.WriteLine($"✅ SDeck: Virtual keys appeared - we're in '{PROFILE_NAME}' profile");
+					}
+					else
+					{
+						Debug.WriteLine($"✅ SDeck: Virtual keys now ready! Current profile: {_currentProfile}");
+					}
 					
 					// Set desired VPage if we have one pending
 					if (_desiredVPage != null && _currentProfile == PROFILE_NAME)
