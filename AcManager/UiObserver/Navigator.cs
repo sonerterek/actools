@@ -161,6 +161,7 @@ namespace AcManager.UiObserver
 				"EXCLUDE: ** > *:HistoricalTextBox > **",
 				"EXCLUDE: ** > *:LazyMenuItem > **",
 				"EXCLUDE: ** > *:ModernTabSplitter",
+				"EXCLUDE: *:PopupRoot > ** > *:MenuItem",
 
 				// CRITICAL: Exclude debug overlay from navigation tracking to prevent feedback loop
 				"EXCLUDE: *:HighlightOverlay > **",
@@ -314,6 +315,8 @@ namespace AcManager.UiObserver
 		/// 
 		/// This fixes the bug where initial mouse position was wrong in popup menus because
 		/// PointToScreen() was called before the popup reached its final screen position.
+		/// 
+		/// ✓ NEW: Selects appropriate StreamDeck page based on modal type.
 		/// </summary>
 		private static void OnModalGroupOpened(NavNode modalNode)
 		{
@@ -336,6 +339,9 @@ namespace AcManager.UiObserver
 			_modalContextStack.Add(new NavContext(modalNode, focusedNode: null));
 			var modalDepth = _modalContextStack.Count;
 			Debug.WriteLine($"[Navigator] Modal stack depth: {modalDepth}");
+
+			// ✓ NEW: Switch StreamDeck page based on modal type
+			SwitchStreamDeckPageForModal(modalNode);
 
 			// ✓ FIX: Use different dispatcher priorities based on modal type
 			// MainWindow (depth 1): Loaded priority - window is already positioned at startup
@@ -1208,9 +1214,16 @@ namespace AcManager.UiObserver
 		/// to our last known focused NavNode.
 		/// 
 		/// This acts as a "focus guard" that keeps keyboard focus aligned with our navigation system.
+		/// 
+		/// ✓ DISABLED: Focus guard is currently disabled as it was causing issues with menu navigation.
+		/// The original issue (SelectCarDialog selection problems) was due to Shift+Ctrl keys being held down,
+		/// not focus stealing. Keeping code for potential future use.
 		/// </summary>
 		private static void InstallFocusGuard()
 		{
+			// ✓ DISABLED: Focus guard functionality disabled
+			// Uncomment below to re-enable
+			/*
 			try {
 				// Subscribe to global keyboard focus changes (tunneling event - fires before Loaded/GotFocus)
 				EventManager.RegisterClassHandler(
@@ -1224,14 +1237,25 @@ namespace AcManager.UiObserver
 			} catch (Exception ex) {
 				Debug.WriteLine($"[Navigator] Failed to install focus guard: {ex.Message}");
 			}
+			*/
+			
+			Debug.WriteLine("[Navigator] Focus guard DISABLED (keeping code for future use)");
 		}
 
 		/// <summary>
 		/// Global keyboard focus change handler.
 		/// Restores focus to our tracked NavNode if WPF tries to focus a non-navigable element.
+		/// 
+		/// ✓ DISABLED: This handler is not currently hooked up (see InstallFocusGuard).
 		/// </summary>
 		private static void OnGlobalKeyboardFocusChanged(object sender, KeyboardFocusChangedEventArgs e)
 		{
+			// ✓ DISABLED: Focus guard functionality disabled
+			// This method is kept for future use but not currently subscribed to events
+			return;
+			
+			#pragma warning disable CS0162 // Unreachable code detected
+			
 			// Get the newly focused element
 			if (!(e.NewFocus is FrameworkElement newFocusedElement)) {
 				// Focus moved to non-FrameworkElement (or null) - ignore
@@ -1335,6 +1359,8 @@ namespace AcManager.UiObserver
 					}
 				})
 			);
+			
+			#pragma warning restore CS0162 // Unreachable code detected
 		}
 
 		#endregion

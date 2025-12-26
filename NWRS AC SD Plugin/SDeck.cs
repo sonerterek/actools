@@ -1,4 +1,4 @@
-﻿using streamdeck_client_csharp;
+using streamdeck_client_csharp;
 using streamdeck_client_csharp.Events;
 using System;
 using System.Collections.Generic;
@@ -445,7 +445,7 @@ namespace NWRS_AC_SDPlugin
 		/// </summary>
 		public static void Init(int port, string pluginUUID, string registerEvent)
 		{
-			Debug.WriteLine($"🔧 SDeck: Initializing with port={port}, uuid={pluginUUID}, event={registerEvent}");
+			Debug.WriteLine($"?? SDeck: Initializing with port={port}, uuid={pluginUUID}, event={registerEvent}");
 			
 			lock (_stateLock)
 			{
@@ -464,11 +464,11 @@ namespace NWRS_AC_SDPlugin
 			{
 				EstablishStreamDeckConnection(port, pluginUUID, registerEvent);
 				StartCommandProcessor();
-				Debug.WriteLine("✅ SDeck: Initialization complete - in passive mode");
+				Debug.WriteLine("? SDeck: Initialization complete - in passive mode");
 			}
 			catch (Exception ex)
 			{
-				Debug.WriteLine($"❌ SDeck: Initialization failed: {ex.Message}");
+				Debug.WriteLine($"? SDeck: Initialization failed: {ex.Message}");
 				Environment.Exit(1);
 			}
 		}
@@ -484,11 +484,11 @@ namespace NWRS_AC_SDPlugin
 			{
 				if (_isActive)
 				{
-					Debug.WriteLine("⚠️ SDeck.Activate: Already active");
+					Debug.WriteLine("?? SDeck.Activate: Already active");
 					return;
 				}
 				
-				Debug.WriteLine("✅ SDeck: Activating profile management");
+				Debug.WriteLine("? SDeck: Activating profile management");
 				
 				_isActive = true;
 				_desiredProfile = PROFILE_NAME;
@@ -498,7 +498,7 @@ namespace NWRS_AC_SDPlugin
 				_profileStack.Push(PROFILE_NAME);
 				
 				// Switch to NWRS AC profile
-				Debug.WriteLine($"🔄 SDeck: Switching to {PROFILE_NAME}");
+				Debug.WriteLine($"?? SDeck: Switching to {PROFILE_NAME}");
 				_pendingCommands.Enqueue(() => ExecuteProfileSwitch(PROFILE_NAME));
 			}
 		}
@@ -507,6 +507,7 @@ namespace NWRS_AC_SDPlugin
 		/// Deactivate SDeck profile management
 		/// Call this when your application no longer needs control of the StreamDeck
 		/// Stops managing profiles but doesn't switch away (user might have manually switched)
+		/// NOTE: Does NOT clear _virtualKeysReady - that flag is only cleared when SDKeys actually disappear
 		/// </summary>
 		public static void Deactivate()
 		{
@@ -514,17 +515,78 @@ namespace NWRS_AC_SDPlugin
 			{
 				if (!_isActive)
 				{
-					Debug.WriteLine("⚠️ SDeck.Deactivate: Already inactive");
+					Debug.WriteLine("?? SDeck.Deactivate: Already inactive");
 					return;
 				}
 				
-				Debug.WriteLine("🛑 SDeck: Deactivating profile management");
+				Debug.WriteLine("?? SDeck: Deactivating profile management");
 				
 				_isActive = false;
 				_desiredProfile = null;
 				_profileStack.Clear();
 				
-				Debug.WriteLine("ℹ️ SDeck: Entering passive mode - no longer managing profiles");
+				// NOTE: We do NOT clear _virtualKeysReady here!
+				// The SDKeys are still present on the StreamDeck hardware.
+				// _virtualKeysReady should only be cleared when OnKeyDisappeared fires.
+				
+				Debug.WriteLine("?? SDeck: Entering passive mode - no longer managing profiles");
+				Debug.WriteLine($"?? SDeck: VirtualKeys flag remains: {_virtualKeysReady} (will be cleared only when keys disappear)");
+			}
+		}
+		
+		/// <summary>
+		/// Clear all pending commands from the command queue
+		/// Call this when CM disconnects to prevent orphaned commands from infinite looping
+		/// </summary>
+		public static void ClearPendingCommands()
+		{
+			lock (_stateLock)
+			{
+				var count = _pendingCommands.Count;
+				_pendingCommands.Clear();
+				
+				Debug.WriteLine($"?? SDeck.ClearPendingCommands: Cleared {count} pending commands from queue");
+			}
+		}
+		
+		/// <summary>
+		/// Clear the visuals (icons and titles) on all virtual keys displayed on StreamDeck
+		/// Call this when CM disconnects to remove old CM content from the display
+		/// This does NOT affect the _virtualKeysReady flag - the SDKeys are still present
+		/// </summary>
+		public static void ClearVirtualKeyVisuals()
+		{
+			lock (_stateLock)
+			{
+				if (SDPage == null)
+				{
+					Debug.WriteLine("?? SDeck.ClearVirtualKeyVisuals: No SDPage to clear");
+					return;
+				}
+				
+				Debug.WriteLine("?? SDeck.ClearVirtualKeyVisuals: Clearing all virtual key visuals on StreamDeck");
+				
+				// Clear the VPage reference so SDKeys show blank
+				SDPage.SetVPage(null);
+				_currentVPage = null;
+				_desiredVPage = null;
+				
+				// Force refresh all SDKeys to show blank images
+				for (int row = 0; row < SDPage.Rows; row++)
+				{
+					for (int col = 0; col < SDPage.Cols; col++)
+					{
+						var sdKey = SDPage.SDKeys[row, col];
+						if (sdKey?.Context != null)
+						{
+							// Reset will cause the SDKey to refresh with blank content
+							sdKey.Reset();
+						}
+					}
+				}
+				
+				Debug.WriteLine($"? SDeck.ClearVirtualKeyVisuals: Cleared visuals on {SDPage.Rows}x{SDPage.Cols} keys");
+				Debug.WriteLine($"?? SDeck.ClearVirtualKeyVisuals: VirtualKeys flag unchanged: {_virtualKeysReady}");
 			}
 		}
 		
@@ -544,7 +606,7 @@ namespace NWRS_AC_SDPlugin
 		/// </summary>
 		public static void Shutdown()
 		{
-			Debug.WriteLine("🔧 SDeck: Shutting down StreamDeck manager");
+			Debug.WriteLine("?? SDeck: Shutting down StreamDeck manager");
 			_isShuttingDown = true;
 			
 			_commandTimer?.Dispose();
@@ -561,7 +623,7 @@ namespace NWRS_AC_SDPlugin
 		{
 			if (string.IsNullOrEmpty(profileName))
 			{
-				Debug.WriteLine("❌ SDeck.SwitchToProfile: Invalid profile name");
+				Debug.WriteLine("? SDeck.SwitchToProfile: Invalid profile name");
 				return;
 			}
 			
@@ -569,17 +631,17 @@ namespace NWRS_AC_SDPlugin
 			{
 				if (!_isActive)
 				{
-					Debug.WriteLine($"⚠️ SDeck.SwitchToProfile: Ignoring request (SDeck not active)");
+					Debug.WriteLine($"?? SDeck.SwitchToProfile: Ignoring request (SDeck not active)");
 					return;
 				}
 				
-				Debug.WriteLine($"🔄 SDeck.SwitchToProfile: {_currentProfile} -> {profileName}");
+				Debug.WriteLine($"?? SDeck.SwitchToProfile: {_currentProfile} -> {profileName}");
 				
 				// Remember current profile before switching
 				if (_currentProfile != profileName)
 				{
 					_profileStack.Push(_currentProfile);
-					Debug.WriteLine($"📚 SDeck: Profile stack now has {_profileStack.Count} items, top: {_profileStack.Peek()}");
+					Debug.WriteLine($"?? SDeck: Profile stack now has {_profileStack.Count} items, top: {_profileStack.Peek()}");
 				}
 				
 				_desiredProfile = profileName;
@@ -599,13 +661,13 @@ namespace NWRS_AC_SDPlugin
 			{
 				if (!_isActive)
 				{
-					Debug.WriteLine($"⚠️ SDeck.SwitchBackToPreviousProfile: Ignoring request (SDeck not active)");
+					Debug.WriteLine($"?? SDeck.SwitchBackToPreviousProfile: Ignoring request (SDeck not active)");
 					return;
 				}
 				
 				if (_profileStack.Count <= 1)
 				{
-					Debug.WriteLine("⚠️ SDeck.SwitchBackToPreviousProfile: No previous profile to return to");
+					Debug.WriteLine("?? SDeck.SwitchBackToPreviousProfile: No previous profile to return to");
 					return;
 				}
 				
@@ -613,8 +675,8 @@ namespace NWRS_AC_SDPlugin
 				_profileStack.Pop();
 				var previousProfile = _profileStack.Peek();
 				
-				Debug.WriteLine($"🔙 SDeck.SwitchBackToPreviousProfile: {_currentProfile} -> {previousProfile}");
-				Debug.WriteLine($"📚 SDeck: Profile stack now has {_profileStack.Count} items, top: {previousProfile}");
+				Debug.WriteLine($"?? SDeck.SwitchBackToPreviousProfile: {_currentProfile} -> {previousProfile}");
+				Debug.WriteLine($"?? SDeck: Profile stack now has {_profileStack.Count} items, top: {previousProfile}");
 				
 				_desiredProfile = previousProfile;
 				
@@ -631,7 +693,7 @@ namespace NWRS_AC_SDPlugin
 		{
 			lock (_stateLock)
 			{
-				Debug.WriteLine($"🔄 SDeck.SetVPage: {vPage?.Name ?? "null"}");
+				Debug.WriteLine($"?? SDeck.SetVPage: {vPage?.Name ?? "null"}");
 				_desiredVPage = vPage;
 				
 				// Queue the command for execution
@@ -718,7 +780,7 @@ namespace NWRS_AC_SDPlugin
 					{
 						if (_pendingCommands.Count > 0)
 						{
-							Debug.WriteLine($"⏳ SDeck: {_pendingCommands.Count} commands pending, waiting for connection. Connected={_deviceConnected}, DeviceID={_deviceID != null}");
+							Debug.WriteLine($"? SDeck: {_pendingCommands.Count} commands pending, waiting for connection. Connected={_deviceConnected}, DeviceID={_deviceID != null}");
 						}
 						return;
 					}
@@ -730,25 +792,25 @@ namespace NWRS_AC_SDPlugin
 						var command = _pendingCommands.Dequeue();
 						try
 						{
-							Debug.WriteLine($"🔄 SDeck: Processing command #{commandsProcessed + 1}");
+							Debug.WriteLine($"?? SDeck: Processing command #{commandsProcessed + 1}");
 							command.Invoke();
 							commandsProcessed++;
 						}
 						catch (Exception ex)
 						{
-							Debug.WriteLine($"❌ SDeck.ProcessCommands: Error executing command: {ex.Message}");
+							Debug.WriteLine($"? SDeck.ProcessCommands: Error executing command: {ex.Message}");
 						}
 					}
 					
 					if (commandsProcessed > 0)
 					{
-						Debug.WriteLine($"✅ SDeck: Processed {commandsProcessed} commands");
+						Debug.WriteLine($"? SDeck: Processed {commandsProcessed} commands");
 					}
 				}
 			}
 			catch (Exception ex)
 			{
-				Debug.WriteLine($"❌ SDeck.ProcessCommands: {ex.Message}");
+				Debug.WriteLine($"? SDeck.ProcessCommands: {ex.Message}");
 			}
 		}
 		
@@ -785,7 +847,7 @@ namespace NWRS_AC_SDPlugin
 					
 					if (enoughTimeHasPassed)
 					{
-						Debug.WriteLine($"🔧 SDeck: Virtual keys not ready after {timeSinceLastNWRSSwitch.TotalSeconds:F1}s, attempting recovery");
+						Debug.WriteLine($"?? SDeck: Virtual keys not ready after {timeSinceLastNWRSSwitch.TotalSeconds:F1}s, attempting recovery");
 						_pendingCommands.Enqueue(() => ExecuteProfileSwitch(PROFILE_NAME));
 					}
 				}
@@ -794,9 +856,9 @@ namespace NWRS_AC_SDPlugin
 					// After 30 seconds, log a single warning and stop trying
 					if (timeSinceLastNWRSSwitch < TimeSpan.FromSeconds(31))
 					{
-						Debug.WriteLine($"⚠️ SDeck: Virtual keys did not appear after 30 seconds");
-						Debug.WriteLine($"ℹ️ SDeck: This is expected if the '{PROFILE_NAME}' profile doesn't have plugin keys configured");
-						Debug.WriteLine($"ℹ️ SDeck: Plugin will continue to function for profile switching and other features");
+						Debug.WriteLine($"?? SDeck: Virtual keys did not appear after 30 seconds");
+						Debug.WriteLine($"?? SDeck: This is expected if the '{PROFILE_NAME}' profile doesn't have plugin keys configured");
+						Debug.WriteLine($"?? SDeck: Plugin will continue to function for profile switching and other features");
 					}
 				}
 			}
@@ -817,7 +879,7 @@ namespace NWRS_AC_SDPlugin
 		{
 			try
 			{
-				Debug.WriteLine($"⚡ SDeck.ExecuteProfileSwitch: Switching to {profileName}");
+				Debug.WriteLine($"? SDeck.ExecuteProfileSwitch: Switching to {profileName}");
 				
 				if (_conn != null && _deviceID != null)
 				{
@@ -828,7 +890,7 @@ namespace NWRS_AC_SDPlugin
 					// If we're already in NWRS AC profile with keys ready, no need to switch
 					if (alreadyInProfile && keysAlreadyReady)
 					{
-						Debug.WriteLine($"✅ SDeck.ExecuteProfileSwitch: Already in {profileName} with keys ready, skipping switch");
+						Debug.WriteLine($"? SDeck.ExecuteProfileSwitch: Already in {profileName} with keys ready, skipping switch");
 						return;
 					}
 					
@@ -846,28 +908,28 @@ namespace NWRS_AC_SDPlugin
 						{
 							_lastProfileSwitchToNWRS = DateTime.Now;
 							_virtualKeysReady = false;
-							Debug.WriteLine($"✅ SDeck.ExecuteProfileSwitch: Switched to {profileName} (profile changed, waiting for keys)");
+							Debug.WriteLine($"? SDeck.ExecuteProfileSwitch: Switched to {profileName} (profile changed, waiting for keys)");
 						}
 						else
 						{
-							Debug.WriteLine($"✅ SDeck.ExecuteProfileSwitch: Already in {profileName}, keeping key status: {_virtualKeysReady}");
+							Debug.WriteLine($"? SDeck.ExecuteProfileSwitch: Already in {profileName}, keeping key status: {_virtualKeysReady}");
 						}
 					}
 					else
 					{
 						_virtualKeysReady = false;
-						Debug.WriteLine($"✅ SDeck.ExecuteProfileSwitch: Switched to {profileName}");
+						Debug.WriteLine($"? SDeck.ExecuteProfileSwitch: Switched to {profileName}");
 					}
 				}
 				else
 				{
-					Debug.WriteLine($"❌ SDeck.ExecuteProfileSwitch: Connection not ready for {profileName}");
+					Debug.WriteLine($"? SDeck.ExecuteProfileSwitch: Connection not ready for {profileName}");
 					_pendingCommands.Enqueue(() => ExecuteProfileSwitch(profileName));
 				}
 			}
 			catch (Exception ex)
 			{
-				Debug.WriteLine($"❌ SDeck.ExecuteProfileSwitch: Error switching to {profileName}: {ex.Message}");
+				Debug.WriteLine($"? SDeck.ExecuteProfileSwitch: Error switching to {profileName}: {ex.Message}");
 				_pendingCommands.Enqueue(() => ExecuteProfileSwitch(profileName));
 			}
 		}
@@ -879,14 +941,14 @@ namespace NWRS_AC_SDPlugin
 		{
 			try
 			{
-				Debug.WriteLine($"⚡ SDeck.ExecuteVPageSet: Setting VPage {vPage?.Name ?? "null"}");
-				Debug.WriteLine($"🔍 Checking conditions: Profile={_currentProfile} (need {PROFILE_NAME}), VKeys={_virtualKeysReady} (need true)");
-				Debug.WriteLine($"🔍 Additional status: Connected={_deviceConnected}, DeviceID={_deviceID != null}, Conn={_conn != null}");
+				Debug.WriteLine($"? SDeck.ExecuteVPageSet: Setting VPage {vPage?.Name ?? "null"}");
+				Debug.WriteLine($"?? Checking conditions: Profile={_currentProfile} (need {PROFILE_NAME}), VKeys={_virtualKeysReady} (need true)");
+				Debug.WriteLine($"?? Additional status: Connected={_deviceConnected}, DeviceID={_deviceID != null}, Conn={_conn != null}");
 				
 				// Only set VPage if we're in NWRS profile
 				if (_currentProfile != PROFILE_NAME)
 				{
-					Debug.WriteLine($"⚠️ SDeck.ExecuteVPageSet: Not in {PROFILE_NAME} profile ({_currentProfile}), re-queuing");
+					Debug.WriteLine($"?? SDeck.ExecuteVPageSet: Not in {PROFILE_NAME} profile ({_currentProfile}), re-queuing");
 					_pendingCommands.Enqueue(() => ExecuteVPageSet(vPage));
 					return;
 				}
@@ -894,19 +956,19 @@ namespace NWRS_AC_SDPlugin
 				// Only set VPage if virtual keys are ready
 				if (!_virtualKeysReady)
 				{
-					Debug.WriteLine($"⚠️ SDeck.ExecuteVPageSet: Virtual keys not ready, re-queuing");
+					Debug.WriteLine($"?? SDeck.ExecuteVPageSet: Virtual keys not ready, re-queuing");
 					_pendingCommands.Enqueue(() => ExecuteVPageSet(vPage));
 					return;
 				}
 				
-				Debug.WriteLine($"✅ SDeck.ExecuteVPageSet: Conditions met, setting VPage on SDPage");
+				Debug.WriteLine($"? SDeck.ExecuteVPageSet: Conditions met, setting VPage on SDPage");
 				SDPage.SetVPage(vPage);
 				_currentVPage = vPage;
-				Debug.WriteLine($"✅ SDeck.ExecuteVPageSet: Set VPage {vPage?.Name ?? "null"}");
+				Debug.WriteLine($"? SDeck.ExecuteVPageSet: Set VPage {vPage?.Name ?? "null"}");
 			}
 			catch (Exception ex)
 			{
-				Debug.WriteLine($"❌ SDeck.ExecuteVPageSet: Error setting VPage: {ex.Message}");
+				Debug.WriteLine($"? SDeck.ExecuteVPageSet: Error setting VPage: {ex.Message}");
 				_pendingCommands.Enqueue(() => ExecuteVPageSet(vPage));
 			}
 		}
@@ -918,7 +980,7 @@ namespace NWRS_AC_SDPlugin
 		{
 			try
 			{
-				Debug.WriteLine($"🔗 SDeck: Establishing StreamDeck connection on port {port}");
+				Debug.WriteLine($"?? SDeck: Establishing StreamDeck connection on port {port}");
 				
 				_pluginUUID = pluginUUID;
 				_conn = new StreamDeckConnection(port, pluginUUID, registerEvent);
@@ -937,11 +999,11 @@ namespace NWRS_AC_SDPlugin
 				// Start the connection
 				_conn.Run();
 				
-				Debug.WriteLine("✅ SDeck: StreamDeck connection established");
+				Debug.WriteLine("? SDeck: StreamDeck connection established");
 			}
 			catch (Exception ex)
 			{
-				Debug.WriteLine($"❌ SDeck.EstablishStreamDeckConnection: {ex.Message}");
+				Debug.WriteLine($"? SDeck.EstablishStreamDeckConnection: {ex.Message}");
 				_conn = null;
 				Conn = null;
 				throw;
@@ -953,12 +1015,12 @@ namespace NWRS_AC_SDPlugin
 		/// </summary>
 		private static void OnStreamDeckConnected(object sender, EventArgs e)
 		{
-			Debug.WriteLine("🔗 SDeck: StreamDeck connected");
+			Debug.WriteLine("?? SDeck: StreamDeck connected");
 		}
 		
 		private static void OnStreamDeckDisconnected(object sender, EventArgs e)
 		{
-			Debug.WriteLine("❌ SDeck: StreamDeck disconnected - plugin will be restarted by StreamDeck software");
+			Debug.WriteLine("? SDeck: StreamDeck disconnected - plugin will be restarted by StreamDeck software");
 			lock (_stateLock)
 			{
 				_deviceConnected = false;
@@ -973,23 +1035,23 @@ namespace NWRS_AC_SDPlugin
 		
 		private static void OnDeviceConnected(object sender, StreamDeckEventReceivedEventArgs<DeviceDidConnectEvent> e)
 		{
-			Debug.WriteLine($"🔗 SDeck: Device connected: {e.Event.Device}");
+			Debug.WriteLine($"?? SDeck: Device connected: {e.Event.Device}");
 			lock (_stateLock)
 			{
 				_deviceID = e.Event.Device;
 				_deviceConnected = true;
 				
-				Debug.WriteLine($"🔗 SDeck: Device connection established - Current profile: {_currentProfile}, Desired: {_desiredProfile}");
+				Debug.WriteLine($"?? SDeck: Device connection established - Current profile: {_currentProfile}, Desired: {_desiredProfile}");
 				
 				// Always ensure we're in the desired profile when device connects
 				if (_desiredProfile != _currentProfile)
 				{
-					Debug.WriteLine($"🔧 SDeck: Device connected but profile mismatch - switching from {_currentProfile} to {_desiredProfile}");
+					Debug.WriteLine($"?? SDeck: Device connected but profile mismatch - switching from {_currentProfile} to {_desiredProfile}");
 					_pendingCommands.Enqueue(() => ExecuteProfileSwitch(_desiredProfile));
 				}
 				else
 				{
-					Debug.WriteLine($"🔧 SDeck: Device connected and profile matches - ensuring {PROFILE_NAME} virtual keys appear");
+					Debug.WriteLine($"?? SDeck: Device connected and profile matches - ensuring {PROFILE_NAME} virtual keys appear");
 					if (_desiredProfile == PROFILE_NAME)
 					{
 						_pendingCommands.Enqueue(() => ExecuteProfileSwitch(PROFILE_NAME));
@@ -1000,7 +1062,7 @@ namespace NWRS_AC_SDPlugin
 		
 		private static void OnDeviceDisconnected(object sender, StreamDeckEventReceivedEventArgs<DeviceDidDisconnectEvent> e)
 		{
-			Debug.WriteLine($"❌ SDeck: Device disconnected: {e.Event.Device}");
+			Debug.WriteLine($"? SDeck: Device disconnected: {e.Event.Device}");
 			lock (_stateLock)
 			{
 				_deviceConnected = false;
@@ -1013,8 +1075,8 @@ namespace NWRS_AC_SDPlugin
 		{
 			if (e.Event.Action == "com.nwracingsims.acuic.virtualkey")
 			{
-				Debug.WriteLine($"🔑 SDeck: Virtual key appeared at {e.Event.Payload.Coordinates.Columns},{e.Event.Payload.Coordinates.Rows}");
-				Debug.WriteLine($"🔍 Virtual key context: {e.Event.Context}");
+				Debug.WriteLine($"?? SDeck: Virtual key appeared at {e.Event.Payload.Coordinates.Columns},{e.Event.Payload.Coordinates.Rows}");
+				Debug.WriteLine($"?? Virtual key context: {e.Event.Context}");
 				
 				SDPage.AddKey(e.Event.Payload.Coordinates, e.Event.Context);
 				
@@ -1028,32 +1090,32 @@ namespace NWRS_AC_SDPlugin
 					{
 						_currentProfile = PROFILE_NAME;
 						_lastProfileSwitchToNWRS = DateTime.Now;
-						Debug.WriteLine($"✅ SDeck: Virtual keys appeared - we're in '{PROFILE_NAME}' profile");
+						Debug.WriteLine($"? SDeck: Virtual keys appeared - we're in '{PROFILE_NAME}' profile");
 					}
 					else
 					{
-						Debug.WriteLine($"✅ SDeck: Virtual keys now ready! Current profile: {_currentProfile}");
+						Debug.WriteLine($"? SDeck: Virtual keys now ready! Current profile: {_currentProfile}");
 					}
 					
 					// Set desired VPage if we have one pending
 					if (_desiredVPage != null && _currentProfile == PROFILE_NAME)
 					{
-						Debug.WriteLine($"🔄 SDeck: Queuing VPage set for {_desiredVPage.Name} since keys are now ready");
+						Debug.WriteLine($"?? SDeck: Queuing VPage set for {_desiredVPage.Name} since keys are now ready");
 						_pendingCommands.Enqueue(() => ExecuteVPageSet(_desiredVPage));
 					}
 					else if (_desiredVPage != null)
 					{
-						Debug.WriteLine($"⚠️ SDeck: Have desired VPage ({_desiredVPage.Name}) but not in {PROFILE_NAME} profile ({_currentProfile})");
+						Debug.WriteLine($"?? SDeck: Have desired VPage ({_desiredVPage.Name}) but not in {PROFILE_NAME} profile ({_currentProfile})");
 					}
 					else
 					{
-						Debug.WriteLine($"⚠️ SDeck: Virtual keys ready but no desired VPage set");
+						Debug.WriteLine($"?? SDeck: Virtual keys ready but no desired VPage set");
 					}
 				}
 			}
 			else if (e.Event.Action == "com.nwracingsims.acuic.backkey")
 			{
-				Debug.WriteLine($"🔙 SDeck: Back key appeared: {e.Event.Context}");
+				Debug.WriteLine($"?? SDeck: Back key appeared: {e.Event.Context}");
 				_backKey = new BackKey(e.Event.Context);
 			}
 		}
@@ -1062,22 +1124,26 @@ namespace NWRS_AC_SDPlugin
 		{
 			if (e.Event.Action == "com.nwracingsims.acuic.virtualkey")
 			{
-				Debug.WriteLine($"🔑 SDeck: Virtual key disappeared from {e.Event.Payload.Coordinates.Columns},{e.Event.Payload.Coordinates.Rows}");
+				Debug.WriteLine($"?? SDeck: Virtual key disappeared from {e.Event.Payload.Coordinates.Columns},{e.Event.Payload.Coordinates.Rows}");
 				SDPage.RemoveKey(e.Event.Payload.Coordinates, e.Event.Context);
 				
-				// Check if all virtual keys are gone
+				// Check if all virtual keys are gone - THIS is when we clear the flag
 				var remainingKeys = SDPage.SDKeys.Cast<SDKey>().Count(k => k.Context != null);
+				Debug.WriteLine($"?? SDeck: {remainingKeys} virtual keys remaining after disappearance");
+				
 				if (remainingKeys == 0)
 				{
 					lock (_stateLock)
 					{
 						_virtualKeysReady = false;
+						Debug.WriteLine($"?? SDeck: All virtual keys disappeared - _virtualKeysReady set to FALSE");
+						Debug.WriteLine($"?? SDeck: This indicates user switched away from '{PROFILE_NAME}' profile or StreamDeck disconnected");
 					}
 				}
 			}
 			else if (e.Event.Action == "com.nwracingsims.acuic.backkey")
 			{
-				Debug.WriteLine($"🔙 SDeck: Back key disappeared: {e.Event.Context}");
+				Debug.WriteLine($"?? SDeck: Back key disappeared: {e.Event.Context}");
 				_backKey = null;
 			}
 		}
@@ -1115,3 +1181,4 @@ namespace NWRS_AC_SDPlugin
 		}
 	}
 }
+

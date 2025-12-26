@@ -185,7 +185,15 @@ namespace NWRS_AC_SDPlugin
 				_keyDefinitions.Clear();
 				VPages.ClearAll();
 				
-				// Deactivate SDeck
+				// Clear pending commands queue to prevent infinite loops
+				SDeck.ClearPendingCommands();
+				Debug.WriteLine("✅ NamedPipe: Cleared pending command queue");
+				
+				// Clear virtual key visuals on StreamDeck (but don't clear _virtualKeysReady flag)
+				SDeck.ClearVirtualKeyVisuals();
+				Debug.WriteLine("✅ NamedPipe: Cleared virtual key visuals on StreamDeck");
+				
+				// Deactivate SDeck (stops profile management, but doesn't clear _virtualKeysReady)
 				SDeck.Deactivate();
 			}
 		}
@@ -316,53 +324,128 @@ namespace NWRS_AC_SDPlugin
 
 		/// <summary>
 		/// Handle DefinePage command from Content Manager
-		/// Format: "DefinePage PageName [[key00,key01,key02],[key10,key11,key12],...]"
+		/// Format: "DefinePage PageName[:BasePage] [[key00,key01,key02],[key10,key11,key12],...]"
+		/// Supports inheritance: DefinePage ChildPage:ParentPage [...]
+		/// Grid semantics: "base" = inherit from parent, null = clear position, "KeyName" = use specific key
 		/// </summary>
 		private static void HandleDefinePage(string args)
 		{
 			var parts = args.Split(new[] { ' ' }, 2);
 			if (parts.Length < 2)
 			{
-				Debug.WriteLine("⚠️ NamedPipe: DefinePage requires: PageName KeyGrid");
+				Debug.WriteLine("⚠️ NamedPipe: DefinePage requires: PageName[:BasePage] KeyGrid");
 				_ = SendPageDefinedEvent("unknown", false, "Missing required parameters: PageName and KeyGrid required");
 				return;
 			}
 			
-			string pageName = parts[0];
+			string pageNameFull = parts[0];
 			string keyGridJson = parts[1];
+			
+			// Parse inheritance: "ChildPage:ParentPage" or just "PageName"
+			string pageName;
+			string basePageName = null;
+			
+			int colonIndex = pageNameFull.IndexOf(':');
+			if (colonIndex > 0)
+			{
+				pageName = pageNameFull.Substring(0, colonIndex);
+				basePageName = pageNameFull.Substring(colonIndex + 1);
+				
+				if (string.IsNullOrWhiteSpace(basePageName))
+				{
+					Debug.WriteLine($"⚠️ NamedPipe: Invalid inheritance syntax for '{pageNameFull}' - base page name cannot be empty");
+					_ = SendPageDefinedEvent(pageName, false, "Invalid inheritance syntax: base page name cannot be empty after ':'");
+					return;
+				}
+				
+				Debug.WriteLine($"🔗 NamedPipe: Creating page '{pageName}' inheriting from '{basePageName}'");
+			}
+			else
+			{
+				pageName = pageNameFull;
+				Debug.WriteLine($"📄 NamedPipe: Creating page '{pageName}' (no inheritance)");
+			}
 			
 			try
 			{
-				// Parse JSON grid
-				var keyGrid = ParseKeyGrid(keyGridJson);
-				if (keyGrid == null)
+				// Parse child grid from JSON
+				var childGrid = ParseKeyGrid(keyGridJson);
+				if (childGrid == null)
 				{
 					Debug.WriteLine($"⚠️ NamedPipe: Failed to parse key grid for page '{pageName}'");
 					_ = SendPageDefinedEvent(pageName, false, "Invalid JSON grid format");
 					return;
 				}
 				
-				// Validate ALL keys exist before creating page
-				int gridRows = keyGrid.GetLength(0);
-				int gridCols = keyGrid.GetLength(1);
+				// Get base page if inheritance is specified
+				VPage basePage = null;
+				if (basePageName != null)
+				{
+					basePage = VPages.GetByName(basePageName);
+					if (basePage == null)
+					{
+						Debug.WriteLine($"❌ NamedPipe: Base page '{basePageName}' not found for page '{pageName}'");
+						_ = SendPageDefinedEvent(pageName, false, $"Base page '{basePageName}' not defined");
+						return;
+					}
+				}
+				
+				// Merge grids: child overrides base
+				// - "base" in child → use base page key
+				// - null in child → clear position (no key)
+				// - "KeyName" in child → use specified key
+				var finalGrid = new string[5, 3];
 				var missingKeys = new List<string>();
 				
-				for (int r = 0; r < Math.Min(5, gridRows); r++)
+				for (int r = 0; r < 5; r++)
 				{
-					for (int c = 0; c < Math.Min(3, gridCols); c++)
+					for (int c = 0; c < 3; c++)
 					{
-						string keyName = keyGrid[r, c];
-						if (!string.IsNullOrEmpty(keyName) && keyName != "null")
+						string childKey = childGrid[r, c];
+						
+						// Handle inheritance logic
+						if (childKey == "base")
 						{
-							if (!_keyDefinitions.ContainsKey(keyName))
+							// Use base page key if available
+							if (basePage != null && basePage.VKeys[r, c] != null)
 							{
-								missingKeys.Add($"{keyName}@({r},{c})");
+								// Get key name from base VKey
+								var baseVKey = basePage.VKeys[r, c];
+								var nameField = baseVKey.GetType().GetField("_name", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+								finalGrid[r, c] = nameField?.GetValue(baseVKey) as string;
+							}
+							else
+							{
+								// No base page or base position is empty
+								finalGrid[r, c] = null;
+								
+								if (basePage == null)
+								{
+									Debug.WriteLine($"⚠️ NamedPipe: 'base' keyword at ({r},{c}) but no base page specified");
+									missingKeys.Add($"base@({r},{c})-no_base_page");
+								}
+							}
+						}
+						else if (string.IsNullOrEmpty(childKey) || childKey == "null")
+						{
+							// Explicitly clear this position
+							finalGrid[r, c] = null;
+						}
+						else
+						{
+							// Use specified key name
+							finalGrid[r, c] = childKey;
+							
+							// Validate key exists
+							if (!_keyDefinitions.ContainsKey(childKey))
+							{
+								missingKeys.Add($"{childKey}@({r},{c})");
 							}
 						}
 					}
 				}
 				
-				// If ANY keys are missing, fail the entire page definition
+				// If ANY keys are missing or invalid, fail the entire page definition
 				if (missingKeys.Count > 0)
 				{
 					var errorMsg = $"Undefined keys: {string.Join(", ", missingKeys)}";
@@ -371,15 +454,15 @@ namespace NWRS_AC_SDPlugin
 					return;
 				}
 				
-				// All keys exist - create the page
+				// All keys valid - create the page
 				var vPage = new VPage(pageName, rows: 5, cols: 3);
 				
-				for (int r = 0; r < Math.Min(5, gridRows); r++)
+				for (int r = 0; r < 5; r++)
 				{
-					for (int c = 0; c < Math.Min(3, gridCols); c++)
+					for (int c = 0; c < 3; c++)
 					{
-						string keyName = keyGrid[r, c];
-						if (!string.IsNullOrEmpty(keyName) && keyName != "null")
+						string keyName = finalGrid[r, c];
+						if (!string.IsNullOrEmpty(keyName))
 						{
 							var keyDef = _keyDefinitions[keyName];
 							
@@ -399,7 +482,15 @@ namespace NWRS_AC_SDPlugin
 				}
 				
 				_ = SendPageDefinedEvent(pageName, true);
-				Debug.WriteLine($"✅ NamedPipe: Created page '{pageName}' (5x3 grid)");
+				
+				if (basePageName != null)
+				{
+					Debug.WriteLine($"✅ NamedPipe: Created page '{pageName}' inheriting from '{basePageName}' (5x3 grid)");
+				}
+				else
+				{
+					Debug.WriteLine($"✅ NamedPipe: Created page '{pageName}' (5x3 grid)");
+				}
 			}
 			catch (Exception ex)
 			{

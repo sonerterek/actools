@@ -112,42 +112,103 @@ SetKeyVisuals BlankIt
 
 ### 3. DefinePage
 
-Creates a page with a grid of keys.
+Creates a page with a grid of keys. Supports inheritance from existing pages using C++ style syntax.
 
 **Format:**
 ```
-DefinePage <PageName> <KeyGrid>
+DefinePage <PageName>[:<BasePageName>] <KeyGrid>
 ```
 
 **Parameters:**
-- `PageName`: Unique identifier for the page (no spaces)
+- `PageName`: Unique identifier for the page (no spaces, required)
+- `:<BasePageName>`: Optional - inherit layout from an existing page
 - `KeyGrid`: JSON array of arrays defining the 5x3 key layout
 
 **Key Grid Format:**
 - Must be a valid JSON array: `[[row0],[row1],[row2],[row3],[row4]]`
 - Each row must have exactly 3 elements (columns)
-- Use `null` or `""` for empty positions
-- Use previously defined KeyNames for buttons
+- Use `"base"` to inherit key from base page
+- Use `null` or `""` to clear position (override base with empty)
+- Use `"KeyName"` to use specific key (override base with this key)
 
-**Example:**
+**Inheritance Semantics:**
+When a base page is specified with `:BasePageName`:
+- **`"base"`** = Keep/inherit the key from the base page at this position
+- **`null`** or `""` = Clear this position (override base with empty key)
+- **`"KeyName"`** = Use specified key (override base with this key)
+
+**Examples:**
+
+**Standard page (no inheritance):**
 ```
 DefinePage MainMenu [["PitLimiter","TractionControl","ABSControl"],["Back",null,"Next"],[null,null,null],[null,null,null],[null,null,null]]
 ```
 
-**Visual Layout:**
+**Inherit and override specific keys:**
 ```
-Row 0: [PitLimiter] [TractionControl] [ABSControl]
-Row 1: [Back]       [empty]          [Next]
-Row 2: [empty]      [empty]          [empty]
-Row 3: [empty]      [empty]          [empty]
-Row 4: [empty]      [empty]          [empty]
+# Base navigation page with common buttons
+DefineKey Back "Back" C:\Icons\back.png
+DefineKey Home "Home" C:\Icons\home.png
+DefineKey Next "Next" C:\Icons\next.png
+
+DefinePage Navigation [["Back","Home","Next"],[null,null,null],[null,null,null],[null,null,null],[null,null,null]]
+
+# Edit page: inherit navigation, add Save/Cancel buttons at top
+DefineKey Save "Save" C:\Icons\save.png
+DefineKey Cancel "Cancel" C:\Icons\cancel.png
+
+DefinePage EditPage:Navigation [["Save","Cancel","base"],[null,null,null],[null,null,null],[null,null,null],[null,null,null]]
+
+# Result: EditPage has Save, Cancel, Next (inherited) at row 0
+# Back and Home positions are cleared (null overrides base)
+```
+
+**Inherit most, override one:**
+```
+DefinePage ViewPage:Navigation [["base","base","base"],["Export","Print",null],[null,null,null],[null,null,null],[null,null,null]]
+
+# Result: ViewPage has Back, Home, Next (all inherited) at row 0
+#         Plus Export, Print at row 1
+```
+
+**Clear inherited keys:**
+```
+DefinePage MinimalPage:Navigation [[null,null,null],[null,null,null],[null,null,null],[null,null,null],[null,null,null]]
+
+# Result: MinimalPage has no keys (all base keys cleared with null)
+```
+
+**Visual Layout Examples:**
+
+**Base page:**
+```
+Navigation:
+Row 0: [Back]   [Home]   [Next]
+Row 1: [empty]  [empty]  [empty]
+Row 2: [empty]  [empty]  [empty]
+Row 3: [empty]  [empty]  [empty]
+Row 4: [empty]  [empty]  [empty]
+```
+
+**Child page with inheritance:**
+```
+EditPage:Navigation (grid: [["Save","Cancel","base"],[null,null,null],...])
+Row 0: [Save]   [Cancel] [Next]    ? Save replaces Back, Cancel replaces Home, Next inherited
+Row 1: [empty]  [empty]  [empty]   ? null clears inherited positions
+Row 2: [empty]  [empty]  [empty]
+Row 3: [empty]  [empty]  [empty]
+Row 4: [empty]  [empty]  [empty]
 ```
 
 **Notes:**
 - All pages are exactly 5 rows x 3 columns (StreamDeck standard layout)
-- Keys must be defined with DefineKey before use
-- Undefined keys are skipped (position left blank)
+- Base page must exist before creating child page
+- `"base"` keyword requires a base page - error if used without `:<BasePageName>`
+- Keys specified in child grid must be defined with DefineKey
+- Inheritance is resolved at definition time (one-time merge)
+- Changes to base page don't affect existing child pages
 - Pages can be redefined to update layout
+- Multi-level inheritance not supported (ChildA:ParentB where ParentB:GrandparentC)
 
 ---
 
@@ -456,6 +517,11 @@ When CM disconnects:
 8. **Use absolute file paths** for icons (e.g., `C:\MyApp\Icons\icon.png`)
 9. **Verify icon files exist** before sending DefineKey commands (optional, but recommended)
 10. **No partial pages** - All keys must exist or page creation fails completely
+11. **Use page inheritance for common layouts** - Define base pages for navigation/common elements
+12. **Use `base` keyword wisely** - Only in child pages with `:BasePageName` syntax
+13. **Use `null` to clear positions** - Explicitly override inherited keys with empty positions
+14. **Define base pages first** - Child pages cannot be created before their parents
+15. **Inheritance is one-time merge** - Changes to base page don't affect existing children
 
 ---
 
@@ -589,64 +655,124 @@ SwitchPage AnotherPage
 
 Result: Keys can be updated in real-time on current page without affecting key definitions or other pages
 
----
+### Example 7: Page Inheritance - Navigation Template
 
-## Implementation Notes
+```
+# Define common navigation keys
+DefineKey Back "Back" C:\Icons\back.png
+DefineKey Home "Home" C:\Icons\home.png
+DefineKey Next "Next" C:\Icons\next.png
+Plugin ? KeyDefined Back OK
+Plugin ? KeyDefined Home OK
+Plugin ? KeyDefined Next OK
 
-### Plugin Architecture
+# Create base navigation page
+DefinePage Navigation [["Back","Home","Next"],[null,null,null],[null,null,null],[null,null,null],[null,null,null]]
+Plugin ? PageDefined Navigation OK
 
-- **SDeck**: Manages StreamDeck connection and profiles
-- **VPage**: Represents a 5x3 page of keys
-- **VKey**: Represents an individual key with icon and title
-- **SDImage**: Handles icon loading from multiple sources (absolute paths, text, base64)
-- **Program**: Handles named pipe and command processing
+# Define context-specific keys
+DefineKey Save "Save" C:\Icons\save.png
+DefineKey Cancel "Cancel" C:\Icons\cancel.png
+DefineKey Export "Export" C:\Icons\export.png
+DefineKey Print "Print" C:\Icons\print.png
+Plugin ? KeyDefined Save OK
+Plugin ? KeyDefined Cancel OK
+Plugin ? KeyDefined Export OK
+Plugin ? KeyDefined Print OK
 
-### Icon Handling
+# Create edit page inheriting navigation
+DefinePage EditMenu:Navigation [["Save","Cancel","base"],[null,null,null],[null,null,null],[null,null,null],[null,null,null]]
+Plugin ? PageDefined EditMenu OK
+# Result: Save, Cancel, Next (inherited) at row 0
 
-The plugin supports multiple icon formats to provide flexibility:
+# Create view page inheriting navigation
+DefinePage ViewMenu:Navigation [["base","base","base"],["Export","Print",null],[null,null,null],[null,null,null],[null,null,null]]
+Plugin ? PageDefined ViewMenu OK
+# Result: Back, Home, Next (all inherited) at row 0, Export/Print at row 1
 
-1. **Absolute File Paths** (Recommended)
-   - Content Manager passes full paths: `C:\MyApp\Icons\icon.png`
-   - Plugin reads file directly using `File.ReadAllBytes()`
-   - Best for production use - no ambiguity about file location
+# Create minimal page clearing everything
+DefinePage MinimalMenu:Navigation [[null,null,null],[null,null,null],[null,null,null],[null,null,null],[null,null,null]]
+Plugin ? PageDefined MinimalMenu OK
+# Result: Only Home at position (1,1), all other inherited keys cleared
 
-2. **Text-Based Icons**
-   - Format: `!TextHere` (e.g., `!TC`, `!ABS`)
-   - Plugin generates image with text on colored background
-   - Useful for prototyping or when icons aren't available
+# Switch between pages
+SwitchPage EditMenu   # Shows: Save, Cancel, Next
+SwitchPage ViewMenu   # Shows: Back, Home, Next, Export, Print
+SwitchPage MinimalMenu # Shows: Only Home in center
+```
 
-3. **Base64 Embedded Images**
-   - Format: `data:image/png;base64,iVBORw0KG...`
-   - Plugin uses image data directly
-   - Useful for small icons or when file system access is limited
+Result: Multiple pages share common navigation with context-specific additions
 
-4. **Relative Paths** (Legacy)
-   - Format: `icon.png`
-   - Plugin searches in `assets\SD-Icons\` folder
-   - Not recommended - plugin shouldn't manage client icons
+### Example 8: Page Inheritance - Error Scenarios
 
-**Icon Caching:**
-- Icons are cached by path/name to avoid redundant conversions
-- Same absolute path won't be reloaded from disk
-- Cache is cleared when Content Manager disconnects
+```
+# Error: Base page doesn't exist
+DefinePage ChildPage:NonExistent [["base",null,null],[null,null,null],[null,null,null],[null,null,null],[null,null,null]]
+Plugin ? PageDefined ChildPage ERROR Base page 'NonExistent' not defined
 
-### Threading
+# Error: Using 'base' without inheritance
+DefinePage InvalidPage [["base",null,null],[null,null,null],[null,null,null],[null,null,null],[null,null,null]]
+Plugin ? PageDefined InvalidPage ERROR Undefined keys: base@(0,0)-no_base_page
 
-- Named pipe runs on background thread
-- Commands processed synchronously
-- Events sent asynchronously (fire-and-forget)
-- All SDeck operations are thread-safe
+# Error: Child key not defined
+DefineKey Key1 "Key 1" C:\Icons\key1.png
+DefinePage Base [["Key1",null,null],[null,null,null],[null,null,null],[null,null,null],[null,null,null]]
+Plugin ? PageDefined Base OK
 
-### Performance
+DefinePage Child:Base [["UndefinedKey",null,null],[null,null,null],[null,null,null],[null,null,null],[null,null,null]]
+Plugin ? PageDefined Child ERROR Undefined keys: UndefinedKey@(0,0)
 
-- Key definitions: Unlimited (memory-bound)
-- Page definitions: Unlimited (memory-bound)
-- Icon caching: Automatic (reduces redundant base64 conversions)
-- Command latency: <10ms typically
+# Error: Empty base page name
+DefinePage BadChild: [["base",null,null],[null,null,null],[null,null,null],[null,null,null],[null,null,null]]
+Plugin ? PageDefined BadChild ERROR Invalid inheritance syntax: base page name cannot be empty after ':'
+```
+
+Result: Proper error handling for inheritance edge cases
+
+### Example 9: Page Inheritance - Complex Layouts
+
+```
+# Define full set of keys
+DefineKey A "A" !A
+DefineKey B "B" !B
+DefineKey C "C" !C
+DefineKey D "D" !D
+DefineKey E "E" !E
+DefineKey F "F" !F
+
+# Create base layout with scattered keys
+DefinePage BaseLayout [["A",null,"B"],[null,"C",null],["D",null,"E"],[null,null,null],[null,null,null]]
+Plugin ? PageDefined BaseLayout OK
+# Layout: A[_]B / [_]C[_] / D[_]E / [_][_][_] / [_][_][_]
+
+# Child 1: Keep most, add F at bottom
+DefinePage Child1:BaseLayout [["base","base","base"],["base","base","base"],["base","base","base"],[null,null,null],["F",null,null]]
+Plugin ? PageDefined Child1 OK
+# Layout: A[_]B / [_]C[_] / D[_]E / [_][_][_] / F[_][_]
+
+# Child 2: Clear middle, keep edges
+DefinePage Child2:BaseLayout [["base","base","base"],[null,null,null],[base","base","base"],[null,null,null],[null,null,null]]
+Plugin ? PageDefined Child2 OK
+# Layout: A[_]B / [_][_][_] / D[_]E / [_][_][_] / [_][_][_]
+
+# Child 3: Swap some keys
+DefinePage Child3:BaseLayout [["base","F","base"],["base","base","base"],["base","base","base"],[null,null,null],[null,null,null]]
+Plugin ? PageDefined Child3 OK
+# Layout: A F B / [_]C[_] / D[_]E / [_][_][_] / [_][_][_]
+```
+
+Result: Flexible inheritance allows complex layout variations
 
 ---
 
 ## Version History
+
+- **v1.1** (2024-12-24): Page inheritance feature
+  - Added `:BasePageName` syntax for page inheritance (C++ style)
+  - Added `"base"` keyword in grid to inherit keys from base page
+  - `null` now clears/overrides base page positions
+  - Enhanced error handling for inheritance edge cases
+  - One-time merge at definition (no dynamic inheritance)
 
 - **v1.0** (2024-12-23): Initial protocol design
   - DefineKey, DefinePage, SwitchPage, SwitchProfile, SwitchProfileBack
