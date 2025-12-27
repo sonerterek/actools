@@ -516,18 +516,152 @@ namespace AcManager.UiObserver
         }
 
         /// <summary>
+        /// Extracts display content from a FrameworkElement for disambiguation.
+        /// Returns null if no meaningful content is found.
+        /// 
+        /// Priority:
+        /// 1. ContentControl.Content (Button, Label, CheckBox, etc.) - if it's a string or TextBlock with text
+        /// 2. TextBlock.Text - if it has actual text
+        /// 3. HeaderedContentControl.Header (GroupBox, Expander) - if it's a string
+        /// 4. ToolTip - HIGH-PRIORITY BACKUP for icon-only buttons (ModernButton, etc.)
+        /// 5. First TextBlock child in visual tree - LAST RESORT, only if it has text
+        /// </summary>
+        private static string ExtractElementContent(FrameworkElement fe)
+        {
+            if (fe == null) return null;
+
+            try {
+                // ✅ PRIORITY 1: ContentControl.Content (Button, Label, CheckBox, etc.)
+                if (fe is ContentControl cc && cc.Content != null) {
+                    // If Content is a string, use it directly
+                    if (cc.Content is string str && !string.IsNullOrWhiteSpace(str)) {
+                        return str.Trim();
+                    }
+                    
+                    // If Content is a TextBlock, get its text
+                    if (cc.Content is TextBlock tb && !string.IsNullOrWhiteSpace(tb.Text)) {
+                        return tb.Text.Trim();
+                    }
+                }
+
+                // ✅ PRIORITY 2: TextBlock.Text (direct TextBlock element)
+                if (fe is TextBlock textBlock && !string.IsNullOrWhiteSpace(textBlock.Text)) {
+                    return textBlock.Text.Trim();
+                }
+
+                // ✅ PRIORITY 3: HeaderedContentControl.Header (GroupBox, Expander)
+                if (fe is HeaderedContentControl hcc && hcc.Header is string headerStr && !string.IsNullOrWhiteSpace(headerStr)) {
+                    return headerStr.Trim();
+                }
+
+                // ✅ PRIORITY 4: ToolTip (HIGH-PRIORITY BACKUP for ModernButton, icon-only buttons, etc.)
+                // This is PERFECT for elements where Content is null but ToolTip describes the action
+                if (fe.ToolTip != null) {
+                    // Case 1: ToolTip is a direct string (simple case)
+                    if (fe.ToolTip is string tooltipStr && !string.IsNullOrWhiteSpace(tooltipStr)) {
+                        return tooltipStr.Trim();
+                    }
+                    
+                    // Case 2: ToolTip is a ToolTip object with Content property (common case)
+                    // When you set ToolTip="text" in XAML, WPF wraps it in a ToolTip object
+                    if (fe.ToolTip is System.Windows.Controls.ToolTip tooltipObj && tooltipObj.Content is string tooltipContent && !string.IsNullOrWhiteSpace(tooltipContent)) {
+                        return tooltipContent.Trim();
+                    }
+                }
+
+                // ✅ PRIORITY 5: Visual tree search (LAST RESORT fallback)
+                // Search for first TextBlock child - but ONLY if it has actual text
+                var childTextBlock = FindVisualChild<TextBlock>(fe);
+                if (childTextBlock != null && !string.IsNullOrWhiteSpace(childTextBlock.Text)) {
+                    return childTextBlock.Text.Trim();
+                }
+            } catch {
+                // Content extraction failed, return null
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Finds the first child of a given type in the visual tree.
+        /// </summary>
+        private static T FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
+        {
+            if (parent == null) return null;
+
+            try {
+                int childCount = VisualTreeHelper.GetChildrenCount(parent);
+                for (int i = 0; i < childCount; i++) {
+                    var child = VisualTreeHelper.GetChild(parent, i);
+
+                    if (child is T typedChild) {
+                        return typedChild;
+                    }
+
+                    var foundChild = FindVisualChild<T>(child);
+                    if (foundChild != null) {
+                        return foundChild;
+                    }
+                }
+            } catch {
+                // Visual tree traversal failed
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// Sanitizes content string for use in hierarchical path.
+        /// Truncates long content and escapes special characters.
+        /// </summary>
+        private static string SanitizeContent(string content)
+        {
+            if (string.IsNullOrWhiteSpace(content)) return null;
+
+            content = content.Trim();
+
+            // Skip if content looks like dynamic data (pure numbers, dates, etc.)
+            if (System.Text.RegularExpressions.Regex.IsMatch(content, @"^\d+$")) {
+                return null; // Skip pure numbers
+            }
+
+            // Truncate long content
+            const int maxLength = 30;
+            if (content.Length > maxLength) {
+                content = content.Substring(0, maxLength - 3) + "...";
+            }
+
+            // Escape special characters that conflict with path format
+            content = content.Replace('"', '\'');   // Replace quotes with single quotes
+            content = content.Replace('>', '›');    // Replace path separator
+            content = content.Replace('\r', ' ');   // Replace line breaks
+            content = content.Replace('\n', ' ');
+            content = content.Replace('\t', ' ');
+
+            // Collapse multiple spaces
+            while (content.Contains("  ")) {
+                content = content.Replace("  ", " ");
+            }
+
+            return content;
+        }
+
+        /// <summary>
         /// Gets the hierarchical path of an element in the visual tree.
-        /// Format: Name:Type[:HWND] > ChildName:ChildType > ...
+        /// Format: Name:Type[:HWND]["Content"] > ChildName:ChildType["Content"] > ...
         /// 
-        /// ✓ FIXED: Includes WindowHandle in SimpleName for top-level elements (Window, PopupRoot).
-        /// Each WPF Popup creates its own OS-level window (HWND), so PopupRoots for main menu
-        /// and submenu will have different window handles in their SimpleName, making paths unique.
+        /// ✓ CONTENT DISAMBIGUATION: For unnamed leaf nodes, appends ["Content"] to make paths unique.
+        /// This allows distinguishing between buttons like "OK" vs "Cancel" or list items like "Germany" vs "Italy".
         /// 
-        /// Example paths with WindowHandles in SimpleName:
-        /// - Main menu: "(unnamed):PopupRoot:3F4A21B > ... > (unnamed):MenuItem"
-        /// - Submenu: "(unnamed):PopupRoot:5C8D943 > ... > (unnamed):HierarchicalItem"
+        /// ✓ HWND FOR TOP-LEVEL: Includes WindowHandle for top-level elements (Window, PopupRoot).
+        /// Each WPF Popup creates its own OS-level window (HWND), ensuring unique paths for different popups.
         /// 
-        /// This ensures different PopupRoots have unique paths for scope filtering.
+        /// Example paths:
+        /// - Named button: "OkButton:Button" (no content needed - name is unique)
+        /// - Unnamed button: "(unnamed):Button["OK"]" (content distinguishes from Cancel)
+        /// - Main menu: "(unnamed):PopupRoot:3F4A21B > (unnamed):MenuItem["File"]"
+        /// - Submenu: "(unnamed):PopupRoot:5C8D943 > (unnamed):MenuItem["Open"]"
+        /// 
         /// Handles both NavNode elements (uses their SimpleName) and non-NavNode intermediate elements.
         /// </summary>
         public static string GetHierarchicalPath(FrameworkElement fe)
@@ -545,6 +679,17 @@ namespace AcManager.UiObserver
                         if (Observer.TryGetNavNode(parent, out var existingNode)) {
                             // Use the pre-computed SimpleName from the NavNode
                             pathSegment = existingNode.SimpleName;
+                            
+                            // ✓ NEW: Add content for unnamed LEAF nodes only
+                            if (!existingNode.IsGroup && string.IsNullOrEmpty(parent.Name)) {
+                                var content = ExtractElementContent(parent);
+                                if (!string.IsNullOrWhiteSpace(content)) {
+                                    content = SanitizeContent(content);
+                                    if (!string.IsNullOrWhiteSpace(content)) {
+                                        pathSegment = $"{pathSegment}[\"{content}\"]";
+                                    }
+                                }
+                            }
                         } else {
                             // Not a NavNode - compute path segment manually
                             // This handles intermediate elements in the visual tree
@@ -563,6 +708,21 @@ namespace AcManager.UiObserver
                                     }
                                 } catch {
                                     // HWND not available yet, use base format
+                                }
+                            }
+                            
+                            // ✓ NEW: Add content for unnamed LEAF elements that aren't NavNodes yet
+                            // This is critical for elements during creation (they're not in Observer's dictionary yet)
+                            if (string.IsNullOrEmpty(parent.Name) && !isTopLevel) {
+                                // Check if this looks like a leaf type (not a group/container)
+                                if (IsLeafType(parent.GetType())) {
+                                    var content = ExtractElementContent(parent);
+                                    if (!string.IsNullOrWhiteSpace(content)) {
+                                        content = SanitizeContent(content);
+                                        if (!string.IsNullOrWhiteSpace(content)) {
+                                            pathSegment = $"{pathSegment}[\"{content}\"]";
+                                        }
+                                    }
                                 }
                             }
                         }

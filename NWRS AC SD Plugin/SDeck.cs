@@ -84,7 +84,7 @@ namespace NWRS_AC_SDPlugin
 				image = image[..endIndex];
 				}
 
-				string imageName = $"{image}{(inverted ? "-inv" : "")}";
+				string imageName = $"{image}{(inverted ? "-inv" : "-")}</data:image/png;base64,";
 				if (!_imageCache.TryGetValue(imageName, out _image)) {
 					try {
 						byte[] imageBytes = File.ReadAllBytes($"assets\\SD-Icons\\{imageName}.png");
@@ -1041,9 +1041,16 @@ namespace NWRS_AC_SDPlugin
 				_deviceID = e.Event.Device;
 				_deviceConnected = true;
 				
-				Debug.WriteLine($"?? SDeck: Device connection established - Current profile: {_currentProfile}, Desired: {_desiredProfile}");
+				Debug.WriteLine($"?? SDeck: Device connection established - Current profile: {_currentProfile}, Desired: {_desiredProfile}, Active: {_isActive}");
 				
-				// Always ensure we're in the desired profile when device connects
+				// Only enforce profile when in active mode
+				if (!_isActive)
+				{
+					Debug.WriteLine($"?? SDeck: Device connected while in passive mode - not enforcing any profile");
+					return;
+				}
+				
+				// Always ensure we're in the desired profile when device connects (only in active mode)
 				if (_desiredProfile != _currentProfile)
 				{
 					Debug.WriteLine($"?? SDeck: Device connected but profile mismatch - switching from {_currentProfile} to {_desiredProfile}");
@@ -1066,8 +1073,11 @@ namespace NWRS_AC_SDPlugin
 			lock (_stateLock)
 			{
 				_deviceConnected = false;
+				// NOTE: We clear _virtualKeysReady here because the device is physically disconnected
+				// When it reconnects, the keys will reappear and OnKeyAppeared will set it back to true
 				_virtualKeysReady = false;
 				_deviceID = null;
+				Debug.WriteLine($"?? SDeck: Device physically disconnected - _virtualKeysReady cleared (will be restored when keys reappear)");
 			}
 		}
 		
