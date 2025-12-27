@@ -23,12 +23,8 @@ namespace AcManager.UiObserver
 
 		// StreamDeck integration
 		private static SDPClient _streamDeckClient;
-		private static bool _streamDeckEnabled = false;
 
-		// Session tracking for discovery file
-		private static bool _discoverySessionHeaderWritten = false;
-
-		// Built-in page names
+		// Page name constants
 		private const string PageNavigation = "Navigation";
 		private const string PageUpDown = "UpDown";
 		private const string PageSlider = "Slider";
@@ -41,89 +37,76 @@ namespace AcManager.UiObserver
 
 		/// <summary>
 		/// Initialize StreamDeck integration.
-		/// Discovers icons, defines keys/pages, and connects to plugin.
+		/// Sets up client, defines keys/pages, subscribes to events, and starts connection.
+		/// Fire-and-forget: Does not wait for or check connection status.
 		/// </summary>
 		private static void InitializeStreamDeck()
 		{
-			try {
-				// Initialize client with verbose debugging enabled
-				_streamDeckClient = new SDPClient { VerboseDebug = true };
-				
-				// Kick off async setup (non-blocking)
-				Task.Run(async () => {
-					try {
-						Debug.WriteLine("[Navigator] Starting StreamDeck initialization...");
-						
-						// Start connection attempt (don't await yet)
-						Debug.WriteLine("[Navigator] Connecting to StreamDeck plugin...");
-						var connectTask = _streamDeckClient.ConnectAsync();
-						
-						// While connection is in progress, discover icons from Assets/SDIcons directory
-						Debug.WriteLine("[Navigator] Discovering icons while connecting...");
-						var icons = SDPIconHelper.DiscoverIcons();
-						Debug.WriteLine($"[Navigator] Found {icons.Count} icons");
-						
-						if (icons.Count > 0)
-						{
-							Debug.WriteLine("[Navigator] Available icons:");
-							foreach (var icon in icons)
-							{
-								Debug.WriteLine($"[Navigator]   - {icon.Key} = {icon.Value}");
-							}
-						}
-						
-						// Define navigation keys with icons from SDIcons
-						var keyDefs = new List<SDPKeyDef>
-						{
-							new SDPKeyDef("Back", "", GetIconPath(icons, "Back")),
-							new SDPKeyDef("MouseLeft", "", GetIconPath(icons, "Mouse Left")),
-							new SDPKeyDef("Up", "", GetIconPath(icons, "Up")),
-							new SDPKeyDef("Down", "", GetIconPath(icons, "Down")),
-							new SDPKeyDef("Right", "", GetIconPath(icons, "Right")),
-							new SDPKeyDef("Left", "", GetIconPath(icons, "Left")),
-							new SDPKeyDef("Close", "", GetIconPath(icons, "Close")),
-							// Discovery keys (text-based icons)
-							new SDPKeyDef("WriteModalFilter", "Modal", ""),
-							new SDPKeyDef("WriteElementFilter", "Element", "")
-						};
-						
-						// Now wait for connection to complete
-						Debug.WriteLine("[Navigator] Waiting for connection to complete...");
-						bool connected = await connectTask;
-						
-						if (!connected) {
-							Debug.WriteLine("[Navigator] ⚠️ StreamDeck plugin not available - Please ensure:");
-							Debug.WriteLine("[Navigator]   1. StreamDeck plugin is installed");
-							Debug.WriteLine("[Navigator]   2. StreamDeck plugin is running");
-							Debug.WriteLine("[Navigator]   3. Named pipe 'NWRS_AC_SDPlugin_Pipe' is created");
-							Debug.WriteLine("[Navigator] StreamDeck navigation will not be available.");
-							return;
-						}
-						
-						Debug.WriteLine("[Navigator] ✅ StreamDeck connected, setting up navigation page...");
-						
-						// Define keys and pages
-						await DefineKeysAndPages(icons);
-						
-						// Switch to navigation page
-						Debug.WriteLine("[Navigator] Switching to Navigation page...");
-						bool switched = _streamDeckClient.SwitchPage(PageNavigation);
-						Debug.WriteLine($"[Navigator] SwitchPage result: {switched}");
-						
-						// Subscribe to key presses
-						_streamDeckClient.KeyPressed += OnStreamDeckKeyPressed;
-						
-						_streamDeckEnabled = true;
-						Debug.WriteLine("[Navigator] ✅ StreamDeck integration ready");
-						
-					} catch (Exception ex) {
-						Debug.WriteLine($"[Navigator] ❌ StreamDeck setup error: {ex.Message}");
-						Debug.WriteLine($"[Navigator] Stack trace: {ex.StackTrace}");
-					}
-				});
-				
-			} catch (Exception ex) {
-				Debug.WriteLine($"[Navigator] ❌ StreamDeck initialization error: {ex.Message}");
+			Debug.WriteLine("[Navigator] Starting StreamDeck initialization...");
+
+			// Create client
+			_streamDeckClient = new SDPClient { SDPVerboseDebug = true };
+
+			// Subscribe to events FIRST (before any connection attempt)
+			Debug.WriteLine("[Navigator] Subscribing to KeyPressed event...");
+			_streamDeckClient.KeyPressed += OnStreamDeckKeyPressed;
+			Debug.WriteLine("[Navigator] KeyPressed event subscription complete");
+
+			// Discover icons
+			Debug.WriteLine("[Navigator] Discovering icons...");
+			var icons = SDPIconHelper.DiscoverIcons();
+			Debug.WriteLine($"[Navigator] Found {icons.Count} icons");
+
+			if (icons.Count > 0)
+			{
+				Debug.WriteLine("[Navigator] Available icons:");
+				foreach (var icon in icons)
+				{
+					Debug.WriteLine($"[Navigator]   - {icon.Key} = {icon.Value}");
+				}
+			}
+
+			// Define all keys (stored in state, sent when connected)
+			Debug.WriteLine("[Navigator] Defining navigation keys...");
+			_streamDeckClient.DefineKey("Back", "", GetIconPath(icons, "Back"));
+			_streamDeckClient.DefineKey("MouseLeft", "", GetIconPath(icons, "Mouse Left"));
+			_streamDeckClient.DefineKey("Up", "", GetIconPath(icons, "Up"));
+			_streamDeckClient.DefineKey("Down", "", GetIconPath(icons, "Down"));
+			_streamDeckClient.DefineKey("Right", "", GetIconPath(icons, "Right"));
+			_streamDeckClient.DefineKey("Left", "", GetIconPath(icons, "Left"));
+			_streamDeckClient.DefineKey("Close", "", GetIconPath(icons, "Close"));
+			_streamDeckClient.DefineKey("WriteModalFilter", "Modal", "!M");
+			_streamDeckClient.DefineKey("WriteElementFilter", "Element", "!E");
+			Debug.WriteLine($"[Navigator] ✅ Defined {_streamDeckClient.KeyCount} keys in authoritative state");
+
+			// Define all pages
+			Debug.WriteLine("[Navigator] Defining navigation pages...");
+			DefineBuiltInPages();
+			Debug.WriteLine($"[Navigator] ✅ Defined {_streamDeckClient.PageCount} pages in authoritative state");
+
+			// Set initial page
+			_streamDeckClient.SwitchPage(PageNavigation);
+			Debug.WriteLine($"[Navigator] ✅ Set initial page to '{PageNavigation}'");
+
+			// Start connection attempt (fire-and-forget, non-blocking)
+			Debug.WriteLine("[Navigator] Connecting to StreamDeck plugin...");
+			Task.Run(() => _streamDeckClient.ConnectAsync());
+			Debug.WriteLine("[Navigator] ✅ StreamDeck initialization complete (connection in progress)");
+
+			// Try to disable WPF tooltips (best-effort, doesn't affect functionality)
+			try
+			{
+				var tooltipServiceType = typeof(System.Windows.Controls.ToolTipService);
+				var showDurationProperty = tooltipServiceType.GetField("ShowDurationProperty", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+				if (showDurationProperty != null)
+				{
+					var dp = (System.Windows.DependencyProperty)showDurationProperty.GetValue(null);
+					dp.OverrideMetadata(typeof(System.Windows.DependencyObject), new System.Windows.FrameworkPropertyMetadata(0));
+				}
+			}
+			catch (Exception ex)
+			{
+				Debug.WriteLine($"[Navigator] Failed to disable tooltips: {ex.Message}");
 			}
 		}
 
@@ -132,143 +115,55 @@ namespace AcManager.UiObserver
 		#region StreamDeck Key and Page Definition
 
 		/// <summary>
-		/// Defines built-in keys and pages, then loads additional definitions from config file.
-		/// </summary>
-		private static async Task DefineKeysAndPages(Dictionary<string, string> icons)
-		{
-			// Step 1: Define built-in navigation keys
-			var keyDefs = new List<SDPKeyDef>
-			{
-				new SDPKeyDef("Back", "", GetIconPath(icons, "Back")),
-				new SDPKeyDef("MouseLeft", "", GetIconPath(icons, "Mouse Left")),
-				new SDPKeyDef("Up", "", GetIconPath(icons, "Up")),
-				new SDPKeyDef("Down", "", GetIconPath(icons, "Down")),
-				new SDPKeyDef("Right", "", GetIconPath(icons, "Right")),
-				new SDPKeyDef("Left", "", GetIconPath(icons, "Left")),
-				new SDPKeyDef("Close", "", GetIconPath(icons, "Close")),
-				// Discovery keys (text-based icons)
-				new SDPKeyDef("WriteModalFilter", "Modal", "!M"),
-				new SDPKeyDef("WriteElementFilter", "Element", "!E")
-			};
-			
-			Debug.WriteLine($"[Navigator] Defining {keyDefs.Count} keys...");
-			
-			// Define all keys
-			var keyResult = await _streamDeckClient.DefineKeysAsync(keyDefs);
-			
-			Debug.WriteLine($"[Navigator] Key definition result: {keyResult.SuccessCount}/{keyResult.TotalCount} succeeded");
-			
-			if (!keyResult.AllSucceeded) {
-				Debug.WriteLine($"[Navigator] Failed to define {keyResult.FailedKeys.Count} keys");
-				Debug.WriteLine($"[Navigator] Error details:");
-				Debug.WriteLine(keyResult.ErrorSummary);
-				return;
-			}
-			
-			Debug.WriteLine($"[Navigator] ✅ Defined {keyResult.SuccessCount} StreamDeck keys");
-			
-			// Step 2: Define built-in pages
-			await DefineBuiltInPages();
-			
-			// Step 3: TODO - Load additional pages from config file
-			// LoadConfigFile();
-		}
-
-		/// <summary>
 		/// Defines the built-in page templates.
+		/// Uses fire-and-forget API - all definitions stored in SDPClient.
 		/// </summary>
-		private static async Task DefineBuiltInPages()
+		private static void DefineBuiltInPages()
 		{
 			// Navigation page (full 6-direction navigation)
-			Debug.WriteLine($"[Navigator] Creating {PageNavigation} page...");
-			var navPage = new SDPPageDef(PageNavigation);
-			navPage.SetKey(0, 0, "Back");
-			navPage.SetKey(0, 1, "WriteModalFilter");
-			navPage.SetKey(0, 2, "WriteElementFilter");
-			navPage.SetKey(2, 1, "Up");
-			navPage.SetKey(3, 0, "Left");
-			navPage.SetKey(3, 1, "MouseLeft");
-			navPage.SetKey(3, 2, "Right");
-			navPage.SetKey(4, 1, "Down");
-			
-			var navResult = await _streamDeckClient.DefinePageAsync(navPage);
-			if (!navResult.Success) {
-				Debug.WriteLine($"[Navigator] ❌ Failed to define {PageNavigation} page: {navResult.ErrorMessage}");
-				return;
-			}
-			Debug.WriteLine($"[Navigator] ✅ Defined {PageNavigation} page");
+			_streamDeckClient.DefinePage(PageNavigation, new[] {
+				new[] { "Back", "WriteModalFilter", "WriteElementFilter" },
+				new string[] { null, null, null },
+				new[] { null, "Up", null },
+				new[] { "Left", "MouseLeft", "Right" },
+				new[] { null, "Down", null }
+			});
 			
 			// UpDown page (vertical navigation only, for menus)
-			Debug.WriteLine($"[Navigator] Creating {PageUpDown} page...");
-			var upDownPage = new SDPPageDef(PageUpDown);
-			upDownPage.SetKey(0, 0, "Back");
-			upDownPage.SetKey(0, 1, "WriteModalFilter");
-			upDownPage.SetKey(0, 2, "WriteElementFilter");
-			upDownPage.SetKey(2, 1, "Up");
-			upDownPage.SetKey(3, 1, "MouseLeft");
-			upDownPage.SetKey(4, 1, "Down");
-			
-			var upDownResult = await _streamDeckClient.DefinePageAsync(upDownPage);
-			if (!upDownResult.Success) {
-				Debug.WriteLine($"[Navigator] ❌ Failed to define {PageUpDown} page: {upDownResult.ErrorMessage}");
-				return;
-			}
-			Debug.WriteLine($"[Navigator] ✅ Defined {PageUpDown} page");
+			_streamDeckClient.DefinePage(PageUpDown, new[] {
+				new[] { "Back", "WriteModalFilter", "WriteElementFilter" },
+				new string[] { null, null, null },
+				new[] { null, "Up", null },
+				new[] { null, "MouseLeft", null },
+				new[] { null, "Down", null }
+			});
 			
 			// Slider page (left/right for value adjustment)
-			Debug.WriteLine($"[Navigator] Creating {PageSlider} page...");
-			var sliderPage = new SDPPageDef(PageSlider);
-			sliderPage.SetKey(0, 0, "Back");
-			sliderPage.SetKey(0, 1, "WriteModalFilter");
-			sliderPage.SetKey(0, 2, "WriteElementFilter");
-			sliderPage.SetKey(3, 0, "Left");
-			sliderPage.SetKey(3, 1, "MouseLeft");
-			sliderPage.SetKey(3, 2, "Right");
-			
-			var sliderResult = await _streamDeckClient.DefinePageAsync(sliderPage);
-			if (!sliderResult.Success) {
-				Debug.WriteLine($"[Navigator] ❌ Failed to define {PageSlider} page: {sliderResult.ErrorMessage}");
-				return;
-			}
-			Debug.WriteLine($"[Navigator] ✅ Defined {PageSlider} page");
+			_streamDeckClient.DefinePage(PageSlider, new[] {
+				new[] { "Back", "WriteModalFilter", "WriteElementFilter" },
+				new string[] { null, null, null },
+				new string[] { null, null, null },
+				new[] { "Left", "MouseLeft", "Right" },
+				new string[] { null, null, null }
+			});
 			
 			// DoubleSlider page (up/down for coarse, left/right for fine)
-			Debug.WriteLine($"[Navigator] Creating {PageDoubleSlider} page...");
-			var doubleSliderPage = new SDPPageDef(PageDoubleSlider);
-			doubleSliderPage.SetKey(0, 0, "Back");
-			doubleSliderPage.SetKey(0, 1, "WriteModalFilter");
-			doubleSliderPage.SetKey(0, 2, "WriteElementFilter");
-			doubleSliderPage.SetKey(2, 1, "Up");
-			doubleSliderPage.SetKey(3, 0, "Left");
-			doubleSliderPage.SetKey(3, 1, "MouseLeft");
-			doubleSliderPage.SetKey(3, 2, "Right");
-			doubleSliderPage.SetKey(4, 1, "Down");
-			
-			var doubleSliderResult = await _streamDeckClient.DefinePageAsync(doubleSliderPage);
-			if (!doubleSliderResult.Success) {
-				Debug.WriteLine($"[Navigator] ❌ Failed to define {PageDoubleSlider} page: {doubleSliderResult.ErrorMessage}");
-				return;
-			}
-			Debug.WriteLine($"[Navigator] ✅ Defined {PageDoubleSlider} page");
+			_streamDeckClient.DefinePage(PageDoubleSlider, new[] {
+				new[] { "Back", "WriteModalFilter", "WriteElementFilter" },
+				new string[] { null, null, null },
+				new[] { null, "Up", null },
+				new[] { "Left", "MouseLeft", "Right" },
+				new[] { null, "Down", null }
+			});
 			
 			// RoundSlider page (all 4 directions for circular control)
-			Debug.WriteLine($"[Navigator] Creating {PageRoundSlider} page...");
-			var roundSliderPage = new SDPPageDef(PageRoundSlider);
-			roundSliderPage.SetKey(0, 0, "Back");
-			roundSliderPage.SetKey(0, 1, "WriteModalFilter");
-			roundSliderPage.SetKey(0, 2, "WriteElementFilter");
-			roundSliderPage.SetKey(2, 1, "Up");
-			roundSliderPage.SetKey(3, 0, "Left");
-			roundSliderPage.SetKey(3, 1, "MouseLeft");
-			roundSliderPage.SetKey(3, 2, "Right");
-			roundSliderPage.SetKey(4, 1, "Down");
-			
-			var roundSliderResult = await _streamDeckClient.DefinePageAsync(roundSliderPage);
-			if (!roundSliderResult.Success) {
-				Debug.WriteLine($"[Navigator] ❌ Failed to define {PageRoundSlider} page: {roundSliderResult.ErrorMessage}");
-				return;
-			}
-			Debug.WriteLine($"[Navigator] ✅ Defined {PageRoundSlider} page");
+			_streamDeckClient.DefinePage(PageRoundSlider, new[] {
+				new[] { "Back", "WriteModalFilter", "WriteElementFilter" },
+				new string[] { null, null, null },
+				new[] { null, "Up", null },
+				new[] { "Left", "MouseLeft", "Right" },
+				new[] { null, "Down", null }
+			});
 		}
 
 		/// <summary>
@@ -318,44 +213,64 @@ namespace AcManager.UiObserver
 		/// </summary>
 		private static void OnStreamDeckKeyPressed(object sender, SDPKeyPressEventArgs e)
 		{
-			if (!_streamDeckEnabled) return;
+			Debug.WriteLine($"[Navigator] OnStreamDeckKeyPressed ENTRY: KeyName={e.KeyName}");
+			Debug.WriteLine($"[Navigator] OnStreamDeckKeyPressed: Sender={sender?.GetType().Name ?? "null"}");
+			Debug.WriteLine($"[Navigator] OnStreamDeckKeyPressed: Application.Current={Application.Current != null}");
 			
 			Debug.WriteLine($"[Navigator] StreamDeck key pressed: {e.KeyName}");
 			
 			// Marshal to UI thread (StreamDeck events fire on background thread)
 			Application.Current?.Dispatcher.BeginInvoke(new Action(() => {
 				try {
+					Debug.WriteLine($"[Navigator] OnStreamDeckKeyPressed: Executing on UI thread for '{e.KeyName}'");
+					
 					switch (e.KeyName) {
 						case "Up":
+							Debug.WriteLine($"[Navigator] Executing MoveInDirection(Up)");
 							MoveInDirection(NavDirection.Up);
 							break;
 						case "Down":
+							Debug.WriteLine($"[Navigator] Executing MoveInDirection(Down)");
 							MoveInDirection(NavDirection.Down);
 							break;
 						case "Left":
+							Debug.WriteLine($"[Navigator] Executing MoveInDirection(Left)");
 							MoveInDirection(NavDirection.Left);
 							break;
 						case "Right":
+							Debug.WriteLine($"[Navigator] Executing MoveInDirection(Right)");
 							MoveInDirection(NavDirection.Right);
 							break;
 						case "MouseLeft":
+							Debug.WriteLine($"[Navigator] Executing ActivateFocusedNode()");
 							ActivateFocusedNode();
 							break;
 						case "Back":
+							Debug.WriteLine($"[Navigator] Executing ExitGroup()");
 							ExitGroup();
 							break;
 						// Discovery keys
 						case "WriteModalFilter":
+							Debug.WriteLine($"[Navigator] Executing WriteModalFilterToDiscovery()");
 							WriteModalFilterToDiscovery();
 							break;
 						case "WriteElementFilter":
+							Debug.WriteLine($"[Navigator] Executing WriteElementFilterToDiscovery()");
 							WriteElementFilterToDiscovery();
 							break;
+						default:
+							Debug.WriteLine($"[Navigator] Unknown key: {e.KeyName}");
+							break;
 					}
+					
+					Debug.WriteLine($"[Navigator] OnStreamDeckKeyPressed: Command completed for '{e.KeyName}'");
 				} catch (Exception ex) {
 					Debug.WriteLine($"[Navigator] StreamDeck command error: {ex.Message}");
+					Debug.WriteLine($"[Navigator] StreamDeck command stack trace: {ex.StackTrace}");
 				}
 			}), DispatcherPriority.Input);
+			
+			Debug.WriteLine($"[Navigator] OnStreamDeckKeyPressed: Dispatched to UI thread for '{e.KeyName}'");
 		}
 
 		#endregion
@@ -512,15 +427,13 @@ namespace AcManager.UiObserver
 				}
 
 				// Write session header once per application run (first discovery write of this session)
-				if (!_discoverySessionHeaderWritten) {
-					// Add empty line before session header (if file has content)
-					var sessionHeader = fileExists && new System.IO.FileInfo(discoveryFile).Length > 0
-						? $"\r\n# ===== Session: {DateTime.Now:yyyy-MM-dd HH:mm:ss} =====\r\n"
-						: $"# ===== Session: {DateTime.Now:yyyy-MM-dd HH:mm:ss} =====\r\n";
-					
-					System.IO.File.AppendAllText(discoveryFile, sessionHeader);
-					_discoverySessionHeaderWritten = true;
-				}
+				
+				// Add empty line before session header (if file has content)
+				var sessionHeader = fileExists && new System.IO.FileInfo(discoveryFile).Length > 0
+					? $"\r\n# ===== Session: {DateTime.Now:yyyy-MM-dd HH:mm:ss} =====\r\n"
+					: $"# ===== Session: {DateTime.Now:yyyy-MM-dd HH:mm:ss} =====\r\n";
+				
+				System.IO.File.AppendAllText(discoveryFile, sessionHeader);
 
 				// Write the comment and filter rule (no extra empty lines)
 				var entry = $"{comment}\r\n{filterRule}\r\n";
@@ -556,7 +469,7 @@ namespace AcManager.UiObserver
 		/// </summary>
 		private static void SwitchStreamDeckPageForModal(NavNode modalNode)
 		{
-			if (!_streamDeckEnabled || _streamDeckClient == null) return;
+			if (_streamDeckClient == null) return;
 			
 			try {
 				// Select appropriate page based on modal type

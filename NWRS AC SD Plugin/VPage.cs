@@ -12,14 +12,30 @@ namespace NWRS_AC_SDPlugin
 
 		internal static void Add(VPage vPage)
 		{
-			Debug.Assert(!_vPages.ContainsKey(vPage.Name));
-			_vPages.Add(vPage.Name, vPage);
+			// Allow re-adding pages (CM will re-send definitions on reconnect)
+			if (_vPages.ContainsKey(vPage.Name))
+			{
+				Debug.WriteLine($"?? VPages: Page '{vPage.Name}' already exists - replacing with new definition");
+				// Dispose the old page if it's disposable
+				if (_vPages[vPage.Name] is IDisposable disposable)
+				{
+					try { disposable.Dispose(); } catch { }
+				}
+			}
+			_vPages[vPage.Name] = vPage;
 		}
 
 		internal static void Remove(VPage vPage)
 		{
-			Debug.Assert(_vPages.ContainsKey(vPage.Name));
-			_vPages.Remove(vPage.Name);
+			// More forgiving - only remove if it exists
+			if (_vPages.ContainsKey(vPage.Name))
+			{
+				_vPages.Remove(vPage.Name);
+			}
+			else
+			{
+				Debug.WriteLine($"?? VPages: Attempted to remove non-existent page '{vPage.Name}'");
+			}
 		}
 
 		internal static void Activate(string name)
@@ -31,7 +47,12 @@ namespace NWRS_AC_SDPlugin
 
 		internal static bool Push(string name)
 		{
-			Debug.Assert(_vPages.ContainsKey(name));
+			if (!_vPages.ContainsKey(name))
+			{
+				Debug.WriteLine($"? VPages: Cannot push non-existent page '{name}'");
+				return false;
+			}
+			
 			IVPage curVPage = _vPageStack.Count > 0 ? _vPageStack.Peek() : null;
 			if (curVPage?.Name != name) {
 				_vPageStack.Push(_vPages[name]);
@@ -42,12 +63,34 @@ namespace NWRS_AC_SDPlugin
 
 		internal static void Return(string name)
 		{
-			Debug.Assert(name is null || _vPages.ContainsKey(name));
+			if (name != null && !_vPages.ContainsKey(name))
+			{
+				Debug.WriteLine($"? VPages: Cannot return to non-existent page '{name}'");
+				return;
+			}
+			
+			if (_vPageStack.Count == 0)
+			{
+				Debug.WriteLine($"? VPages: Cannot return - page stack is empty");
+				return;
+			}
+			
 			var activeVPage = _vPageStack.Pop();
 			activeVPage?.Deactivate();
-			Debug.Assert(name is null || activeVPage.Name == name);
+			
+			if (name != null && activeVPage?.Name != name)
+			{
+				Debug.WriteLine($"?? VPages: Expected to return from page '{name}' but was '{activeVPage?.Name}'");
+			}
+			
+			if (_vPageStack.Count == 0)
+			{
+				Debug.WriteLine($"?? VPages: Page stack is now empty after return");
+				return;
+			}
+			
 			var nextPage = _vPageStack.Peek();
-			nextPage.Activate();
+			nextPage?.Activate();
 		}
 
 		/// <summary>
@@ -71,6 +114,10 @@ namespace NWRS_AC_SDPlugin
 		/// </summary>
 		public static void ClearAll()
 		{
+			Debug.WriteLine($"?? VPages: Clearing all pages ({_vPages.Count} pages)");
+			
+			// Don't call Dispose() on pages - it tries to Remove from the dictionary
+			// we're about to clear anyway, which causes iteration exceptions
 			_vPages.Clear();
 			_vPageStack.Clear();
 		}
@@ -110,6 +157,7 @@ namespace NWRS_AC_SDPlugin
 
 		public void Dispose()
 		{
+			// Safe disposal - VPages.Remove is now forgiving
 			VPages.Remove(this);
 		}
 

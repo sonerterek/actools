@@ -1073,11 +1073,13 @@ namespace NWRS_AC_SDPlugin
 			lock (_stateLock)
 			{
 				_deviceConnected = false;
-				// NOTE: We clear _virtualKeysReady here because the device is physically disconnected
-				// When it reconnects, the keys will reappear and OnKeyAppeared will set it back to true
-				_virtualKeysReady = false;
+				// NOTE: We do NOT clear _virtualKeysReady here!
+				// The StreamDeck will restore the last profile when it reconnects,
+				// and the keys will still be there - they just won't re-emit OnKeyAppeared events.
+				// We only clear _virtualKeysReady when keys actually disappear (OnKeyDisappeared).
 				_deviceID = null;
-				Debug.WriteLine($"?? SDeck: Device physically disconnected - _virtualKeysReady cleared (will be restored when keys reappear)");
+				Debug.WriteLine($"?? SDeck: Device physically disconnected - _virtualKeysReady unchanged: {_virtualKeysReady}");
+				Debug.WriteLine($"?? SDeck: Keys will be restored automatically when device reconnects");
 			}
 		}
 		

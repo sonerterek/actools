@@ -45,6 +45,7 @@ namespace NWRS_AC_SDPlugin
 		private static StreamReader _pipeReader;
 		private static StreamWriter _pipeWriter;
 		private static bool _isShuttingDown = false;
+		private static readonly object _pipeWriteLock = new object();  // Synchronize pipe writes
 
 		// Registry for key definitions
 		private static Dictionary<string, KeyDefinition> _keyDefinitions = new Dictionary<string, KeyDefinition>();
@@ -566,7 +567,11 @@ namespace NWRS_AC_SDPlugin
 			try
 			{
 				var eventMessage = $"KeyPress {keyName}";
-				await _pipeWriter.WriteLineAsync(eventMessage);
+				lock (_pipeWriteLock)
+				{
+					_pipeWriter.WriteLine(eventMessage);  // Use synchronous WriteLine inside lock
+					_pipeWriter.Flush();
+				}
 				Debug.WriteLine($"📤 NamedPipe: Sent event: {eventMessage}");
 			}
 			catch (Exception ex)
@@ -594,7 +599,11 @@ namespace NWRS_AC_SDPlugin
 					? $"KeyDefined {keyName} {status}"
 					: $"KeyDefined {keyName} {status} {errorMessage}";
 				
-				await _pipeWriter.WriteLineAsync(eventMessage);
+				lock (_pipeWriteLock)
+				{
+					_pipeWriter.WriteLine(eventMessage);  // Use synchronous WriteLine inside lock
+					_pipeWriter.Flush();
+				}
 				Debug.WriteLine($"📤 NamedPipe: Sent event: {eventMessage}");
 			}
 			catch (Exception ex)
@@ -622,7 +631,11 @@ namespace NWRS_AC_SDPlugin
 					? $"PageDefined {pageName} {status}"
 					: $"PageDefined {pageName} {status} {errorMessage}";
 				
-				await _pipeWriter.WriteLineAsync(eventMessage);
+				lock (_pipeWriteLock)
+				{
+					_pipeWriter.WriteLine(eventMessage);  // Use synchronous WriteLine inside lock
+					_pipeWriter.Flush();
+				}
 				Debug.WriteLine($"📤 NamedPipe: Sent event: {eventMessage}");
 			}
 			catch (Exception ex)
@@ -650,7 +663,11 @@ namespace NWRS_AC_SDPlugin
 					? $"KeyVisualsSet {keyName} {status}"
 					: $"KeyVisualsSet {keyName} {status} {errorMessage}";
 				
-				await _pipeWriter.WriteLineAsync(eventMessage);
+				lock (_pipeWriteLock)
+				{
+					_pipeWriter.WriteLine(eventMessage);  // Use synchronous WriteLine inside lock
+					_pipeWriter.Flush();
+				}
 				Debug.WriteLine($"📤 NamedPipe: Sent event: {eventMessage}");
 			}
 			catch (Exception ex)
