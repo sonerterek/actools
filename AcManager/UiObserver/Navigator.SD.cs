@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
+using FirstFloor.ModernUI;
 
 namespace AcManager.UiObserver
 {
@@ -23,6 +24,9 @@ namespace AcManager.UiObserver
 
 		// StreamDeck integration
 		private static SDPClient _streamDeckClient;
+		
+		// ✅ FIX #2: Track first connection to suppress startup Toast notifications
+		private static bool _streamDeckHasConnectedAtLeastOnce = false;
 
 		// Page name constants
 		private const string PageNavigation = "Navigation";
@@ -42,77 +46,83 @@ namespace AcManager.UiObserver
 		/// </summary>
 		private static void InitializeStreamDeck()
 		{
-			Debug.WriteLine("[Navigator] Starting StreamDeck initialization...");
-
-			// Create client
-			_streamDeckClient = new SDPClient { SDPVerboseDebug = true };
-
-			// Subscribe to events FIRST (before any connection attempt)
-			Debug.WriteLine("[Navigator] Subscribing to KeyPressed event...");
-			_streamDeckClient.KeyPressed += OnStreamDeckKeyPressed;
-			Debug.WriteLine("[Navigator] KeyPressed event subscription complete");
-
-			// Discover icons
-			Debug.WriteLine("[Navigator] Discovering icons...");
-			var icons = SDPIconHelper.DiscoverIcons();
-			Debug.WriteLine($"[Navigator] Found {icons.Count} icons");
-
-			if (icons.Count > 0)
+			if (_streamDeckClient != null)
 			{
-				Debug.WriteLine("[Navigator] Available icons:");
-				foreach (var icon in icons)
-				{
-					Debug.WriteLine($"[Navigator]   - {icon.Key} = {icon.Value}");
-				}
+				Debug.WriteLine("[Navigator] StreamDeck already initialized");
+				return;
 			}
 
-			// Define all keys (stored in state, sent when connected)
-			Debug.WriteLine("[Navigator] Defining navigation keys...");
-			_streamDeckClient.DefineKey("Back", "", GetIconPath(icons, "Back"));
-			_streamDeckClient.DefineKey("MouseLeft", "", GetIconPath(icons, "Mouse Left"));
-			_streamDeckClient.DefineKey("Up", "", GetIconPath(icons, "Up"));
-			_streamDeckClient.DefineKey("Down", "", GetIconPath(icons, "Down"));
-			_streamDeckClient.DefineKey("Right", "", GetIconPath(icons, "Right"));
-			_streamDeckClient.DefineKey("Left", "", GetIconPath(icons, "Left"));
-			_streamDeckClient.DefineKey("Close", "", GetIconPath(icons, "Close"));
-			_streamDeckClient.DefineKey("WriteModalFilter", "Modal", "!M");
-			_streamDeckClient.DefineKey("WriteElementFilter", "Element", "!E");
-			Debug.WriteLine($"[Navigator] ✅ Defined {_streamDeckClient.KeyCount} keys in authoritative state");
+			Debug.WriteLine("[Navigator] Initializing StreamDeck integration...");
 
-			// Define all pages
-			Debug.WriteLine("[Navigator] Defining navigation pages...");
-			DefineBuiltInPages();
-			Debug.WriteLine($"[Navigator] ✅ Defined {_streamDeckClient.PageCount} pages in authoritative state");
-
-			// Set initial page
-			_streamDeckClient.SwitchPage(PageNavigation);
-			Debug.WriteLine($"[Navigator] ✅ Set initial page to '{PageNavigation}'");
-
-			// Start connection attempt (fire-and-forget, non-blocking)
-			Debug.WriteLine("[Navigator] Connecting to StreamDeck plugin...");
-			Task.Run(() => _streamDeckClient.ConnectAsync());
-			Debug.WriteLine("[Navigator] ✅ StreamDeck initialization complete (connection in progress)");
-
-			// Try to disable WPF tooltips (best-effort, doesn't affect functionality)
 			try
 			{
-				var tooltipServiceType = typeof(System.Windows.Controls.ToolTipService);
-				var showDurationProperty = tooltipServiceType.GetField("ShowDurationProperty", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
-				if (showDurationProperty != null)
+				// Create StreamDeck client
+				_streamDeckClient = new SDPClient
 				{
-					var dp = (System.Windows.DependencyProperty)showDurationProperty.GetValue(null);
-					dp.OverrideMetadata(typeof(System.Windows.DependencyObject), new System.Windows.FrameworkPropertyMetadata(0));
-				}
+					SDPVerboseDebug = true
+				};
+
+				// Subscribe to connection events for status notifications
+				_streamDeckClient.ConnectionEstablished += OnStreamDeckConnected;
+				_streamDeckClient.ConnectionLost += OnStreamDeckDisconnected;
+				_streamDeckClient.ReconnectionAttempt += OnStreamDeckReconnecting;
+
+				// Discover icons
+				var icons = SDPIconHelper.DiscoverIcons();
+				Debug.WriteLine($"[Navigator] Discovered {icons.Count} StreamDeck icons");
+
+				// Define keys
+				DefineStreamDeckKeys(icons);
+
+				// Define pages
+				DefineStreamDeckPages();
+
+				// Subscribe to KeyPressed events
+				_streamDeckClient.KeyPressed += OnStreamDeckKeyPressed;
+
+				// Start connection (fire-and-forget, automatic reconnection)
+				Task.Run(async () => await _streamDeckClient.ConnectAsync());
+
+				Debug.WriteLine("[Navigator] StreamDeck initialization complete");
 			}
 			catch (Exception ex)
 			{
-				Debug.WriteLine($"[Navigator] Failed to disable tooltips: {ex.Message}");
+				Debug.WriteLine($"[Navigator] StreamDeck initialization failed: {ex.Message}");
+				ShowStreamDeckError("StreamDeck Initialization Failed", ex.Message);
 			}
 		}
 
 		#endregion
 
 		#region StreamDeck Key and Page Definition
+
+		/// <summary>
+		/// Defines all StreamDeck keys with their icons.
+		/// Fire-and-forget: All definitions stored in SDPClient state.
+		/// </summary>
+		private static void DefineStreamDeckKeys(Dictionary<string, string> icons)
+		{
+			// Define navigation keys
+			_streamDeckClient.DefineKey("Back", null, GetIconPath(icons, "Back"));
+			_streamDeckClient.DefineKey("Up", null, GetIconPath(icons, "Up"));
+			_streamDeckClient.DefineKey("Down", null, GetIconPath(icons, "Down"));
+			_streamDeckClient.DefineKey("Left", null, GetIconPath(icons, "Left"));
+			_streamDeckClient.DefineKey("Right", null, GetIconPath(icons, "Right"));
+			_streamDeckClient.DefineKey("MouseLeft", null, GetIconPath(icons, "Mouse Left"));
+			
+			// Define discovery keys
+			_streamDeckClient.DefineKey("WriteModalFilter", "Modal", null);
+			_streamDeckClient.DefineKey("WriteElementFilter", "Element", null);
+		}
+
+		/// <summary>
+		/// Defines all StreamDeck pages.
+		/// Fire-and-forget: All definitions stored in SDPClient state.
+		/// </summary>
+		private static void DefineStreamDeckPages()
+		{
+			DefineBuiltInPages();
+		}
 
 		/// <summary>
 		/// Defines the built-in page templates.
@@ -485,6 +495,114 @@ namespace AcManager.UiObserver
 			} catch (Exception ex) {
 				Debug.WriteLine($"[Navigator] Failed to switch StreamDeck page: {ex.Message}");
 			}
+		}
+
+		#endregion
+		
+		#region StreamDeck Connection Event Handlers
+
+		private static void OnStreamDeckConnected(object sender, EventArgs e)
+		{
+			Debug.WriteLine("[Navigator] StreamDeck connected event received");
+			
+			// ✅ FIX #2: Only show Toast if this is NOT the first connection
+			if (_streamDeckHasConnectedAtLeastOnce)
+			{
+				// This is a REconnection - show Toast
+				ActionExtension.InvokeInMainThreadAsync(() =>
+				{
+					try
+					{
+						FirstFloor.ModernUI.Windows.Toast.Show(
+							"StreamDeck Reconnected",
+							"UI Navigation restored"
+						);
+					}
+					catch (Exception ex)
+					{
+						Debug.WriteLine($"[Navigator] Toast notification failed: {ex.Message}");
+					}
+				});
+			}
+			else
+			{
+				// First connection - no Toast (expected behavior at startup)
+				Debug.WriteLine("[Navigator] First connection established (no Toast)");
+				_streamDeckHasConnectedAtLeastOnce = true;
+			}
+		}
+
+		private static void OnStreamDeckDisconnected(object sender, EventArgs e)
+		{
+			Debug.WriteLine("[Navigator] StreamDeck disconnected event received");
+			
+			// ✅ FIX #2: Only show Toast if we had a successful connection before
+			if (_streamDeckHasConnectedAtLeastOnce)
+			{
+				// Unexpected disconnect after successful connection - show Toast
+				ActionExtension.InvokeInMainThreadAsync(() =>
+				{
+					try
+					{
+						FirstFloor.ModernUI.Windows.Toast.Show(
+							"StreamDeck Disconnected",
+							"Attempting to reconnect automatically..."
+						);
+					}
+					catch (Exception ex)
+					{
+						Debug.WriteLine($"[Navigator] Toast notification failed: {ex.Message}");
+					}
+				});
+			}
+			else
+			{
+				// Disconnected before first successful connection - no Toast (startup sequence)
+				Debug.WriteLine("[Navigator] Disconnected during startup (no Toast)");
+			}
+		}
+
+		private static int _lastReconnectAttemptNotified = 0;
+
+		private static void OnStreamDeckReconnecting(object sender, int attemptNumber)
+		{
+			Debug.WriteLine($"[Navigator] StreamDeck reconnection attempt {attemptNumber}");
+			
+			// Only show toast every 5 attempts to avoid spam
+			if (attemptNumber == 1 || (attemptNumber > 0 && attemptNumber % 5 == 0 && attemptNumber != _lastReconnectAttemptNotified))
+			{
+				_lastReconnectAttemptNotified = attemptNumber;
+				
+				ActionExtension.InvokeInMainThreadAsync(() =>
+				{
+					try
+					{
+						FirstFloor.ModernUI.Windows.Toast.Show(
+							"StreamDeck Reconnecting",
+							$"Attempt {attemptNumber}... Please check StreamDeck connection"
+						);
+					}
+					catch (Exception ex)
+					{
+						Debug.WriteLine($"[Navigator] Toast notification failed: {ex.Message}");
+					}
+				});
+			}
+		}
+
+		private static void ShowStreamDeckError(string title, string message)
+		{
+			ActionExtension.InvokeInMainThreadAsync(() =>
+			{
+				try
+				{
+					FirstFloor.ModernUI.Windows.Toast.Show(title, message);
+				}
+				catch (Exception ex)
+				{
+					Debug.WriteLine($"[Navigator] Error toast failed: {ex.Message}");
+				}
+			});
 		}
 
 		#endregion

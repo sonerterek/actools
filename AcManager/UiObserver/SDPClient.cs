@@ -179,6 +179,21 @@ namespace AcManager.UiObserver
         public event EventHandler Connected;
         public event EventHandler Disconnected;
 
+        /// <summary>
+        /// Fired when connection to StreamDeck plugin is successfully established.
+        /// </summary>
+        public event EventHandler ConnectionEstablished;
+
+        /// <summary>
+        /// Fired when connection to StreamDeck plugin is lost.
+        /// </summary>
+        public event EventHandler ConnectionLost;
+
+        /// <summary>
+        /// Fired during reconnection attempts. Argument is the retry count.
+        /// </summary>
+        public event EventHandler<int> ReconnectionAttempt;
+
         #endregion
 
         #region Properties
@@ -220,9 +235,6 @@ namespace AcManager.UiObserver
                     Debug.WriteLine("[SDPClient] Already connected, disconnecting first...");
                     DisconnectInternal();
                 }
-
-                Debug.WriteLine("[SDPClient] Disconnecting...");
-                DisconnectInternal();
 
                 Debug.WriteLine($"[SDPClient] Connecting to pipe: {PipeName}");
                 _pipe = new NamedPipeClientStream(".", PipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
@@ -291,16 +303,37 @@ namespace AcManager.UiObserver
             if (!IsConnected)
             {
                 if (SDPVerboseDebug) Debug.WriteLine("[SDPClient] Watchdog detected disconnection");
+                
+                // ? FIX #3: Fire OnDisconnected() here (unexpected disconnect detected by watchdog)
+                try
+                {
+                    OnDisconnected();
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[SDPClient] Error raising Disconnected event: {ex.Message}");
+                }
+                
                 await TryReconnectAsync();
             }
         }
 
-        public void Disconnect()
+        private void Disconnect()
         {
             _connectionLock.Wait();
             try
             {
                 DisconnectInternal();
+                
+                // ? Fire event here (intentional disconnect)
+                try
+                {
+                    OnDisconnected();
+                }
+                catch (Exception ex)
+                {
+                    Debug.WriteLine($"[SDPClient] Error raising Disconnected event: {ex.Message}");
+                }
             }
             finally
             {
@@ -409,14 +442,11 @@ namespace AcManager.UiObserver
 
             Debug.WriteLine("[SDPClient] Disconnected");
             
-            try
-            {
-                OnDisconnected();
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine($"[SDPClient] Error raising Disconnected event: {ex.Message}");
-            }
+            // ? FIX #3: DON'T fire OnDisconnected() here
+            // This is cleanup only, not user-facing state change
+            // OnDisconnected() is only fired from:
+            // - Disconnect() (intentional disconnect)
+            // - CheckConnectionHealthAsync() (unexpected disconnect)
         }
 
         #endregion
@@ -790,7 +820,10 @@ namespace AcManager.UiObserver
             {
                 // Use max delay of 5s for all attempts after the third
                 int delayMs = retryDelays[Math.Min(retryIndex, retryDelays.Length - 1)];
-                Debug.WriteLine($"[SDPClient] Reconnecting in {delayMs}ms...");
+                Debug.WriteLine($"[SDPClient] Reconnecting in {delayMs}ms... (attempt {retryIndex + 1})");
+
+                // Notify observers of reconnection attempt
+                ReconnectionAttempt?.Invoke(this, retryIndex + 1);
 
                 await Task.Delay(delayMs);
 
@@ -801,12 +834,9 @@ namespace AcManager.UiObserver
                     Debug.WriteLine("[SDPClient] Disconnecting...");
                     DisconnectInternal();
 
-                    Debug.WriteLine("[SDPClient] Disconnecting...");
-                    DisconnectInternal();
-
                     Debug.WriteLine($"[SDPClient] Connecting to pipe: {PipeName}");
 
-                    // Attempt to connect (fire-and-forget, no result check)
+                    // Try to connect (fire-and-forget, no result check)
                     await ConnectAsync();
 
                     // Check if connection succeeded
@@ -935,12 +965,23 @@ namespace AcManager.UiObserver
 
         protected virtual void OnConnected()
         {
-            Connected?.Invoke(this, EventArgs.Empty);
+            Debug.WriteLine("[SDPClient] ? Connection established");
+            ConnectionEstablished?.Invoke(this, EventArgs.Empty);
         }
 
         protected virtual void OnDisconnected()
         {
-            Disconnected?.Invoke(this, EventArgs.Empty);
+            Debug.WriteLine("[SDPClient] ? Connection lost");
+            ConnectionLost?.Invoke(this, EventArgs.Empty);
+            
+            try
+            {
+                Disconnected?.Invoke(this, EventArgs.Empty);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[SDPClient] Error raising Disconnected event: {ex.Message}");
+            }
         }
 
         protected virtual void OnKeyPressed(string keyName)

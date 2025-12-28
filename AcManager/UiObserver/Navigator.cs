@@ -429,14 +429,46 @@ namespace AcManager.UiObserver
 			
 			Debug.WriteLine($"[Navigator] Modal stack depth: {_modalContextStack.Count}");
 			
-			// Restore focus to parent context (if any)
+			// ✅ FIX: Validate that the parent context's focused node is still valid and in scope
+			// This prevents restoring focus to a node that was inside the closed dialog.
 			if (CurrentContext != null) {
 				var focusToRestore = CurrentContext.FocusedNode;
+				
+				// Validate that the focused node is still alive and in the parent context's scope
+				if (focusToRestore != null) {
+					bool isValid = false;
+					
+					// Check if visual is still alive
+					if (focusToRestore.TryGetVisual(out var fe)) {
+						// Check if element is still in visual tree
+						if (PresentationSource.FromVisual(fe) != null) {
+							// Check if element is in the parent context's scope (not the closed modal's scope)
+							if (IsDescendantOf(focusToRestore, CurrentContext.ModalNode)) {
+								isValid = true;
+							} else {
+								Debug.WriteLine($"[Navigator] Focused node '{focusToRestore.SimpleName}' is outside parent scope (was in closed modal) - clearing focus");
+							}
+						} else {
+							Debug.WriteLine($"[Navigator] Focused node '{focusToRestore.SimpleName}' is no longer in visual tree - clearing focus");
+						}
+					} else {
+						Debug.WriteLine($"[Navigator] Focused node '{focusToRestore.SimpleName}' visual reference is dead - clearing focus");
+					}
+					
+					if (!isValid) {
+						// Clear the invalid focused node
+						focusToRestore.HasFocus = false;
+						CurrentContext.FocusedNode = null;
+						focusToRestore = null;
+					}
+				}
+				
+				// Now restore focus if we have a valid node, otherwise initialize
 				if (focusToRestore != null) {
 					Debug.WriteLine($"[Navigator] Restored focus to '{focusToRestore.SimpleName}'");
 					SetFocusVisuals(focusToRestore);
 				} else {
-					Debug.WriteLine($"[Navigator] Parent context has no focus, initializing...");
+					Debug.WriteLine($"[Navigator] Parent context has no valid focus, initializing...");
 					TryInitializeFocusIfNeeded();
 				}
 			}
@@ -952,7 +984,7 @@ namespace AcManager.UiObserver
 				if (acrossGroupsBest != null) {
 					Debug.WriteLine($"[NAV] ✅ FOUND across groups: '{acrossGroupsBest.SimpleName}'");
 				} else {
-					Debug.WriteLine($"[NAV] ❌ NO CANDIDATE FOUND");
+				 Debug.WriteLine($"[NAV] ❌ NO CANDIDATE FOUND");
 				}
 				Debug.WriteLine($"[NAV] ============================================================\n");
 			}
@@ -1169,30 +1201,40 @@ namespace AcManager.UiObserver
 
 		private static void OnPreviewKeyDown(object sender, KeyEventArgs e)
 		{
-			if (e == null) return;
-			
-			// Debug hotkeys (F9/F11/F12) handled in Navigator.Debug.cs partial class
-			
-			// Ctrl+Shift+Arrow keys: Navigation (ensure ONLY Ctrl+Shift, no other modifiers)
-			if (Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift)) {
-				bool handled = false;
-				
-				switch (e.Key) {
-					case Key.Up: handled = MoveInDirection(NavDirection.Up); break;
-					case Key.Down: handled = MoveInDirection(NavDirection.Down); break;
-					case Key.Left: handled = MoveInDirection(NavDirection.Left); break;
-					case Key.Right: handled = MoveInDirection(NavDirection.Right); break;
-					case Key.Return: handled = ActivateFocusedNode(); break;
-					case Key.Escape: handled = ExitGroup(); break;
-					case Key.F9:  // Debug hotkey - handled in Navigator.Debug.cs
-					case Key.F11: // Debug hotkey - handled in Navigator.Debug.cs
-					case Key.F12: // Debug hotkey - handled in Navigator.Debug.cs
-						OnDebugHotkey(e);
-						return;
-				}
-				
-				if (handled) e.Handled = true;
+#if DEBUG
+			// Keyboard navigation only available in DEBUG builds for development/testing
+			// StreamDeck is the primary input method in release builds
+			if (Keyboard.Modifiers != ModifierKeys.None) return;
+
+			switch (e.Key)
+			{
+				case Key.Up:
+					MoveInDirection(NavDirection.Up);
+					e.Handled = true;
+					break;
+				case Key.Down:
+					MoveInDirection(NavDirection.Down);
+					e.Handled = true;
+					break;
+				case Key.Left:
+					MoveInDirection(NavDirection.Left);
+					e.Handled = true;
+					break;
+				case Key.Right:
+					MoveInDirection(NavDirection.Right);
+					e.Handled = true;
+					break;
+				case Key.Enter:
+				case Key.Space:
+					ActivateFocusedNode();
+					e.Handled = true;
+					break;
+				case Key.Escape:
+					ExitGroup();
+					e.Handled = true;
+					break;
 			}
+#endif
 		}
 
 		// Partial method declaration - implemented in Navigator.Debug.cs
