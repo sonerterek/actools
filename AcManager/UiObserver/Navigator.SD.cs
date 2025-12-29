@@ -27,6 +27,9 @@ namespace AcManager.UiObserver
 		
 		// ✅ FIX #2: Track first connection to suppress startup Toast notifications
 		private static bool _streamDeckHasConnectedAtLeastOnce = false;
+		
+		// ✅ FIX: Track if discovery session header has been written for this app run
+		private static bool _discoverySessionHeaderWritten = false;
 
 		// Page name constants
 		private const string PageNavigation = "Navigation";
@@ -429,21 +432,26 @@ namespace AcManager.UiObserver
 				// Check if file exists and needs initial header
 				bool fileExists = System.IO.File.Exists(discoveryFile);
 				
-				// If file doesn't exist or is empty, add initial header
+				// ✅ FIX: Write file header only if file doesn't exist or is empty
 				if (!fileExists || new System.IO.FileInfo(discoveryFile).Length == 0) {
 					var header = "# NWRS Navigation Discovery Session\r\n" +
 					            "# Append-only file - copy filters from here to NWRS Navigation.cfg\r\n";
 					System.IO.File.WriteAllText(discoveryFile, header);
+					fileExists = true; // File now exists after we created it
 				}
 
-				// Write session header once per application run (first discovery write of this session)
-				
-				// Add empty line before session header (if file has content)
-				var sessionHeader = fileExists && new System.IO.FileInfo(discoveryFile).Length > 0
-					? $"\r\n# ===== Session: {DateTime.Now:yyyy-MM-dd HH:mm:ss} =====\r\n"
-					: $"# ===== Session: {DateTime.Now:yyyy-MM-dd HH:mm:ss} =====\r\n";
-				
-				System.IO.File.AppendAllText(discoveryFile, sessionHeader);
+				// ✅ FIX: Write session header ONCE per application run
+				if (!_discoverySessionHeaderWritten) {
+					// Add empty line before session header (if file has content)
+					var sessionHeader = fileExists && new System.IO.FileInfo(discoveryFile).Length > 0
+						? $"\r\n# ===== Session: {DateTime.Now:yyyy-MM-dd HH:mm:ss} =====\r\n"
+						: $"# ===== Session: {DateTime.Now:yyyy-MM-dd HH:mm:ss} =====\r\n";
+					
+					System.IO.File.AppendAllText(discoveryFile, sessionHeader);
+					_discoverySessionHeaderWritten = true;
+					
+					Debug.WriteLine($"[Navigator] Discovery session header written for this app run");
+				}
 
 				// Write the comment and filter rule (no extra empty lines)
 				var entry = $"{comment}\r\n{filterRule}\r\n";
