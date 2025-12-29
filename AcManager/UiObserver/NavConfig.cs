@@ -279,6 +279,7 @@ namespace AcManager.UiObserver
 		/// <summary>
 		/// Parses a PAGE definition.
 		/// Format: PAGE: <name> => <json array>
+		/// ? UPDATED: Page name MUST be a quoted string.
 		/// </summary>
 		private static NavPageDef ParsePageDefinition(string line)
 		{
@@ -297,8 +298,22 @@ namespace AcManager.UiObserver
 				return null;
 			}
 
-			var pageName = parts[0].Trim();
+			var pageNameRaw = parts[0].Trim();
 			var gridJson = parts[1].Trim();
+
+			// ? NEW: Validate that page name is quoted
+			if (!pageNameRaw.StartsWith("\"") || !pageNameRaw.EndsWith("\"") || pageNameRaw.Length < 2)
+			{
+				var errorMsg = $"[NavConfig] PAGE name must be a quoted string (found: {pageNameRaw})";
+				Debug.WriteLine(errorMsg);
+#if DEBUG
+				throw new FormatException(errorMsg);
+#endif
+				return null;
+			}
+
+			// Remove quotes from page name
+			var pageName = pageNameRaw.Substring(1, pageNameRaw.Length - 2);
 
 			try
 			{
@@ -348,6 +363,7 @@ namespace AcManager.UiObserver
 		/// <summary>
 		/// Parses properties string (semicolon-separated key=value pairs).
 		/// Handles quoted values: KeyTitle="Change Car"
+		/// ? UPDATED: KeyName and PageName MUST be quoted strings.
 		/// </summary>
 		private static Dictionary<string, string> ParseProperties(string propertiesStr)
 		{
@@ -367,6 +383,22 @@ namespace AcManager.UiObserver
 				{
 					var key = keyValue[0].Trim();
 					var value = keyValue[1].Trim();
+
+					// ? NEW: Validate that KeyName and PageName are quoted
+					if ((key.Equals("KeyName", StringComparison.OrdinalIgnoreCase) ||
+					     key.Equals("PageName", StringComparison.OrdinalIgnoreCase)))
+					{
+						if (!value.StartsWith("\"") || !value.EndsWith("\"") || value.Length < 2)
+						{
+							var errorMsg = $"[NavConfig] {key} must be a quoted string (found: {value})";
+							Debug.WriteLine(errorMsg);
+#if DEBUG
+							throw new FormatException(errorMsg);
+#endif
+							// In release, skip this property
+							continue;
+						}
+					}
 
 					// Remove quotes from value if present
 					if (value.StartsWith("\"") && value.EndsWith("\"") && value.Length >= 2)
