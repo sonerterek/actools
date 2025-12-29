@@ -327,7 +327,7 @@ namespace NWRS_AC_SDPlugin
 		/// Handle DefinePage command from Content Manager
 		/// Format: "DefinePage PageName[:BasePage] [[key00,key01,key02],[key10,key11,key12],...]"
 		/// Supports inheritance: DefinePage ChildPage:ParentPage [...]
-		/// Grid semantics: "base" = inherit from parent, null = clear position, "KeyName" = use specific key
+		/// Grid semantics: null = inherit from parent, "" (empty string) = clear position, "KeyName" = use specific key
 		/// </summary>
 		private static void HandleDefinePage(string args)
 		{
@@ -392,8 +392,8 @@ namespace NWRS_AC_SDPlugin
 				}
 				
 				// Merge grids: child overrides base
-				// - "base" in child → use base page key
-				// - null in child → clear position (no key)
+				// - null in child → use base page key (inherit)
+				// - "" (empty string) in child → clear position (no key)
 				// - "KeyName" in child → use specified key
 				var finalGrid = new string[5, 3];
 				var missingKeys = new List<string>();
@@ -405,9 +405,9 @@ namespace NWRS_AC_SDPlugin
 						string childKey = childGrid[r, c];
 						
 						// Handle inheritance logic
-						if (childKey == "base")
+						if (childKey == null)
 						{
-							// Use base page key if available
+							// null = inherit from base page
 							if (basePage != null && basePage.VKeys[r, c] != null)
 							{
 								// Get key name from base VKey
@@ -422,14 +422,14 @@ namespace NWRS_AC_SDPlugin
 								
 								if (basePage == null)
 								{
-									Debug.WriteLine($"⚠️ NamedPipe: 'base' keyword at ({r},{c}) but no base page specified");
-									missingKeys.Add($"base@({r},{c})-no_base_page");
+									Debug.WriteLine($"⚠️ NamedPipe: null at ({r},{c}) but no base page specified");
+									missingKeys.Add($"null@({r},{c})-no_base_page");
 								}
 							}
 						}
-						else if (string.IsNullOrEmpty(childKey) || childKey == "null")
+						else if (childKey == string.Empty)
 						{
-							// Explicitly clear this position
+							// Empty string = explicitly clear this position
 							finalGrid[r, c] = null;
 						}
 						else

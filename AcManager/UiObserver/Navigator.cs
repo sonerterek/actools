@@ -471,6 +471,10 @@ namespace AcManager.UiObserver
 					Debug.WriteLine($"[Navigator] Parent context has no valid focus, initializing...");
 					TryInitializeFocusIfNeeded();
 				}
+				
+				// ✅ FIX: Restore StreamDeck page for the now-current modal
+				// When a modal closes, we need to switch back to the parent modal's page
+				SwitchStreamDeckPageForModal(CurrentContext.ModalNode);
 			}
 		}
 

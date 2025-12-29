@@ -127,14 +127,14 @@ DefinePage <PageName>[:<BasePageName>] <KeyGrid>
 **Key Grid Format:**
 - Must be a valid JSON array: `[[row0],[row1],[row2],[row3],[row4]]`
 - Each row must have exactly 3 elements (columns)
-- Use `"base"` to inherit key from base page
-- Use `null` or `""` to clear position (override base with empty)
+- Use `null` to inherit key from base page (requires base page)
+- Use `""` (empty string) to clear position (override base or set empty)
 - Use `"KeyName"` to use specific key (override base with this key)
 
 **Inheritance Semantics:**
 When a base page is specified with `:BasePageName`:
-- **`"base"`** = Keep/inherit the key from the base page at this position
-- **`null`** or `""` = Clear this position (override base with empty key)
+- **`null`** = Keep/inherit the key from the base page at this position
+- **`""`** (empty string) = Clear this position (override base with empty key)
 - **`"KeyName"`** = Use specified key (override base with this key)
 
 **Examples:**
@@ -157,53 +157,32 @@ DefinePage Navigation [["Back","Home","Next"],[null,null,null],[null,null,null],
 DefineKey Save "Save" C:\Icons\save.png
 DefineKey Cancel "Cancel" C:\Icons\cancel.png
 
-DefinePage EditPage:Navigation [["Save","Cancel","base"],[null,null,null],[null,null,null],[null,null,null],[null,null,null]]
+DefinePage EditPage:Navigation [["Save","Cancel",null],["","",""],["","",""],["","",""],["","",""]]
 
-# Result: EditPage has Save, Cancel, Next (inherited) at row 0
-# Back and Home positions are cleared (null overrides base)
+# Result: EditPage has Save, Cancel, Next (inherited via null) at row 0
+# Back and Home positions are overridden, position (0,2) inherits Next
 ```
 
 **Inherit most, override one:**
 ```
-DefinePage ViewPage:Navigation [["base","base","base"],["Export","Print",null],[null,null,null],[null,null,null],[null,null,null]]
+DefinePage ViewPage:Navigation [[null,null,null],["Export","Print",""],["","",""],["","",""],["","",""]]
 
-# Result: ViewPage has Back, Home, Next (all inherited) at row 0
+# Result: ViewPage has Back, Home, Next (all inherited via null) at row 0
 #         Plus Export, Print at row 1
 ```
 
 **Clear inherited keys:**
 ```
-DefinePage MinimalPage:Navigation [[null,null,null],[null,null,null],[null,null,null],[null,null,null],[null,null,null]]
+DefinePage MinimalPage:Navigation [["","",""],["","",""],["","",""],["","",""],["","",""]]
 
-# Result: MinimalPage has no keys (all base keys cleared with null)
-```
-
-**Visual Layout Examples:**
-
-**Base page:**
-```
-Navigation:
-Row 0: [Back]   [Home]   [Next]
-Row 1: [empty]  [empty]  [empty]
-Row 2: [empty]  [empty]  [empty]
-Row 3: [empty]  [empty]  [empty]
-Row 4: [empty]  [empty]  [empty]
-```
-
-**Child page with inheritance:**
-```
-EditPage:Navigation (grid: [["Save","Cancel","base"],[null,null,null],...])
-Row 0: [Save]   [Cancel] [Next]    ? Save replaces Back, Cancel replaces Home, Next inherited
-Row 1: [empty]  [empty]  [empty]   ? null clears inherited positions
-Row 2: [empty]  [empty]  [empty]
-Row 3: [empty]  [empty]  [empty]
-Row 4: [empty]  [empty]  [empty]
+# Result: MinimalPage has no keys (all base keys cleared with "")
 ```
 
 **Notes:**
 - All pages are exactly 5 rows x 3 columns (StreamDeck standard layout)
 - Base page must exist before creating child page
-- `"base"` keyword requires a base page - error if used without `:<BasePageName>`
+- `null` in child grid means "inherit from base" - requires a base page to be specified
+- `""` (empty string) means "clear this position" - works with or without base page
 - Keys specified in child grid must be defined with DefineKey
 - Inheritance is resolved at definition time (one-time merge)
 - Changes to base page don't affect existing child pages
@@ -518,8 +497,8 @@ When CM disconnects:
 9. **Verify icon files exist** before sending DefineKey commands (optional, but recommended)
 10. **No partial pages** - All keys must exist or page creation fails completely
 11. **Use page inheritance for common layouts** - Define base pages for navigation/common elements
-12. **Use `base` keyword wisely** - Only in child pages with `:BasePageName` syntax
-13. **Use `null` to clear positions** - Explicitly override inherited keys with empty positions
+12. **Use `null` to inherit from base** - Let child pages inherit keys from parent at specific positions
+13. **Use `""` to clear positions** - Explicitly override inherited keys with empty positions
 14. **Define base pages first** - Child pages cannot be created before their parents
 15. **Inheritance is one-time merge** - Changes to base page don't affect existing children
 
@@ -623,7 +602,7 @@ DefineKey Icon
 DefineKey Title
 
 # Create page with blank keys
-DefinePage StatusPage [["Status","Icon","Title"],[null,null,null],[null,null,null],[null,null,null],[null,null,null],[null,null,null]]
+DefinePage StatusPage [["Status","Icon","Title"],[null,null,null],[null,null,null],[null,null,null],[null,null,null],[null,null,null],[null,null,null]]
 Plugin ? PageDefined StatusPage OK
 
 SwitchPage StatusPage
@@ -681,24 +660,24 @@ Plugin ? KeyDefined Export OK
 Plugin ? KeyDefined Print OK
 
 # Create edit page inheriting navigation
-DefinePage EditMenu:Navigation [["Save","Cancel","base"],[null,null,null],[null,null,null],[null,null,null],[null,null,null]]
+DefinePage EditMenu:Navigation [["Save","Cancel",null],[null,null,null],[null,null,null],[null,null,null],[null,null,null]]
 Plugin ? PageDefined EditMenu OK
-# Result: Save, Cancel, Next (inherited) at row 0
+# Result: Save, Cancel, Next (inherited via null) at row 0
 
 # Create view page inheriting navigation
-DefinePage ViewMenu:Navigation [["base","base","base"],["Export","Print",null],[null,null,null],[null,null,null],[null,null,null]]
+DefinePage ViewMenu:Navigation [[null,null,null],["Export","Print",null],[null,null,null],[null,null,null],[null,null,null]]
 Plugin ? PageDefined ViewMenu OK
 # Result: Back, Home, Next (all inherited) at row 0, Export/Print at row 1
 
 # Create minimal page clearing everything
-DefinePage MinimalMenu:Navigation [[null,null,null],[null,null,null],[null,null,null],[null,null,null],[null,null,null]]
+DefinePage MinimalMenu:Navigation [["","",""],["","",""],["","",""],["","",""],["","",""]]
 Plugin ? PageDefined MinimalMenu OK
-# Result: Only Home at position (1,1), all other inherited keys cleared
+# Result: All keys cleared with ""
 
 # Switch between pages
 SwitchPage EditMenu   # Shows: Save, Cancel, Next
 SwitchPage ViewMenu   # Shows: Back, Home, Next, Export, Print
-SwitchPage MinimalMenu # Shows: Only Home in center
+SwitchPage MinimalMenu # Shows: All keys cleared
 ```
 
 Result: Multiple pages share common navigation with context-specific additions
@@ -707,24 +686,12 @@ Result: Multiple pages share common navigation with context-specific additions
 
 ```
 # Error: Base page doesn't exist
-DefinePage ChildPage:NonExistent [["base",null,null],[null,null,null],[null,null,null],[null,null,null],[null,null,null]]
+DefinePage ChildPage:NonExistent [[null,null,null],[null,null,null],[null,null,null],[null,null,null],[null,null,null]]
 Plugin ? PageDefined ChildPage ERROR Base page 'NonExistent' not defined
 
-# Error: Using 'base' without inheritance
-DefinePage InvalidPage [["base",null,null],[null,null,null],[null,null,null],[null,null,null],[null,null,null]]
-Plugin ? PageDefined InvalidPage ERROR Undefined keys: base@(0,0)-no_base_page
-
-# Error: Child key not defined
-DefineKey Key1 "Key 1" C:\Icons\key1.png
-DefinePage Base [["Key1",null,null],[null,null,null],[null,null,null],[null,null,null],[null,null,null]]
-Plugin ? PageDefined Base OK
-
-DefinePage Child:Base [["UndefinedKey",null,null],[null,null,null],[null,null,null],[null,null,null],[null,null,null]]
-Plugin ? PageDefined Child ERROR Undefined keys: UndefinedKey@(0,0)
-
-# Error: Empty base page name
-DefinePage BadChild: [["base",null,null],[null,null,null],[null,null,null],[null,null,null],[null,null,null]]
-Plugin ? PageDefined BadChild ERROR Invalid inheritance syntax: base page name cannot be empty after ':'
+# Error: Using null without base page specified
+DefinePage InvalidPage [[null,null,null],[null,null,null],[null,null,null],[null,null,null],[null,null,null]]
+Plugin ? PageDefined InvalidPage ERROR null@(0,0)-no_base_page
 ```
 
 Result: Proper error handling for inheritance edge cases
@@ -746,17 +713,17 @@ Plugin ? PageDefined BaseLayout OK
 # Layout: A[_]B / [_]C[_] / D[_]E / [_][_][_] / [_][_][_]
 
 # Child 1: Keep most, add F at bottom
-DefinePage Child1:BaseLayout [["base","base","base"],["base","base","base"],["base","base","base"],[null,null,null],["F",null,null]]
+DefinePage Child1:BaseLayout [[null,null,null],[null,null,null],[null,null,null],[null,null,null],["F",null,null]]
 Plugin ? PageDefined Child1 OK
 # Layout: A[_]B / [_]C[_] / D[_]E / [_][_][_] / F[_][_]
 
 # Child 2: Clear middle, keep edges
-DefinePage Child2:BaseLayout [["base","base","base"],[null,null,null],[base","base","base"],[null,null,null],[null,null,null]]
+DefinePage Child2:BaseLayout [[null,null,null],["","",""],["",null,""],[null,null,null],[null,null,null]]
 Plugin ? PageDefined Child2 OK
 # Layout: A[_]B / [_][_][_] / D[_]E / [_][_][_] / [_][_][_]
 
 # Child 3: Swap some keys
-DefinePage Child3:BaseLayout [["base","F","base"],["base","base","base"],["base","base","base"],[null,null,null],[null,null,null]]
+DefinePage Child3:BaseLayout [[null,"F",null],[null,null,null],[null,null,null],[null,null,null],[null,null,null]]
 Plugin ? PageDefined Child3 OK
 # Layout: A F B / [_]C[_] / D[_]E / [_][_][_] / [_][_][_]
 ```
@@ -767,10 +734,16 @@ Result: Flexible inheritance allows complex layout variations
 
 ## Version History
 
+- **v1.2** (2024-12-24): Updated inheritance syntax
+  - Changed from `"base"` keyword to `null` for inheritance (more intuitive)
+  - `null` = inherit key from base page at this position
+  - `""` (empty string) = explicitly clear position
+  - `"KeyName"` = use specific key (override)
+  - Updated all examples and documentation
+
 - **v1.1** (2024-12-24): Page inheritance feature
   - Added `:BasePageName` syntax for page inheritance (C++ style)
-  - Added `"base"` keyword in grid to inherit keys from base page
-  - `null` now clears/overrides base page positions
+  - Inheritance with grid semantics
   - Enhanced error handling for inheritance edge cases
   - One-time merge at definition (no dynamic inheritance)
 

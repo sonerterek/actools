@@ -196,10 +196,10 @@ namespace AcManager.UiObserver
 			Debug.WriteLine($"[Navigator] Defining page: {PageNavigation}");
 			_streamDeckClient.DefinePage(PageNavigation, new[] {
 				new[] { "Back", "WriteModalFilter", "WriteElementFilter" },
-				new string[] { null, null, null },
-				new[] { null, "Up", null },
+				new[] { "","",""},
+				new[] { "", "Up", "" },
 				new[] { "Left", "MouseLeft", "Right" },
-				new[] { null, "Down", null }
+				new[] { "", "Down", "" }
 			});
 			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageNavigation}");
 			
@@ -207,10 +207,10 @@ namespace AcManager.UiObserver
 			Debug.WriteLine($"[Navigator] Defining page: {PageUpDown}");
 			_streamDeckClient.DefinePage(PageUpDown, new[] {
 				new[] { "Back", "WriteModalFilter", "WriteElementFilter" },
-				new string[] { null, null, null },
-				new[] { null, "Up", null },
-				new[] { null, "MouseLeft", null },
-				new[] { null, "Down", null }
+				new[] { "", "", "" },
+				new[] { "", "Up", "" },
+				new[] { "", "MouseLeft", "" },
+				new[] { "", "Down", "" }
 			});
 			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageUpDown}");
 			
@@ -218,10 +218,10 @@ namespace AcManager.UiObserver
 			Debug.WriteLine($"[Navigator] Defining page: {PageSlider}");
 			_streamDeckClient.DefinePage(PageSlider, new[] {
 				new[] { "Back", "WriteModalFilter", "WriteElementFilter" },
-				new string[] { null, null, null },
-				new string[] { null, null, null },
+				new[] { "", "", "" },
+				new[] { "", "", "" },
 				new[] { "Left", "MouseLeft", "Right" },
-				new string[] { null, null, null }
+				new[] { "", "", "" }
 			});
 			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageSlider}");
 			
@@ -229,10 +229,10 @@ namespace AcManager.UiObserver
 			Debug.WriteLine($"[Navigator] Defining page: {PageDoubleSlider}");
 			_streamDeckClient.DefinePage(PageDoubleSlider, new[] {
 				new[] { "Back", "WriteModalFilter", "WriteElementFilter" },
-				new string[] { null, null, null },
-				new[] { null, "Up", null },
+				new[] { "", "", "" },
+				new[] { "", "Up", "" },
 				new[] { "Left", "MouseLeft", "Right" },
-				new[] { null, "Down", null }
+				new[] { "", "Down", "" }
 			});
 			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageDoubleSlider}");
 			
@@ -240,10 +240,10 @@ namespace AcManager.UiObserver
 			Debug.WriteLine($"[Navigator] Defining page: {PageRoundSlider}");
 			_streamDeckClient.DefinePage(PageRoundSlider, new[] {
 				new[] { "Back", "WriteModalFilter", "WriteElementFilter" },
-				new string[] { null, null, null },
-				new[] { null, "Up", null },
+				new[] { "", "", "" },
+				new[] { "", "Up", "" },
 				new[] { "Left", "MouseLeft", "Right" },
-				new[] { null, "Down", null }
+				new[] { "", "Down", "" }
 			});
 			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageRoundSlider}");
 			
