@@ -973,6 +973,7 @@
     <Compile Include="Tools\Win10SharingUiHelper.cs" />
     <Compile Include="UiObserver\HighlightOverlay.cs" />
     <Compile Include="UiObserver\IDebugRect.cs" />
+    <Compile Include="UiObserver\NavConfig.cs" />
     <Compile Include="UiObserver\Navigator.cs" />
     <Compile Include="UiObserver\Navigator.Debug.cs" />
     <Compile Include="UiObserver\Navigator.SD.cs" />
@@ -1941,6 +1942,8 @@
     <Content Include="About\Licenses\SmartThreadPool\SmartThreadPool.txt" />
     <Content Include="About\Licenses\WpfNotifyIcon\WpfNotifyIcon.txt" />
     <Content Include="Assets\Data\DefaultTrajectories.json" />
+    <None Include="NWRS Navigation.cfg.example" />
+    <None Include="UiObserver\Configuration System Documentation.md" />
     <None Include="UiObserver\CONTROL_INPUT_ANALYSIS.md" />
     <None Include="UiObserver\DESIGN.md" />
     <None Include="UiObserver\StreamDeck Integration Design.md" />

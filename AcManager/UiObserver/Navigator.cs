@@ -716,6 +716,19 @@ namespace AcManager.UiObserver
 				
 				SetFocusVisuals(newNode);
 				
+				// ✅ NEW: Check if this element has a custom page mapping
+				if (_navConfig != null && _streamDeckClient != null)
+				{
+					var elementPath = GetPathWithoutHwnd(newNode);
+					var pageName = _navConfig.FindPageForElement(elementPath);
+					
+					if (!string.IsNullOrEmpty(pageName))
+					{
+						Debug.WriteLine($"[Navigator] Switching to custom page '{pageName}' for focused element '{newNode.SimpleName}'");
+						_streamDeckClient.SwitchPage(pageName);
+					}
+				}
+				
 				// ✅ NEW: Ensure the item is scrolled into view if in a virtualized container
 				EnsureScrolledIntoView(newNode);
 				

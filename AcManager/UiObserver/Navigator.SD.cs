@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
@@ -30,6 +31,10 @@ namespace AcManager.UiObserver
 		
 		// ✅ FIX: Track if discovery session header has been written for this app run
 		private static bool _discoverySessionHeaderWritten = false;
+		
+		// ✅ NEW: Configuration and shortcut mappings
+		private static NavConfiguration _navConfig;
+		private static Dictionary<string, NavShortcutKey> _shortcutsByKey = new Dictionary<string, NavShortcutKey>(StringComparer.OrdinalIgnoreCase);
 
 		// Page name constants
 		private const string PageNavigation = "Navigation";
@@ -59,6 +64,10 @@ namespace AcManager.UiObserver
 
 			try
 			{
+				// ✅ NEW: Load configuration first
+				_navConfig = NavConfigParser.Load();
+				Debug.WriteLine($"[Navigator] Loaded config: {_navConfig.ShortcutKeys.Count} shortcuts, {_navConfig.Pages.Count} custom pages");
+
 				// Create StreamDeck client
 				_streamDeckClient = new SDPClient
 				{
@@ -74,10 +83,10 @@ namespace AcManager.UiObserver
 				var icons = SDPIconHelper.DiscoverIcons();
 				Debug.WriteLine($"[Navigator] Discovered {icons.Count} StreamDeck icons");
 
-				// Define keys
+				// Define keys (built-in + shortcuts from config)
 				DefineStreamDeckKeys(icons);
 
-				// Define pages
+				// Define pages (built-in + custom from config)
 				DefineStreamDeckPages();
 
 				// Subscribe to KeyPressed events
@@ -105,7 +114,7 @@ namespace AcManager.UiObserver
 		/// </summary>
 		private static void DefineStreamDeckKeys(Dictionary<string, string> icons)
 		{
-			// Define navigation keys
+			// Define built-in navigation keys
 			_streamDeckClient.DefineKey("Back", null, GetIconPath(icons, "Back"));
 			_streamDeckClient.DefineKey("Up", null, GetIconPath(icons, "Up"));
 			_streamDeckClient.DefineKey("Down", null, GetIconPath(icons, "Down"));
@@ -113,9 +122,49 @@ namespace AcManager.UiObserver
 			_streamDeckClient.DefineKey("Right", null, GetIconPath(icons, "Right"));
 			_streamDeckClient.DefineKey("MouseLeft", null, GetIconPath(icons, "Mouse Left"));
 			
-			// Define discovery keys
+			// Define built-in discovery keys
 			_streamDeckClient.DefineKey("WriteModalFilter", "Modal", null);
 			_streamDeckClient.DefineKey("WriteElementFilter", "Element", null);
+			
+			// ✅ FIX: Only define keys for shortcuts that actually have a KeyName
+			// Classifications can be modals, page mappings, or shortcuts
+			// Only shortcuts have KeyName defined
+			foreach (var shortcut in _navConfig.ShortcutKeys)
+			{
+				// Skip classifications without KeyName (modals, page mappings)
+				if (string.IsNullOrEmpty(shortcut.KeyName))
+				{
+					Debug.WriteLine($"[Navigator] Skipping classification without KeyName: {shortcut.PathFilter}");
+					continue;
+				}
+				
+				// Get icon path (check if it's a file path or icon name)
+				string iconSpec = null;
+				if (!string.IsNullOrEmpty(shortcut.KeyIcon))
+				{
+					// Try to get icon from discovered icons first
+					iconSpec = GetIconPath(icons, shortcut.KeyIcon);
+					
+					// If not found, check if it's a file path
+					if (iconSpec == null && File.Exists(shortcut.KeyIcon))
+					{
+						iconSpec = shortcut.KeyIcon;
+					}
+					
+					// If still null, use text-based icon
+					if (iconSpec == null)
+					{
+						iconSpec = SDPIconHelper.CreateTextIcon(shortcut.KeyIcon);
+					}
+				}
+				
+				_streamDeckClient.DefineKey(shortcut.KeyName, shortcut.KeyTitle, iconSpec);
+				
+				// Store shortcut for later lookup
+				_shortcutsByKey[shortcut.KeyName] = shortcut;
+				
+				Debug.WriteLine($"[Navigator] Defined shortcut key: {shortcut.KeyName} → {shortcut.PathFilter}");
+			}
 		}
 
 		/// <summary>
@@ -124,7 +173,15 @@ namespace AcManager.UiObserver
 		/// </summary>
 		private static void DefineStreamDeckPages()
 		{
+			// Define built-in pages
 			DefineBuiltInPages();
+			
+			// ✅ NEW: Define custom pages from configuration
+			foreach (var page in _navConfig.Pages)
+			{
+				_streamDeckClient.DefinePage(page.PageName, page.KeyGrid);
+				Debug.WriteLine($"[Navigator] Defined custom page: {page.PageName}");
+			}
 		}
 
 		/// <summary>
@@ -133,7 +190,10 @@ namespace AcManager.UiObserver
 		/// </summary>
 		private static void DefineBuiltInPages()
 		{
+			Debug.WriteLine("[Navigator] DefineBuiltInPages() START");
+			
 			// Navigation page (full 6-direction navigation)
+			Debug.WriteLine($"[Navigator] Defining page: {PageNavigation}");
 			_streamDeckClient.DefinePage(PageNavigation, new[] {
 				new[] { "Back", "WriteModalFilter", "WriteElementFilter" },
 				new string[] { null, null, null },
@@ -141,8 +201,10 @@ namespace AcManager.UiObserver
 				new[] { "Left", "MouseLeft", "Right" },
 				new[] { null, "Down", null }
 			});
+			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageNavigation}");
 			
 			// UpDown page (vertical navigation only, for menus)
+			Debug.WriteLine($"[Navigator] Defining page: {PageUpDown}");
 			_streamDeckClient.DefinePage(PageUpDown, new[] {
 				new[] { "Back", "WriteModalFilter", "WriteElementFilter" },
 				new string[] { null, null, null },
@@ -150,8 +212,10 @@ namespace AcManager.UiObserver
 				new[] { null, "MouseLeft", null },
 				new[] { null, "Down", null }
 			});
+			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageUpDown}");
 			
 			// Slider page (left/right for value adjustment)
+			Debug.WriteLine($"[Navigator] Defining page: {PageSlider}");
 			_streamDeckClient.DefinePage(PageSlider, new[] {
 				new[] { "Back", "WriteModalFilter", "WriteElementFilter" },
 				new string[] { null, null, null },
@@ -159,8 +223,10 @@ namespace AcManager.UiObserver
 				new[] { "Left", "MouseLeft", "Right" },
 				new string[] { null, null, null }
 			});
+			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageSlider}");
 			
 			// DoubleSlider page (up/down for coarse, left/right for fine)
+			Debug.WriteLine($"[Navigator] Defining page: {PageDoubleSlider}");
 			_streamDeckClient.DefinePage(PageDoubleSlider, new[] {
 				new[] { "Back", "WriteModalFilter", "WriteElementFilter" },
 				new string[] { null, null, null },
@@ -168,8 +234,10 @@ namespace AcManager.UiObserver
 				new[] { "Left", "MouseLeft", "Right" },
 				new[] { null, "Down", null }
 			});
+			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageDoubleSlider}");
 			
 			// RoundSlider page (all 4 directions for circular control)
+			Debug.WriteLine($"[Navigator] Defining page: {PageRoundSlider}");
 			_streamDeckClient.DefinePage(PageRoundSlider, new[] {
 				new[] { "Back", "WriteModalFilter", "WriteElementFilter" },
 				new string[] { null, null, null },
@@ -177,6 +245,10 @@ namespace AcManager.UiObserver
 				new[] { "Left", "MouseLeft", "Right" },
 				new[] { null, "Down", null }
 			});
+			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageRoundSlider}");
+			
+			Debug.WriteLine("[Navigator] DefineBuiltInPages() END");
+			Debug.WriteLine($"[Navigator] SDPClient page count: {_streamDeckClient.PageCount}");
 		}
 
 		/// <summary>
@@ -237,6 +309,15 @@ namespace AcManager.UiObserver
 				try {
 					Debug.WriteLine($"[Navigator] OnStreamDeckKeyPressed: Executing on UI thread for '{e.KeyName}'");
 					
+					// ✅ NEW: Check if this is a shortcut key first
+					if (_shortcutsByKey.ContainsKey(e.KeyName))
+					{
+						Debug.WriteLine($"[Navigator] Executing shortcut key: {e.KeyName}");
+						ExecuteShortcutKey(e.KeyName);
+						return;
+					}
+					
+					// Built-in navigation keys
 					switch (e.KeyName) {
 						case "Up":
 							Debug.WriteLine($"[Navigator] Executing MoveInDirection(Up)");
@@ -284,6 +365,55 @@ namespace AcManager.UiObserver
 			}), DispatcherPriority.Input);
 			
 			Debug.WriteLine($"[Navigator] OnStreamDeckKeyPressed: Dispatched to UI thread for '{e.KeyName}'");
+		}
+
+		/// <summary>
+		/// Executes a shortcut key by finding and focusing the matching element.
+		/// </summary>
+		private static void ExecuteShortcutKey(string keyName)
+		{
+			if (!_shortcutsByKey.TryGetValue(keyName, out var shortcut))
+			{
+				Debug.WriteLine($"[Navigator] Shortcut not found: {keyName}");
+				return;
+			}
+
+			Debug.WriteLine($"[Navigator] Executing shortcut: {shortcut}");
+
+			// Get all nodes in current scope
+			var candidates = GetCandidatesInScope();
+			
+			Debug.WriteLine($"[Navigator] Searching {candidates.Count} candidates for path: {shortcut.PathFilter}");
+
+			// Find node that matches the shortcut's path filter
+			NavNode matchingNode = null;
+			foreach (var node in candidates)
+			{
+				var nodePath = GetPathWithoutHwnd(node);
+				
+				if (shortcut.Matches(nodePath))
+				{
+					matchingNode = node;
+					Debug.WriteLine($"[Navigator] ✅ Found matching node: {node.SimpleName} @ {nodePath}");
+					break;
+				}
+			}
+
+			if (matchingNode == null)
+			{
+				Debug.WriteLine($"[Navigator] ❌ No matching node found for shortcut: {keyName}");
+				return;
+			}
+
+			// Focus the matching node
+			if (SetFocus(matchingNode))
+			{
+				Debug.WriteLine($"[Navigator] ✅ Focused shortcut target: {matchingNode.SimpleName}");
+			}
+			else
+			{
+				Debug.WriteLine($"[Navigator] ❌ Failed to focus shortcut target: {matchingNode.SimpleName}");
+			}
 		}
 
 		#endregion
@@ -483,19 +613,47 @@ namespace AcManager.UiObserver
 
 		/// <summary>
 		/// Switches StreamDeck to the appropriate page for the given modal.
-		/// Uses built-in page selection based on modal type.
+		/// Uses built-in page selection based on modal type, or custom page from configuration.
 		/// </summary>
 		private static void SwitchStreamDeckPageForModal(NavNode modalNode)
 		{
 			if (_streamDeckClient == null) return;
 			
 			try {
-				// Select appropriate page based on modal type
-				var pageName = SelectBuiltInPageForModal(modalNode);
+				string pageName = null;
+				
+				// ✅ NEW: Check configuration for custom page mapping first
+				if (_navConfig != null && modalNode != null)
+				{
+					var modalPath = GetPathWithoutHwnd(modalNode);
+					pageName = _navConfig.FindPageForElement(modalPath);
+					
+					if (!string.IsNullOrEmpty(pageName))
+					{
+						Debug.WriteLine($"[Navigator] Using custom page from config: '{pageName}' for modal '{modalNode.SimpleName}'");
+					}
+				}
+				
+				// Fallback to built-in page selection if no custom mapping
+				if (string.IsNullOrEmpty(pageName))
+				{
+					pageName = SelectBuiltInPageForModal(modalNode);
+				}
 				
 				// Default to Navigation if no specific page selected
 				if (string.IsNullOrEmpty(pageName)) {
 					pageName = PageNavigation;
+				}
+				
+				// ✅ FIX: Strip inheritance suffix (":BasePage") from page name
+				// The plugin creates pages with only the child name, not the full "ChildPage:BasePage" syntax
+				// Example: "MainWindow:Navigation" → "MainWindow"
+				int colonIndex = pageName.IndexOf(':');
+				if (colonIndex > 0)
+				{
+					string fullPageName = pageName;
+					pageName = pageName.Substring(0, colonIndex);
+					Debug.WriteLine($"[Navigator] Stripped inheritance suffix: '{fullPageName}' → '{pageName}'");
 				}
 				
 				Debug.WriteLine($"[Navigator] Switching StreamDeck to '{pageName}' page for modal '{modalNode.SimpleName}'");
