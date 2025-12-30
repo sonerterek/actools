@@ -145,20 +145,20 @@ namespace AcManager.UiObserver
 						case "Right":
 							MoveInDirection(NavDirection.Right);
 							break;
-						
-						// Activation key - context-aware (Confirm in interaction mode, Activate otherwise)
-						case "MouseLeft":
-							if (CurrentContext?.ContextType == NavContextType.InteractiveControl)
-								ExitInteractionMode(revertChanges: false);  // Confirm
-							else
-								ActivateFocusedNode();
-							break;
-						
-						// Exit key - context-aware (Cancel in interaction mode, Close otherwise)
+
+						// Exit key (including Interaction mode)
 						case "Back":
-							ExitGroup();  // Already handles interaction mode internally
+							ExitGroup(); 
 							break;
-						
+						// Activation key (not used in Interaction mode any more
+						case "MouseLeft":
+							ActivateFocusedNode();
+							break;
+						// Same as MouseLeft. Only used in UpDown for now
+						case "Select":
+							ActivateFocusedNode();
+							break;
+
 						// Slider value adjustment keys - ALWAYS adjust value
 						case "SliderDecrease":
 							AdjustSliderValue(SliderAdjustment.SmallDecrement);
@@ -166,7 +166,7 @@ namespace AcManager.UiObserver
 						case "SliderIncrease":
 							AdjustSliderValue(SliderAdjustment.SmallIncrement);
 							break;
-						
+
 						// Slider range adjustment keys - ALWAYS adjust range
 						case "SliderRangeDecrease":
 							AdjustSliderRange(SliderAdjustment.SmallDecrement);
@@ -174,7 +174,15 @@ namespace AcManager.UiObserver
 						case "SliderRangeIncrease":
 							AdjustSliderRange(SliderAdjustment.SmallIncrement);
 							break;
-						
+
+						// Round Slider adjustment keys - ALWAYS adjust VALUE
+						case "SliderTurnCCW":
+							AdjustSliderValue(SliderAdjustment.SmallDecrement);
+							break;
+						case "SliderTurnCW":
+							AdjustSliderValue(SliderAdjustment.SmallIncrement);
+							break;
+
 						// Discovery keys
 						case "WriteModalFilter":
 							WriteModalFilterToDiscovery();

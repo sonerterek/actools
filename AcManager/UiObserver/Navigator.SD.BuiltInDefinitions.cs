@@ -39,15 +39,20 @@ namespace AcManager.UiObserver
 			_streamDeckClient.DefineKey("Left", null, GetIconPath(icons, "Left"));
 			_streamDeckClient.DefineKey("Right", null, GetIconPath(icons, "Right"));
 			_streamDeckClient.DefineKey("MouseLeft", null, GetIconPath(icons, "Mouse Left"));
+			_streamDeckClient.DefineKey("Select", null, GetIconPath(icons, "Mouse Left"));
 			
 			// ✅ Slider value adjustment keys (use Left/Right icons for now)
 			_streamDeckClient.DefineKey("SliderDecrease", null, GetIconPath(icons, "Left"));
 			_streamDeckClient.DefineKey("SliderIncrease", null, GetIconPath(icons, "Right"));
-			
+
 			// ✅ Slider range adjustment keys (use Up/Down icons for now)
 			_streamDeckClient.DefineKey("SliderRangeDecrease", null, GetIconPath(icons, "Down"));
 			_streamDeckClient.DefineKey("SliderRangeIncrease", null, GetIconPath(icons, "Up"));
-			
+
+			// ✅ Round Slider adjustment keys (Called TurnCCW and TurnCW, but use Left/Right icons for now)
+			_streamDeckClient.DefineKey("SliderTurnCCW", null, GetIconPath(icons, "Left"));
+			_streamDeckClient.DefineKey("SliderTurnCW", null, GetIconPath(icons, "Right"));
+
 			// Define built-in discovery keys
 			_streamDeckClient.DefineKey("WriteModalFilter", "Modal", null);
 			_streamDeckClient.DefineKey("WriteElementFilter", "Element", null);
@@ -116,7 +121,7 @@ namespace AcManager.UiObserver
 				new[] { "Back", "", "" },
 				new[] { "", "", "" },
 				new[] { "", "Up", "" },
-				new[] { "", "MouseLeft", "" },
+				new[] { "", "Select", "" },
 				new[] { "", "Down", "" }
 			});
 			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageUpDown}");
@@ -127,7 +132,7 @@ namespace AcManager.UiObserver
 				new[] { "Back", "", "" },
 				new[] { "", "", "" },
 				new[] { "", "", "" },
-				new[] { "SliderDecrease", "MouseLeft", "SliderIncrease" },
+				new[] { "SliderDecrease", "", "SliderIncrease" },
 				new[] { "", "", "" }
 			});
 			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageSlider}");
@@ -138,7 +143,7 @@ namespace AcManager.UiObserver
 				new[] { "Back", "", "" },
 				new[] { "", "", "" },
 				new[] { "", "SliderRangeIncrease", "" },
-				new[] { "SliderDecrease", "MouseLeft", "SliderIncrease" },
+				new[] { "SliderDecrease", "", "SliderIncrease" },
 				new[] { "", "SliderRangeDecrease", "" }
 			});
 			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageDoubleSlider}");
@@ -149,7 +154,7 @@ namespace AcManager.UiObserver
 				new[] { "Back", "", "" },
 				new[] { "", "", "" },
 				new[] { "", "", "" },
-				new[] { "SliderDecrease", "MouseLeft", "SliderIncrease" },
+				new[] { "SliderTurnCW", "", "SliderTurnCCW" },
 				new[] { "", "", "" }
 			});
 			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageRoundSlider}");

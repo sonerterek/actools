@@ -631,19 +631,18 @@ namespace AcManager.UiObserver
 		/// Exits the current group/modal or interaction mode.
 		/// Priority: Interaction mode > Modal dialog.
 		/// Called when user presses Back/Escape key.
-		/// For interaction mode: Reverts changes (Cancel behavior).
 		/// </summary>
 		public static bool ExitGroup()
 		{
 			if (CurrentContext == null) return false;
-			
-			// Priority 1: Exit interaction mode if active (with Cancel - revert changes)
+
+			// We're in interaction mode, exit the interaction but don't revert changes
 			if (CurrentContext.ContextType == NavContextType.InteractiveControl)
 			{
-				return ExitInteractionMode(revertChanges: true);
+				return ExitInteractionMode(revertChanges: false);
 			}
-			
-			// Priority 2: Close modal (original behavior)
+
+			// Otherwise Close the current Scope (modal dialog, DropDown menu, etc)
 			return CurrentContext.ScopeNode.Close();
 		}
 

@@ -95,6 +95,7 @@ namespace AcManager.UiObserver
             typeof(TabItem),
             typeof(Expander),
             typeof(GroupBox),
+            typeof(RoundSlider),
 		};
 
         // Group elements - containers that can hold navigable children
@@ -971,23 +972,23 @@ namespace AcManager.UiObserver
 
             try {
                 // ✅ Interactive controls - enter interaction mode
-                // Sliders need special handling to enter a focused adjustment mode
-                // NOTE: Don't pass pageName - let EnterInteractionMode() detect it via GetBuiltInPageForControl()
-                if (fe is Slider)
-                {
-                    return Navigator.EnterInteractionMode(this);  // Removed "Slider" parameter
-                }
-                
+                // Check by type name FIRST to handle derived types correctly
                 var typeName = fe.GetType().Name;
-                
-                if (typeName == "DoubleSlider")
-                {
-                    return Navigator.EnterInteractionMode(this);  // Removed "DoubleSlider" parameter
-                }
                 
                 if (typeName == "RoundSlider")
                 {
-                    return Navigator.EnterInteractionMode(this);  // Removed "RoundSlider" parameter
+                    return Navigator.EnterInteractionMode(this);
+                }
+                
+                if (typeName == "DoubleSlider")
+                {
+                    return Navigator.EnterInteractionMode(this);
+                }
+                
+                // Check base Slider type last (after derived types)
+                if (fe is Slider)
+                {
+                    return Navigator.EnterInteractionMode(this);
                 }
                 
                 // ✅ Single-action controls - use mouse click simulation

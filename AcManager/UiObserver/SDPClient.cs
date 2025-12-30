@@ -546,7 +546,9 @@ namespace AcManager.UiObserver
 
             if (_isReplicaSynced)
             {
-                QueueAsyncCommand($"SwitchPage {pageName}");
+                // ? FIX: Send immediately for interaction mode page switches
+                // Queue would delay the switch, causing UI lag
+                SendCommandImmediate($"SwitchPage {pageName}");
             }
 
             if (SDPVerboseDebug)
@@ -781,7 +783,8 @@ namespace AcManager.UiObserver
                 {
                     _writer.WriteLine(command);
 
-                    if (SDPVerboseDebug)
+                    // ? Always log SwitchPage commands for debugging
+                    if (command.StartsWith("SwitchPage") || SDPVerboseDebug)
                     {
                         Debug.WriteLine($"[SDPClient] Sent: {command}");
                     }
