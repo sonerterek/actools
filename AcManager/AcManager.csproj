@@ -980,6 +980,7 @@
     <Compile Include="UiObserver\Navigator.FocusGuard.cs" />
     <Compile Include="UiObserver\Navigator.InteractionMode.cs" />
     <Compile Include="UiObserver\Navigator.Navigation.cs" />
+    <Compile Include="UiObserver\Navigator.SD.BuiltInDefinitions.cs" />
     <Compile Include="UiObserver\Navigator.SD.cs" />
     <Compile Include="UiObserver\NavNode.cs" />
     <Compile Include="UiObserver\NavPathFilter.cs" />

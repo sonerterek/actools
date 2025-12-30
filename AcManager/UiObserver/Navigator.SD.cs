@@ -21,159 +21,50 @@ namespace AcManager.UiObserver
 	/// </summary>
 	internal static partial class Navigator
 	{
-		#region StreamDeck Fields
-
-		// StreamDeck integration
 		private static SDPClient _streamDeckClient;
-		
-		// ✅ FIX #2: Track first connection to suppress startup Toast notifications
-		private static bool _streamDeckHasConnectedAtLeastOnce = false;
-		
-		// ✅ FIX: Track if discovery session header has been written for this app run
-		private static bool _discoverySessionHeaderWritten = false;
-		
-		// ✅ NEW: Configuration and shortcut mappings
+		private static bool _streamDeckHasConnectedAtLeastOnce;
+		private static bool _discoverySessionHeaderWritten;
 		private static NavConfiguration _navConfig;
-		private static Dictionary<string, NavShortcutKey> _shortcutsByKey = new Dictionary<string, NavShortcutKey>(StringComparer.OrdinalIgnoreCase);
-
-		// Page name constants
-		private const string PageNavigation = "Navigation";
-		private const string PageUpDown = "UpDown";
-		private const string PageSlider = "Slider";
-		private const string PageDoubleSlider = "DoubleSlider";
-		private const string PageRoundSlider = "RoundSlider";
-
-		#endregion
-
-		#region StreamDeck Initialization
+		private static Dictionary<string, NavShortcutKey> _shortcutsByKey = new Dictionary<string, NavShortcutKey>();
+		
+		private static int _lastReconnectAttemptNotified;
 
 		/// <summary>
-		/// Initialize StreamDeck integration.
-		/// Sets up client, defines keys/pages, subscribes to events, and starts connection.
-		/// Fire-and-forget: Does not wait for or check connection status.
+		/// Initializes the StreamDeck integration subsystem.
+		/// Called once during Navigator initialization.
 		/// </summary>
 		private static void InitializeStreamDeck()
 		{
-			if (_streamDeckClient != null)
-			{
-				Debug.WriteLine("[Navigator] StreamDeck already initialized");
-				return;
-			}
-
 			Debug.WriteLine("[Navigator] Initializing StreamDeck integration...");
-
-			try
-			{
-				// ✅ NEW: Load configuration first
-				_navConfig = NavConfigParser.Load();
-				Debug.WriteLine($"[Navigator] Loaded config: {_navConfig.ShortcutKeys.Count} shortcuts, {_navConfig.Pages.Count} custom pages");
-
-				// Create StreamDeck client
-				_streamDeckClient = new SDPClient
-				{
-					SDPVerboseDebug = true
-				};
-
-				// Subscribe to connection events for status notifications
-				_streamDeckClient.ConnectionEstablished += OnStreamDeckConnected;
-				_streamDeckClient.ConnectionLost += OnStreamDeckDisconnected;
-				_streamDeckClient.ReconnectionAttempt += OnStreamDeckReconnecting;
-
-				// Discover icons
-				var icons = SDPIconHelper.DiscoverIcons();
-				Debug.WriteLine($"[Navigator] Discovered {icons.Count} StreamDeck icons");
-
-				// Define keys (built-in + shortcuts from config)
-				DefineStreamDeckKeys(icons);
-
-				// Define pages (built-in + custom from config)
-				DefineStreamDeckPages();
-
-				// Subscribe to KeyPressed events
-				_streamDeckClient.KeyPressed += OnStreamDeckKeyPressed;
-
-				// Start connection (fire-and-forget, automatic reconnection)
-				Task.Run(async () => await _streamDeckClient.ConnectAsync());
-
-				Debug.WriteLine("[Navigator] StreamDeck initialization complete");
-			}
-			catch (Exception ex)
-			{
-				Debug.WriteLine($"[Navigator] StreamDeck initialization failed: {ex.Message}");
-				ShowStreamDeckError("StreamDeck Initialization Failed", ex.Message);
-			}
+			
+			// Load configuration
+			_navConfig = NavConfigParser.Load();
+			Debug.WriteLine($"[Navigator] Loaded config: {_navConfig?.ShortcutKeys?.Count ?? 0} classifications, {_navConfig?.Pages?.Count ?? 0} custom pages");
+			
+			// Discover icons
+			var icons = SDPIconHelper.DiscoverIcons();
+			Debug.WriteLine($"[Navigator] Discovered {icons.Count} StreamDeck icons");
+			
+			// Create StreamDeck client
+			_streamDeckClient = new SDPClient();
+			
+			// Hook up events
+			_streamDeckClient.KeyPressed += OnStreamDeckKeyPressed;
+			_streamDeckClient.ConnectionEstablished += OnStreamDeckConnected;
+			_streamDeckClient.ConnectionLost += OnStreamDeckDisconnected;
+			_streamDeckClient.ReconnectionAttempt += OnStreamDeckReconnecting;
+			
+			// Define all keys and pages
+			DefineStreamDeckKeys(icons);
+			DefineStreamDeckPages();
+			
+			Debug.WriteLine("[Navigator] StreamDeck initialization complete");
+			
+			// Connect to StreamDeck plugin
+			Task.Run(async () => await _streamDeckClient.ConnectAsync());
 		}
-
-		#endregion
 
 		#region StreamDeck Key and Page Definition
-
-		/// <summary>
-		/// Defines all StreamDeck keys with their icons.
-		/// Fire-and-forget: All definitions stored in SDPClient state.
-		/// </summary>
-		private static void DefineStreamDeckKeys(Dictionary<string, string> icons)
-		{
-			// Define built-in navigation keys
-			_streamDeckClient.DefineKey("Back", null, GetIconPath(icons, "Back"));
-			_streamDeckClient.DefineKey("Up", null, GetIconPath(icons, "Up"));
-			_streamDeckClient.DefineKey("Down", null, GetIconPath(icons, "Down"));
-			_streamDeckClient.DefineKey("Left", null, GetIconPath(icons, "Left"));
-			_streamDeckClient.DefineKey("Right", null, GetIconPath(icons, "Right"));
-			_streamDeckClient.DefineKey("MouseLeft", null, GetIconPath(icons, "Mouse Left"));
-			
-			// ✅ Slider value adjustment keys (use Left/Right icons for now)
-			_streamDeckClient.DefineKey("SliderDecrease", null, GetIconPath(icons, "Left"));
-			_streamDeckClient.DefineKey("SliderIncrease", null, GetIconPath(icons, "Right"));
-			
-			// ✅ NEW: Slider range adjustment keys (use Up/Down icons for now)
-			_streamDeckClient.DefineKey("SliderRangeDecrease", null, GetIconPath(icons, "Down"));
-			_streamDeckClient.DefineKey("SliderRangeIncrease", null, GetIconPath(icons, "Up"));
-			
-			// Define built-in discovery keys
-			_streamDeckClient.DefineKey("WriteModalFilter", "Modal", null);
-			_streamDeckClient.DefineKey("WriteElementFilter", "Element", null);
-			
-			// ✅ FIX: Only define keys for shortcuts that actually have a KeyName
-			// Classifications can be modals, page mappings, or shortcuts
-			// Only shortcuts have KeyName defined
-			foreach (var shortcut in _navConfig.ShortcutKeys)
-			{
-				// Skip classifications without KeyName (modals, page mappings)
-				if (string.IsNullOrEmpty(shortcut.KeyName))
-				{
-					Debug.WriteLine($"[Navigator] Skipping classification without KeyName: {shortcut.PathFilter}");
-					continue;
-				}
-				
-				// Get icon path (check if it's a file path or icon name)
-				string iconSpec = null;
-				if (!string.IsNullOrEmpty(shortcut.KeyIcon))
-				{
-					// Try to get icon from discovered icons first
-					iconSpec = GetIconPath(icons, shortcut.KeyIcon);
-					
-					// If not found, check if it's a file path
-					if (iconSpec == null && File.Exists(shortcut.KeyIcon))
-					{
-						iconSpec = shortcut.KeyIcon;
-					}
-					
-					// If still null, use text-based icon
-					if (iconSpec == null)
-					{
-						iconSpec = SDPIconHelper.CreateTextIcon(shortcut.KeyIcon);
-					}
-				}
-				
-				_streamDeckClient.DefineKey(shortcut.KeyName, shortcut.KeyTitle, iconSpec);
-				
-				// Store shortcut for later lookup
-				_shortcutsByKey[shortcut.KeyName] = shortcut;
-				
-				Debug.WriteLine($"[Navigator] Defined shortcut key: {shortcut.KeyName} → {shortcut.PathFilter}");
-			}
-		}
 
 		/// <summary>
 		/// Defines all StreamDeck pages.
@@ -194,73 +85,6 @@ namespace AcManager.UiObserver
 		}
 
 		/// <summary>
-		/// Defines the built-in page templates.
-		/// Uses fire-and-forget API - all definitions stored in SDPClient.
-		/// </summary>
-		private static void DefineBuiltInPages()
-		{
-			Debug.WriteLine("[Navigator] DefineBuiltInPages() START");
-			
-			// Navigation page (full 6-direction navigation)
-			Debug.WriteLine($"[Navigator] Defining page: {PageNavigation}");
-			_streamDeckClient.DefinePage(PageNavigation, new[] {
-				new[] { "Back", "WriteModalFilter", "WriteElementFilter" },
-				new[] { "","",""},
-				new[] { "", "Up", "" },
-				new[] { "Left", "MouseLeft", "Right" },
-				new[] { "", "Down", "" }
-			});
-			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageNavigation}");
-			
-			// UpDown page (vertical navigation only, for menus)
-			Debug.WriteLine($"[Navigator] Defining page: {PageUpDown}");
-			_streamDeckClient.DefinePage(PageUpDown, new[] {
-				new[] { "Back", "WriteModalFilter", "WriteElementFilter" },
-				new[] { "", "", "" },
-				new[] { "", "Up", "" },
-				new[] { "", "MouseLeft", "" },
-				new[] { "", "Down", "" }
-			});
-			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageUpDown}");
-			
-			// ✅ Slider page (value adjustment only, no range)
-			Debug.WriteLine($"[Navigator] Defining page: {PageSlider}");
-			_streamDeckClient.DefinePage(PageSlider, new[] {
-				new[] { "Back", "WriteModalFilter", "WriteElementFilter" },
-				new[] { "", "", "" },
-				new[] { "", "", "" },
-				new[] { "SliderDecrease", "MouseLeft", "SliderIncrease" },
-				new[] { "", "", "" }
-			});
-			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageSlider}");
-			
-			// ✅ DoubleSlider page (value + range adjustment)
-			Debug.WriteLine($"[Navigator] Defining page: {PageDoubleSlider}");
-			_streamDeckClient.DefinePage(PageDoubleSlider, new[] {
-				new[] { "Back", "WriteModalFilter", "WriteElementFilter" },
-				new[] { "", "", "" },
-				new[] { "", "SliderRangeIncrease", "" },
-				new[] { "SliderDecrease", "MouseLeft", "SliderIncrease" },
-				new[] { "", "SliderRangeDecrease", "" }
-			});
-			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageDoubleSlider}");
-			
-			// ✅ RoundSlider page (value adjustment only, circular slider doesn't have range)
-			Debug.WriteLine($"[Navigator] Defining page: {PageRoundSlider}");
-			_streamDeckClient.DefinePage(PageRoundSlider, new[] {
-				new[] { "Back", "WriteModalFilter", "WriteElementFilter" },
-				new[] { "", "", "" },
-				new[] { "", "", "" },
-				new[] { "SliderDecrease", "MouseLeft", "SliderIncrease" },
-				new[] { "", "", "" }
-			});
-			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageRoundSlider}");
-			
-			Debug.WriteLine("[Navigator] DefineBuiltInPages() END");
-			Debug.WriteLine($"[Navigator] SDPClient page count: {_streamDeckClient.PageCount}");
-		}
-
-		/// <summary>
 		/// Selects the appropriate built-in page for a modal based on its type.
 		/// Returns page name, or null to use default Navigation page.
 		/// </summary>
@@ -274,7 +98,7 @@ namespace AcManager.UiObserver
 			// PopupRoot indicates menu/dropdown (vertical navigation)
 			if (typeName == "PopupRoot")
 			{
-				return PageUpDown;
+				return "UpDown";
 			}
 			
 			// Other modal types use default Navigation page
@@ -565,23 +389,6 @@ namespace AcManager.UiObserver
 
 		#endregion
 
-		#region StreamDeck Helpers
-
-		/// <summary>
-		/// Helper to get icon path from discovered icons dictionary.
-		/// Returns null if not found (will use text-based icon fallback).
-		/// </summary>
-		private static string GetIconPath(Dictionary<string, string> icons, string iconName)
-		{
-			if (icons.TryGetValue(iconName, out var path)) {
-				return path;
-			}
-			Debug.WriteLine($"[Navigator] Icon not found: {iconName}");
-			return null;
-		}
-
-		#endregion
-
 		#region StreamDeck Discovery
 
 		/// <summary>
@@ -835,8 +642,6 @@ namespace AcManager.UiObserver
 				Debug.WriteLine("[Navigator] Disconnected during startup (no Toast)");
 			}
 		}
-
-		private static int _lastReconnectAttemptNotified = 0;
 
 		private static void OnStreamDeckReconnecting(object sender, int attemptNumber)
 		{
