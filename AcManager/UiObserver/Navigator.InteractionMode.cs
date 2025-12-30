@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
@@ -42,7 +42,7 @@ namespace AcManager.UiObserver
 				return false;
 			}
 			
-			// ? Check if already in interaction mode for this control
+			// ✅ Check if already in interaction mode for this control
 			if (CurrentContext != null && 
 				CurrentContext.ContextType == NavContextType.InteractiveControl &&
 				ReferenceEquals(CurrentContext.ScopeNode, control))
@@ -51,7 +51,7 @@ namespace AcManager.UiObserver
 				return true;  // Return true since we're already in the desired state
 			}
 			
-			// ? Capture original value for Cancel functionality
+			// ✅ Capture original value for Cancel functionality
 			object originalValue = CaptureControlValue(control);
 			
 			// Create interaction context (focus set to control itself)
@@ -107,7 +107,7 @@ namespace AcManager.UiObserver
 			
 			var control = CurrentContext.ScopeNode;
 			
-			// ? Revert value if requested (Cancel)
+			// ✅ Revert value if requested (Cancel)
 			if (revertChanges && CurrentContext.OriginalValue != null)
 			{
 				RestoreControlValue(control, CurrentContext.OriginalValue);
@@ -212,7 +212,7 @@ namespace AcManager.UiObserver
 				{
 					var oldValue = slider.Value;
 					slider.Value = (double)originalValue;
-					Debug.WriteLine($"[Navigator] Reverted slider value: {oldValue:F2} ? {slider.Value:F2}");
+					Debug.WriteLine($"[Navigator] Reverted slider value: {oldValue:F2} → {slider.Value:F2}");
 					return;
 				}
 				
@@ -224,7 +224,7 @@ namespace AcManager.UiObserver
 					{
 						var oldValue = valueProperty.GetValue(fe);
 						valueProperty.SetValue(fe, originalValue);
-						Debug.WriteLine($"[Navigator] Reverted {typeName} value: {oldValue} ? {originalValue}");
+						Debug.WriteLine($"[Navigator] Reverted {typeName} value: {oldValue} → {originalValue}");
 					}
 				}
 			}
@@ -334,12 +334,12 @@ namespace AcManager.UiObserver
 
 		/// <summary>
 		/// Adjusts a standard WPF Slider control.
-		/// Uses proportional adjustment: 10% of the slider's total range.
+		/// Uses proportional adjustment: 2% of the slider's total range.
 		/// </summary>
 		private static void AdjustStandardSlider(Slider slider, SliderAdjustment adjustment)
 		{
 			var totalRange = Math.Abs(slider.Maximum - slider.Minimum);
-			var adjustmentStep = totalRange * 0.10; // 10% of total range
+			var adjustmentStep = totalRange * 0.02; // 2% of total range
 			var oldValue = slider.Value;
 			
 			switch (adjustment)
@@ -352,12 +352,12 @@ namespace AcManager.UiObserver
 					break;
 			}
 			
-			Debug.WriteLine($"[Navigator] Slider adjusted: {oldValue:F2} ? {slider.Value:F2} (step={adjustmentStep:F2} [10% of {totalRange:F2}], {adjustment})");
+			Debug.WriteLine($"[Navigator] Slider adjusted: {oldValue:F2} → {slider.Value:F2} (step={adjustmentStep:F2} [2% of {totalRange:F2}], {adjustment})");
 		}
 
 		/// <summary>
 		/// Adjusts a DoubleSlider's value (within current From/To range).
-		/// Uses proportional adjustment: 10% of the slider's TOTAL range (Maximum - Minimum).
+		/// Uses proportional adjustment: 2% of the slider's TOTAL range (Maximum - Minimum).
 		/// </summary>
 		private static void AdjustDoubleSliderValue(FrameworkElement element, SliderAdjustment adjustment)
 		{
@@ -376,9 +376,9 @@ namespace AcManager.UiObserver
 			var absoluteMin = (double)minProperty.GetValue(element);
 			var absoluteMax = (double)maxProperty.GetValue(element);
 			
-			// ? Calculate adjustment as 10% of TOTAL possible range (Maximum - Minimum)
+			// ✅ Calculate adjustment as 2% of TOTAL possible range (Maximum - Minimum)
 			var totalRange = Math.Abs(absoluteMax - absoluteMin);
-			var adjustmentStep = Math.Max(0.1, totalRange * 0.10);
+			var adjustmentStep = Math.Max(0.1, totalRange * 0.02);
 			
 			double newValue = currentValue;
 			switch (adjustment)
@@ -392,12 +392,12 @@ namespace AcManager.UiObserver
 			}
 			
 			valueProperty.SetValue(element, newValue);
-			Debug.WriteLine($"[Navigator] DoubleSlider value adjusted: {currentValue:F2} ? {newValue:F2} (step={adjustmentStep:F2} [10% of total range {totalRange:F2}], current from/to: [{currentFrom:F2}, {currentTo:F2}], {adjustment})");
+			Debug.WriteLine($"[Navigator] DoubleSlider value adjusted: {currentValue:F2} → {newValue:F2} (step={adjustmentStep:F2} [2% of total range {totalRange:F2}], current from/to: [{currentFrom:F2}, {currentTo:F2}], {adjustment})");
 		}
 
 		/// <summary>
 		/// Adjusts a DoubleSlider's range (From/To bounds).
-		/// Uses proportional adjustment: 5% of the slider's TOTAL range (Maximum - Minimum).
+		/// Uses proportional adjustment: 1% of the slider's TOTAL range (Maximum - Minimum).
 		/// Adjusts both From and To symmetrically to expand/contract the range around the current value.
 		/// </summary>
 		private static void AdjustDoubleSliderRange(FrameworkElement element, SliderAdjustment adjustment)
@@ -417,9 +417,9 @@ namespace AcManager.UiObserver
 			var absoluteMin = (double)minProperty.GetValue(element);
 			var absoluteMax = (double)maxProperty.GetValue(element);
 			
-			// ? Calculate adjustment as 5% of TOTAL possible range (Maximum - Minimum)
+			// ✅ Calculate adjustment as 1% of TOTAL possible range (Maximum - Minimum)
 			var totalRange = Math.Abs(absoluteMax - absoluteMin);
-			var rangeStep = Math.Max(0.1, totalRange * 0.05);
+			var rangeStep = Math.Max(0.1, totalRange * 0.01);
 			
 			double newFrom = currentFrom;
 			double newTo = currentTo;
@@ -433,7 +433,7 @@ namespace AcManager.UiObserver
 					// Move To up (but not above absoluteMax)
 					newTo = Math.Min(absoluteMax, currentTo + rangeStep);
 					
-					Debug.WriteLine($"[Navigator] DoubleSlider range expanded: from {currentFrom:F2} ? {newFrom:F2}, to {currentTo:F2} ? {newTo:F2} (step={rangeStep:F2} [5% of {totalRange:F2}], bounds: [{absoluteMin:F2}, {absoluteMax:F2}])");
+					Debug.WriteLine($"[Navigator] DoubleSlider range expanded: from {currentFrom:F2} → {newFrom:F2}, to {currentTo:F2} → {newTo:F2} (step={rangeStep:F2} [1% of {totalRange:F2}], bounds: [{absoluteMin:F2}, {absoluteMax:F2}])");
 					break;
 					
 				case SliderAdjustment.SmallDecrement:
@@ -448,11 +448,11 @@ namespace AcManager.UiObserver
 					// Ensure To doesn't go below absoluteMin or currentValue
 					newTo = Math.Min(absoluteMax, Math.Max(newTo, currentValue + 0.1));
 					
-					Debug.WriteLine($"[Navigator] DoubleSlider range contracted: from {currentFrom:F2} ? {newFrom:F2}, to {currentTo:F2} ? {newTo:F2} (step={rangeStep:F2} [5% of {totalRange:F2}], value={currentValue:F2})");
+					Debug.WriteLine($"[Navigator] DoubleSlider range contracted: from {currentFrom:F2} → {newFrom:F2}, to {currentTo:F2} → {newTo:F2} (step={rangeStep:F2} [1% of {totalRange:F2}], value={currentValue:F2})");
 					break;
 			}
 			
-			// ? Only update if values actually changed
+			// ✅ Only update if values actually changed
 			bool changed = false;
 			if (Math.Abs(newFrom - currentFrom) > 0.01)
 			{
@@ -474,6 +474,7 @@ namespace AcManager.UiObserver
 		/// <summary>
 		/// Adjusts a RoundSlider control (custom circular slider).
 		/// Uses proportional adjustment: 10% of the slider's total range.
+		/// ✅ Supports wrap-around at boundaries (0° ↔ 360°).
 		/// </summary>
 		private static void AdjustRoundSlider(FrameworkElement element, SliderAdjustment adjustment)
 		{
@@ -488,23 +489,37 @@ namespace AcManager.UiObserver
 			var min = (double)minProperty.GetValue(element);
 			var max = (double)maxProperty.GetValue(element);
 			
-			// Calculate adjustment as 10% of total range
+			// Calculate adjustment as 2% of total range
 			var totalRange = Math.Abs(max - min);
-			var adjustmentStep = totalRange * 0.10;
+			var adjustmentStep = totalRange * 0.02;
 			
 			double newValue = currentValue;
 			switch (adjustment)
 			{
 				case SliderAdjustment.SmallIncrement:
-					newValue = Math.Min(max, currentValue + adjustmentStep);
+					newValue = currentValue + adjustmentStep;
+					// ✅ Wrap around if exceeds max
+					if (newValue > max)
+					{
+						newValue = min + (newValue - max);
+					}
 					break;
+					
 				case SliderAdjustment.SmallDecrement:
-					newValue = Math.Max(min, currentValue - adjustmentStep);
+					newValue = currentValue - adjustmentStep;
+					// ✅ Wrap around if goes below min
+					if (newValue < min)
+					{
+						newValue = max - (min - newValue);
+					}
 					break;
 			}
 			
+			// ✅ Clamp to range (safety check for floating point errors)
+			newValue = Math.Max(min, Math.Min(max, newValue));
+			
 			valueProperty.SetValue(element, newValue);
-			Debug.WriteLine($"[Navigator] RoundSlider adjusted: {currentValue:F2} ? {newValue:F2} (step={adjustmentStep:F2} [10% of {totalRange:F2}], {adjustment})");
+			Debug.WriteLine($"[Navigator] RoundSlider adjusted: {currentValue:F2} → {newValue:F2} (step={adjustmentStep:F2} [2% of {totalRange:F2}], {adjustment})");
 		}
 
 		#endregion

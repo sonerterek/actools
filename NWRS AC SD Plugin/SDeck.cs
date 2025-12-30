@@ -180,6 +180,9 @@ namespace NWRS_AC_SDPlugin
 
 	public class SDKey(SDPage sdPage, int row, int col)
 	{
+		private const int REPEAT_THRESHOLD = 1000;  // 1 second before repeat starts
+		private const int REPEAT_GAP = 200;         // 200ms between repeats
+
 		private readonly SDPage _sdPage = sdPage;
 		public readonly int Row = row;
 		public readonly int Col = col;
@@ -189,6 +192,8 @@ namespace NWRS_AC_SDPlugin
 		private bool _staleTitle = false;
 		private VKey _vKey => _sdPage.VPage?.VKeys[Row, Col];
 		private DateTime _keyDownTime = DateTime.MaxValue;
+		private Timer _repeatTimer;
+		private bool _isRepeating;
 
 		public void SetContext(string context)
 		{
@@ -241,18 +246,62 @@ namespace NWRS_AC_SDPlugin
 		public void OnKeyDown()
 		{
 			_keyDownTime = DateTime.Now;
+			_isRepeating = false;
+			
+			// Start a timer that will begin repeating after REPEAT_THRESHOLD
+			_repeatTimer?.Dispose();
+			_repeatTimer = new Timer(OnRepeatTimerTick, null, REPEAT_THRESHOLD, REPEAT_GAP);
+		}
+
+		private void OnRepeatTimerTick(object state)
+		{
+			if (_keyDownTime == DateTime.MaxValue) {
+				// Key was released
+				_repeatTimer?.Dispose();
+				_repeatTimer = null;
+				return;
+			}
+			
+			var duration = (int)(DateTime.Now - _keyDownTime).TotalMilliseconds;
+			if (duration >= REPEAT_THRESHOLD) {
+				_isRepeating = true;
+				// Generate KeyPress event while held
+				_vKey?.OnKeyPress(duration);
+			}
 		}
 
 		public void OnKeyUp()
 		{
 			var duration = (int)(DateTime.Now - _keyDownTime).TotalMilliseconds;
 			_keyDownTime = DateTime.MaxValue;
-			_vKey?.OnKeyPress(duration);
+			
+			// Stop repeat timer
+			_repeatTimer?.Dispose();
+			_repeatTimer = null;
+			
+			// Only send KeyPress on release if we haven't been repeating
+			if (!_isRepeating) {
+				_vKey?.OnKeyPress(duration);
+			}
+			
+			_isRepeating = false;
 		}
 
 		public void OnKeyCancel()
 		{
 			_keyDownTime = DateTime.MaxValue;
+			
+			// Stop repeat timer
+			_repeatTimer?.Dispose();
+			_repeatTimer = null;
+			
+			_isRepeating = false;
+		}
+
+		public void Dispose()
+		{
+			_repeatTimer?.Dispose();
+			_repeatTimer = null;
 		}
 	}
 
