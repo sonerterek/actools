@@ -410,13 +410,13 @@ namespace AcManager.UiObserver
 				return;
 			}
 			
-			// Expect this modal to be at the top of the stack (linear chain invariant)
+			// ✅ FIX: Compare by path instead of reference (Observer may create new NavNode instances)
 			var currentTop = CurrentContext;
-			if (!ReferenceEquals(currentTop.ModalNode, modalNode)) {
+			if (currentTop.ModalNode.HierarchicalPath != modalNode.HierarchicalPath) {
 				Debug.WriteLine($"[Navigator] WARNING: Closed modal not at top (expected: {currentTop.ModalNode.SimpleName}, got: {modalNode.SimpleName})");
-				// Try to find it in the stack and remove it
+				// Try to find it in the stack by path and remove it
 				for (int i = _modalContextStack.Count - 1; i >= 0; i--) {
-					if (ReferenceEquals(_modalContextStack[i].ModalNode, modalNode)) {
+					if (_modalContextStack[i].ModalNode.HierarchicalPath == modalNode.HierarchicalPath) {
 						_modalContextStack.RemoveAt(i);
 						Debug.WriteLine($"[Navigator] Removed modal from position {i}");
 						break;
@@ -425,56 +425,95 @@ namespace AcManager.UiObserver
 			} else {
 				// Normal case: pop from top
 				_modalContextStack.RemoveAt(_modalContextStack.Count - 1);
+				Debug.WriteLine($"[Navigator] Popped modal from top");
 			}
 			
 			Debug.WriteLine($"[Navigator] Modal stack depth: {_modalContextStack.Count}");
 			
-			// ✅ FIX: Validate that the parent context's focused node is still valid and in scope
+			// ✅ STEP 1: Clear old focus visuals immediately (the closing modal's overlay)
+			_overlay?.HideFocusRect();
+			
+			// ✅ STEP 2: Defer parent focus restoration until AFTER WPF completes unload
+			// This gives WPF time to finish dismantling the closing modal's visual tree.
+			// During unload, elements exist but have invalid bounds (GetCenterDip returns null),
+			// which causes all candidates to score Double.MaxValue and focus initialization to fail.
+			if (CurrentContext != null && CurrentContext.ModalNode.TryGetVisual(out var parentModalElement)) {
+				parentModalElement.Dispatcher.BeginInvoke(
+					DispatcherPriority.Loaded,  // After unload completes
+					new Action(() => {
+						try {
+							Debug.WriteLine($"[Navigator] Restoring parent focus after modal closure");
+							Debug.WriteLine($"[Navigator] Current context modal: {CurrentContext.ModalNode.SimpleName} @ {CurrentContext.ModalNode.HierarchicalPath}");
+							
+							// ✅ STEP 3: Now the closing modal is fully removed from visual tree
+							// Parent context's elements have valid bounds for navigation
+							ValidateAndRestoreParentFocus();
+							
+							// ✅ STEP 4: Switch StreamDeck page for the now-current modal
+							// When a modal closes, we need to switch back to the parent modal's page
+							SwitchStreamDeckPageForModal(CurrentContext.ModalNode);
+						} catch (Exception ex) {
+							Debug.WriteLine($"[Navigator] Error restoring parent focus: {ex.Message}");
+						}
+					})
+				);
+			} else {
+				Debug.WriteLine($"[Navigator] No parent context to restore");
+			}
+		}
+
+		/// <summary>
+		/// Validates and restores parent context focus after a modal closes.
+		/// Called AFTER WPF completes unload of the closing modal, so elements have valid bounds.
+		/// 
+		/// This is separated from OnModalGroupClosed to make the deferred execution pattern clear.
+		/// </summary>
+		private static void ValidateAndRestoreParentFocus()
+		{
+			if (CurrentContext == null) {
+				Debug.WriteLine($"[Navigator] ValidateAndRestoreParentFocus: No current context");
+				return;
+			}
+			
+			var focusToRestore = CurrentContext.FocusedNode;
+			
+			// ✅ Validate that the focused node is still alive and in the parent context's scope
 			// This prevents restoring focus to a node that was inside the closed dialog.
-			if (CurrentContext != null) {
-				var focusToRestore = CurrentContext.FocusedNode;
+			if (focusToRestore != null) {
+				bool isValid = false;
 				
-				// Validate that the focused node is still alive and in the parent context's scope
-				if (focusToRestore != null) {
-					bool isValid = false;
-					
-					// Check if visual is still alive
-					if (focusToRestore.TryGetVisual(out var fe)) {
-						// Check if element is still in visual tree
-						if (PresentationSource.FromVisual(fe) != null) {
-							// Check if element is in the parent context's scope (not the closed modal's scope)
-							if (IsDescendantOf(focusToRestore, CurrentContext.ModalNode)) {
-								isValid = true;
-							} else {
-								Debug.WriteLine($"[Navigator] Focused node '{focusToRestore.SimpleName}' is outside parent scope (was in closed modal) - clearing focus");
-							}
+				// Check if visual is still alive
+				if (focusToRestore.TryGetVisual(out var fe)) {
+					// Check if element is still in visual tree
+					if (PresentationSource.FromVisual(fe) != null) {
+						// Check if element is in the parent context's scope (not the closed modal's scope)
+						if (IsDescendantOf(focusToRestore, CurrentContext.ModalNode)) {
+							isValid = true;
 						} else {
-							Debug.WriteLine($"[Navigator] Focused node '{focusToRestore.SimpleName}' is no longer in visual tree - clearing focus");
+							Debug.WriteLine($"[Navigator] Focused node '{focusToRestore.SimpleName}' is outside parent scope (was in closed modal) - clearing focus");
 						}
 					} else {
-						Debug.WriteLine($"[Navigator] Focused node '{focusToRestore.SimpleName}' visual reference is dead - clearing focus");
+						Debug.WriteLine($"[Navigator] Focused node '{focusToRestore.SimpleName}' is no longer in visual tree - clearing focus");
 					}
-					
-					if (!isValid) {
-						// Clear the invalid focused node
-						focusToRestore.HasFocus = false;
-						CurrentContext.FocusedNode = null;
-						focusToRestore = null;
-					}
-				}
-				
-				// Now restore focus if we have a valid node, otherwise initialize
-				if (focusToRestore != null) {
-					Debug.WriteLine($"[Navigator] Restored focus to '{focusToRestore.SimpleName}'");
-					SetFocusVisuals(focusToRestore);
 				} else {
-					Debug.WriteLine($"[Navigator] Parent context has no valid focus, initializing...");
-					TryInitializeFocusIfNeeded();
+					Debug.WriteLine($"[Navigator] Focused node '{focusToRestore.SimpleName}' visual reference is dead - clearing focus");
 				}
 				
-				// ✅ FIX: Restore StreamDeck page for the now-current modal
-				// When a modal closes, we need to switch back to the parent modal's page
-				SwitchStreamDeckPageForModal(CurrentContext.ModalNode);
+				if (!isValid) {
+					// Clear the invalid focused node
+					focusToRestore.HasFocus = false;
+					CurrentContext.FocusedNode = null;
+					focusToRestore = null;
+				}
+			}
+			
+			// Now restore focus if we have a valid node, otherwise initialize
+			if (focusToRestore != null) {
+				Debug.WriteLine($"[Navigator] Restored focus to '{focusToRestore.SimpleName}'");
+				SetFocusVisuals(focusToRestore);
+			} else {
+				Debug.WriteLine($"[Navigator] Parent context has no valid focus, initializing...");
+				TryInitializeFocusIfNeeded();
 			}
 		}
 

@@ -179,8 +179,9 @@ namespace AcManager.UiObserver
 			// ✅ NEW: Define custom pages from configuration
 			foreach (var page in _navConfig.Pages)
 			{
-				_streamDeckClient.DefinePage(page.PageName, page.KeyGrid);
-				Debug.WriteLine($"[Navigator] Defined custom page: {page.PageName}");
+				// ✅ Use GetFullPageName() to send full name with inheritance to plugin
+				_streamDeckClient.DefinePage(page.GetFullPageName(), page.KeyGrid);
+				Debug.WriteLine($"[Navigator] Defined custom page: {page.GetFullPageName()}");
 			}
 		}
 
@@ -756,17 +757,8 @@ namespace AcManager.UiObserver
 					pageName = PageNavigation;
 				}
 				
-				// ✅ FIX: Strip inheritance suffix (":BasePage") from page name
-				// The plugin creates pages with only the child name, not the full "ChildPage:BasePage" syntax
-				// Example: "MainWindow:Navigation" → "MainWindow"
-				int colonIndex = pageName.IndexOf(':');
-				if (colonIndex > 0)
-				{
-					string fullPageName = pageName;
-					pageName = pageName.Substring(0, colonIndex);
-					Debug.WriteLine($"[Navigator] Stripped inheritance suffix: '{fullPageName}' → '{pageName}'");
-				}
-				
+				// ✅ NOTE: pageName here is just the PageName (not FullPageName)
+				// This is correct - we switch to pages by their PageName only
 				Debug.WriteLine($"[Navigator] Switching StreamDeck to '{pageName}' page for modal '{modalNode.SimpleName}'");
 				_streamDeckClient.SwitchPage(pageName);
 			} catch (Exception ex)

@@ -53,6 +53,7 @@ namespace AcManager.UiObserver
 
     /// <summary>
     /// Represents a StreamDeck page with a 5x3 grid layout.
+    /// Supports inheritance via "PageName:BasePage" syntax.
     /// </summary>
     public class SDPPageDef
     {
@@ -90,6 +91,7 @@ namespace AcManager.UiObserver
         public string ToCommand()
         {
             var jsonGrid = JsonConvert.SerializeObject(KeyGrid);
+            // PageName here can include inheritance (e.g., "ChildPage:ParentPage")
             return $"{PageName} {jsonGrid}";
         }
     }

@@ -89,6 +89,9 @@ namespace AcManager.UiObserver
 	{
 		/// <summary>Page name (e.g., "QuickDrive")</summary>
 		public string PageName { get; set; }
+		
+		/// <summary>Base page name for inheritance (e.g., "Navigation"), null if no inheritance</summary>
+		public string BasePageName { get; set; }
 
 		/// <summary>5x3 grid of key names (null for empty slots)</summary>
 		public string[][] KeyGrid { get; set; }
@@ -101,9 +104,27 @@ namespace AcManager.UiObserver
 				KeyGrid[i] = new string[3];
 			}
 		}
+		
+		/// <summary>
+		/// Gets the full page name with inheritance syntax if applicable.
+		/// Format: "PageName:BasePage" or just "PageName" if no base.
+		/// Used for DefinePage command.
+		/// </summary>
+		public string GetFullPageName()
+		{
+			if (!string.IsNullOrEmpty(BasePageName))
+			{
+				return $"{PageName}:{BasePageName}";
+			}
+			return PageName;
+		}
 
 		public override string ToString()
 		{
+			if (!string.IsNullOrEmpty(BasePageName))
+			{
+				return $"Page:{PageName}:{BasePageName} (5x3 grid)";
+			}
 			return $"Page:{PageName} (5x3 grid)";
 		}
 	}
@@ -316,8 +337,8 @@ namespace AcManager.UiObserver
 
 		/// <summary>
 		/// Parses a PAGE definition.
-		/// Format: PAGE: <name> => <json array>
-		/// ? UPDATED: Page name MUST be a quoted string.
+		/// Format: PAGE: <name>[:<basePage>] => <json array>
+		/// ? UPDATED: Page name can include inheritance syntax with BasePage.
 		/// </summary>
 		private static NavPageDef ParsePageDefinition(string line)
 		{
@@ -351,7 +372,32 @@ namespace AcManager.UiObserver
 			}
 
 			// Remove quotes from page name
-			var pageName = pageNameRaw.Substring(1, pageNameRaw.Length - 2);
+			var pageNameFull = pageNameRaw.Substring(1, pageNameRaw.Length - 2);
+			
+			// ? NEW: Parse inheritance syntax: "PageName:BasePage"
+			string pageName;
+			string basePageName = null;
+			
+			int colonIndex = pageNameFull.IndexOf(':');
+			if (colonIndex > 0)
+			{
+				pageName = pageNameFull.Substring(0, colonIndex);
+				basePageName = pageNameFull.Substring(colonIndex + 1);
+				
+				if (string.IsNullOrWhiteSpace(basePageName))
+				{
+					var errorMsg = $"[NavConfig] Invalid PAGE inheritance syntax - base page name cannot be empty after ':' (found: {pageNameFull})";
+					Debug.WriteLine(errorMsg);
+#if DEBUG
+					throw new FormatException(errorMsg);
+#endif
+					return null;
+				}
+			}
+			else
+			{
+				pageName = pageNameFull;
+			}
 
 			try
 			{
@@ -384,6 +430,7 @@ namespace AcManager.UiObserver
 				return new NavPageDef
 				{
 					PageName = pageName,
+					BasePageName = basePageName,
 					KeyGrid = grid
 				};
 			}
@@ -553,7 +600,7 @@ namespace AcManager.UiObserver
 		
 		/// <summary>
 		/// Finds the page name to switch to when the given element gets focus.
-		/// Returns the full page name (with inheritance syntax if applicable).
+		/// Returns just the PageName (without :BasePage suffix).
 		/// </summary>
 		public string FindPageForElement(string elementPath)
 		{
@@ -565,64 +612,12 @@ namespace AcManager.UiObserver
 			if (classification == null)
 				return null;
 			
-			// ? NEW: Resolve page name with inheritance support
-			return ResolvePageName(classification.PageName);
-		}
-		
-		/// <summary>
-		/// Resolves a page name to the actual page definition, supporting inheritance.
-		/// 
-		/// Resolution order:
-		/// 1. Exact match (e.g., "MainWindow" finds "MainWindow")
-		/// 2. Derived page match (e.g., "MainWindow" finds "MainWindow:Navigation")
-		/// 3. Base page match (e.g., "Navigation" finds "Navigation")
-		/// 
-		/// Examples:
-		///   Input: "MainWindow" ? Finds: "MainWindow:Navigation" ? Returns: "MainWindow:Navigation"
-		///   Input: "Settings"   ? Finds: "Settings" (exact)      ? Returns: "Settings"
-		///   Input: "Navigation" ? Finds: "Navigation" (exact)    ? Returns: "Navigation"
-		/// </summary>
-		private string ResolvePageName(string requestedPageName)
-		{
-			if (string.IsNullOrEmpty(requestedPageName))
-				return null;
-			
-			// 1. Try exact match first
-			var exactMatch = Pages.FirstOrDefault(p => 
-				string.Equals(p.PageName, requestedPageName, StringComparison.OrdinalIgnoreCase));
-			
-			if (exactMatch != null)
-			{
-				Debug.WriteLine($"[NavConfig] Page resolution: '{requestedPageName}' ? '{exactMatch.PageName}' (exact match)");
-				return exactMatch.PageName;
-			}
-			
-			// 2. Try to find a derived page (e.g., "MainWindow" ? "MainWindow:Navigation")
-			// A derived page has format "PageName:BasePage", so we check the part before the colon
-			var derivedMatch = Pages.FirstOrDefault(p => {
-				var colonIndex = p.PageName.IndexOf(':');
-				if (colonIndex > 0)
-				{
-					var pagePart = p.PageName.Substring(0, colonIndex);
-					return string.Equals(pagePart, requestedPageName, StringComparison.OrdinalIgnoreCase);
-				}
-				return false;
-			});
-			
-			if (derivedMatch != null)
-			{
-				Debug.WriteLine($"[NavConfig] Page resolution: '{requestedPageName}' ? '{derivedMatch.PageName}' (derived page match)");
-				return derivedMatch.PageName;
-			}
-			
-			// 3. Not found - return requested name as-is (will be logged as error downstream)
-			Debug.WriteLine($"[NavConfig] Page resolution: '{requestedPageName}' ? not found");
-			return requestedPageName;
+			// Return the PageName directly (it's already just the page name)
+			return classification.PageName;
 		}
 
 		/// <summary>
-		/// Finds a page definition by name.
-		/// Supports exact matches only (use ResolvePageName for inheritance resolution).
+		/// Finds a page definition by name (matches by PageName only).
 		/// </summary>
 		public NavPageDef FindPage(string pageName)
 		{
