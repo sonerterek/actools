@@ -586,10 +586,16 @@ namespace AcManager.UiObserver
 				})
 				.OrderBy(x => x.Score)
 				.ToList();
+		
+			// ✅ FIX: Skip if all candidates have invalid positions
+			if (candidates.Count == 0 || candidates[0].Score == double.MaxValue) {
+				Debug.WriteLine($"[Navigator] No valid candidates found (all have invalid positions or off-screen)");
+				return; // Don't try to set focus if nothing is positioned yet
+			}
 			
 			var firstNode = candidates.FirstOrDefault()?.Node;
 			if (firstNode != null) {
-				Debug.WriteLine($"  ? WINNER: {firstNode.SimpleName} (score: {candidates[0].Score:F1})");
+				Debug.WriteLine($"  ✅ WINNER: {firstNode.SimpleName} (score: {candidates[0].Score:F1})");
 				CurrentContext.FocusedNode = firstNode;
 				
 				// ? FIX: Defer visual update until after layout is complete

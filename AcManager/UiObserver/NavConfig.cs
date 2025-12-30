@@ -11,6 +11,18 @@ namespace AcManager.UiObserver
 	#region Configuration Models
 
 	/// <summary>
+	/// Specifies what a shortcut targets when activated.
+	/// </summary>
+	public enum ShortcutTargetType
+	{
+		/// <summary>Targets a specific element (default)</summary>
+		Element,
+		
+		/// <summary>Targets first navigable child of a group container</summary>
+		Group
+	}
+
+	/// <summary>
 	/// Represents a shortcut key definition from CLASSIFY rule.
 	/// </summary>
 	public class NavShortcutKey
@@ -36,6 +48,12 @@ namespace AcManager.UiObserver
 		/// <summary>StreamDeck page name to switch to when this element gets focus or opens as modal</summary>
 		public string PageName { get; set; }
 
+		/// <summary>Whether to skip auto-click when this shortcut is activated (default: false)</summary>
+		public bool NoAutoClick { get; set; }
+
+		/// <summary>What this shortcut targets (default: Element)</summary>
+		public ShortcutTargetType TargetType { get; set; }
+
 		/// <summary>Compiled regex pattern for path matching (null if no wildcards)</summary>
 		public Regex PathPattern { get; set; }
 
@@ -60,7 +78,7 @@ namespace AcManager.UiObserver
 
 		public override string ToString()
 		{
-			return $"Key:{KeyName} Title:{KeyTitle} Path:{PathFilter}";
+			return $"Key:{KeyName} Title:{KeyTitle} Path:{PathFilter} TargetType:{TargetType}";
 		}
 	}
 
@@ -264,7 +282,13 @@ namespace AcManager.UiObserver
 				PageName = properties.ContainsKey("PageName") ? properties["PageName"] : null,
 				KeyName = properties.ContainsKey("KeyName") ? properties["KeyName"] : null,
 				KeyTitle = properties.ContainsKey("KeyTitle") ? properties["KeyTitle"] : null,
-				KeyIcon = properties.ContainsKey("KeyIcon") ? properties["KeyIcon"] : null
+				KeyIcon = properties.ContainsKey("KeyIcon") ? properties["KeyIcon"] : null,
+				NoAutoClick = properties.ContainsKey("NoAutoClick") && 
+				              (properties["NoAutoClick"].Equals("true", StringComparison.OrdinalIgnoreCase) || 
+				               properties["NoAutoClick"] == "1"),
+				TargetType = ParseTargetType(properties.ContainsKey("TargetType") 
+				              ? properties["TargetType"] 
+				              : "Element")
 			};
 
 			// Compile path pattern if it contains wildcards
@@ -274,6 +298,20 @@ namespace AcManager.UiObserver
 			}
 
 			return classification;
+		}
+
+		/// <summary>
+		/// Parses TargetType property value.
+		/// </summary>
+		private static ShortcutTargetType ParseTargetType(string value)
+		{
+			if (string.IsNullOrEmpty(value))
+				return ShortcutTargetType.Element;
+			
+			if (string.Equals(value, "Group", StringComparison.OrdinalIgnoreCase))
+				return ShortcutTargetType.Group;
+			
+			return ShortcutTargetType.Element; // Default
 		}
 
 		/// <summary>

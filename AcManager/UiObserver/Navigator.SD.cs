@@ -369,6 +369,9 @@ namespace AcManager.UiObserver
 
 		/// <summary>
 		/// Executes a shortcut key by finding and focusing the matching element.
+		/// ✅ NEW: Supports both Element and Group targeting via TargetType property.
+		/// - Element: Targets specific element (existing behavior)
+		/// - Group: Targets first navigable child of group container
 		/// </summary>
 		private static void ExecuteShortcutKey(string keyName)
 		{
@@ -380,40 +383,179 @@ namespace AcManager.UiObserver
 
 			Debug.WriteLine($"[Navigator] Executing shortcut: {shortcut}");
 
-			// Get all nodes in current scope
 			var candidates = GetCandidatesInScope();
 			
-			Debug.WriteLine($"[Navigator] Searching {candidates.Count} candidates for path: {shortcut.PathFilter}");
-
-			// Find node that matches the shortcut's path filter
-			NavNode matchingNode = null;
-			foreach (var node in candidates)
+			NavNode targetNode = null;
+			
+			// ✅ NEW: Handle Group vs Element targeting
+			if (shortcut.TargetType == ShortcutTargetType.Group)
 			{
+				Debug.WriteLine($"[Navigator] Group targeting mode - finding group container");
+				
+				// Find the group container
+				NavNode groupNode = FindGroupNode(candidates, shortcut);
+				
+				if (groupNode != null)
+				{
+					Debug.WriteLine($"[Navigator] Found group: {groupNode.SimpleName} @ {GetPathWithoutHwnd(groupNode)}");
+					
+					// Find first navigable child of the group
+					targetNode = FindFirstNavigableChild(groupNode);
+					
+					if (targetNode != null)
+					{
+						Debug.WriteLine($"[Navigator] ✅ Found first child: '{targetNode.SimpleName}' in group '{groupNode.SimpleName}'");
+					}
+					else
+					{
+						Debug.WriteLine($"[Navigator] ❌ Group '{groupNode.SimpleName}' has no navigable children");
+					}
+				}
+				else
+				{
+					Debug.WriteLine($"[Navigator] ❌ No matching group found for shortcut: {keyName}");
+				}
+			}
+			else // Element targeting (existing behavior)
+			{
+				Debug.WriteLine($"[Navigator] Element targeting mode - finding specific element");
+				Debug.WriteLine($"[Navigator] Searching {candidates.Count} candidates for path: {shortcut.PathFilter}");
+				
+				foreach (var node in candidates)
+				{
+					var nodePath = GetPathWithoutHwnd(node);
+					
+					if (shortcut.Matches(nodePath))
+					{
+						targetNode = node;
+						Debug.WriteLine($"[Navigator] ✅ Found matching element: {node.SimpleName}");
+						break;
+					}
+				}
+				
+				if (targetNode == null)
+				{
+					Debug.WriteLine($"[Navigator] ❌ No matching element found for shortcut: {keyName}");
+				}
+			}
+
+			// Focus and optionally click the target
+			if (targetNode != null)
+			{
+				if (SetFocus(targetNode))
+				{
+					Debug.WriteLine($"[Navigator] ✅ Focused target: {targetNode.SimpleName}");
+					
+					// ✅ Auto-click unless NoAutoClick is set
+					if (!shortcut.NoAutoClick)
+					{
+						Debug.WriteLine($"[Navigator] Auto-clicking target: {targetNode.SimpleName}");
+						
+						if (Application.Current != null)
+						{
+							Application.Current.Dispatcher.BeginInvoke(
+								new Action(() => {
+									if (CurrentContext?.FocusedNode == targetNode)
+									{
+										targetNode.Activate();
+									}
+									else
+									{
+										Debug.WriteLine($"[Navigator] Skipped auto-click - focus changed before activation");
+									}
+								}),
+								DispatcherPriority.Input
+							);
+						}
+						else
+						{
+							targetNode.Activate();
+						}
+					}
+					else
+					{
+						Debug.WriteLine($"[Navigator] Skipped auto-click (NoAutoClick=true): {targetNode.SimpleName}");
+					}
+				}
+				else
+				{
+					Debug.WriteLine($"[Navigator] ❌ Failed to focus target: {targetNode.SimpleName}");
+				}
+			}
+		}
+
+		/// <summary>
+		/// Finds a group node that matches the shortcut's path filter.
+		/// Groups can match even if they're not in the candidates list (they might be filtered out).
+		/// </summary>
+		private static NavNode FindGroupNode(List<NavNode> candidates, NavShortcutKey shortcut)
+		{
+			// Get ALL nodes (including groups) from Observer
+			var allNodes = Observer.GetAllNavNodes();
+			
+			// Filter to only nodes in active modal scope
+			var scopedNodes = allNodes.Where(n => IsInActiveModalScope(n)).ToList();
+			
+			Debug.WriteLine($"[Navigator] Searching {scopedNodes.Count} scoped nodes for group");
+			
+			// Find matching group
+			foreach (var node in scopedNodes)
+			{
+				if (!node.IsGroup) continue; // Only consider groups
+				
 				var nodePath = GetPathWithoutHwnd(node);
 				
 				if (shortcut.Matches(nodePath))
 				{
-					matchingNode = node;
-					Debug.WriteLine($"[Navigator] ✅ Found matching node: {node.SimpleName} @ {nodePath}");
-					break;
+					Debug.WriteLine($"[Navigator] Found group node: {node.SimpleName} @ {nodePath}");
+					return node;
 				}
 			}
+			
+			Debug.WriteLine($"[Navigator] No matching group found");
+			return null;
+		}
 
-			if (matchingNode == null)
+		/// <summary>
+		/// Finds the first navigable child of a group node.
+		/// Uses top-to-bottom, left-to-right ordering based on screen position.
+		/// </summary>
+		private static NavNode FindFirstNavigableChild(NavNode groupNode)
+		{
+			if (groupNode == null) return null;
+			
+			// Get all nodes
+			var allNodes = Observer.GetAllNavNodes();
+			
+			// Find children of this group that are navigable
+			var children = allNodes
+				.Where(n => IsNavigableForSelection(n) && IsDescendantOf(n, groupNode))
+				.ToList();
+			
+			if (children.Count == 0)
 			{
-				Debug.WriteLine($"[Navigator] ❌ No matching node found for shortcut: {keyName}");
-				return;
+				Debug.WriteLine($"[Navigator] No navigable children found in group '{groupNode.SimpleName}'");
+				return null;
 			}
-
-			// Focus the matching node
-			if (SetFocus(matchingNode))
-			{
-				Debug.WriteLine($"[Navigator] ✅ Focused shortcut target: {matchingNode.SimpleName}");
-			}
-			else
-			{
-				Debug.WriteLine($"[Navigator] ❌ Failed to focus shortcut target: {matchingNode.SimpleName}");
-			}
+			
+			Debug.WriteLine($"[Navigator] Found {children.Count} navigable children in group '{groupNode.SimpleName}'");
+			
+			// Sort by position (top-to-bottom, left-to-right)
+			// Same algorithm as TryInitializeFocusIfNeeded
+			var sorted = children
+				.Select(n => {
+					var center = n.GetCenterDip();
+					// Y * 10000 + X ensures top-to-bottom primary sort, left-to-right secondary
+					var score = center.HasValue ? center.Value.X + center.Value.Y * 10000.0 : double.MaxValue;
+					return new { Node = n, Score = score };
+				})
+				.OrderBy(x => x.Score)
+				.ToList();
+			
+			var firstChild = sorted.First().Node;
+			Debug.WriteLine($"[Navigator] First child: {firstChild.SimpleName} (score: {sorted.First().Score:F1})");
+			
+			return firstChild;
 		}
 
 		#endregion
@@ -463,6 +605,7 @@ namespace AcManager.UiObserver
 		/// <summary>
 		/// Writes the currently focused element's filter to the discovery file.
 		/// Called when user presses WriteElementFilter key on StreamDeck.
+		/// ✅ NEW: Writes BOTH element classification AND its parent group classification.
 		/// </summary>
 		private static void WriteElementFilterToDiscovery()
 		{
@@ -473,9 +616,38 @@ namespace AcManager.UiObserver
 				}
 
 				var focusedNode = CurrentContext.FocusedNode;
-				var filter = GenerateFilterRule(focusedNode, isModal: false);
 				
-				AppendToDiscoveryFile($"# Focused: {focusedNode.SimpleName}", filter);
+				// ✅ NEW: Generate element filter
+				var elementFilter = GenerateFilterRule(focusedNode, isModal: false, isGroup: false);
+				
+				// ✅ NEW: Find parent group and generate group filter
+				var parentGroup = FindClosestGroup(focusedNode);
+				string groupFilter = null;
+				
+				if (parentGroup != null)
+				{
+					groupFilter = GenerateFilterRule(parentGroup, isModal: false, isGroup: true);
+				}
+				
+				// Write to discovery file with header
+				var headerComment = $"# Focused Element: {focusedNode.SimpleName}";
+				
+				if (groupFilter != null)
+				{
+					// Write both: group (for TargetType=Group) and element (for TargetType=Element)
+					var combinedEntry = $"{headerComment}\r\n" +
+					                   $"# Option 1: Target group (jumps to first item in list)\r\n" +
+					                   $"{groupFilter}\r\n" +
+					                   $"# Option 2: Target specific element (jumps to this exact element)\r\n" +
+					                   $"{elementFilter}\r\n";
+					
+					AppendToDiscoveryFile(combinedEntry);
+				}
+				else
+				{
+					// No parent group found - write element only
+					AppendToDiscoveryFile(headerComment, elementFilter);
+				}
 				
 				Debug.WriteLine($"[Navigator] ✅ Written element filter to discovery file: {focusedNode.SimpleName}");
 			} catch (Exception ex) {
@@ -486,8 +658,9 @@ namespace AcManager.UiObserver
 		/// <summary>
 		/// Generates a CLASSIFY filter rule for a given NavNode.
 		/// Uses the full HierarchicalPath without abbreviation or HWND.
+		/// ✅ NEW: Supports generating rules for groups with TargetType=Group.
 		/// </summary>
-		private static string GenerateFilterRule(NavNode node, bool isModal)
+		private static string GenerateFilterRule(NavNode node, bool isModal, bool isGroup = false)
 		{
 			if (node == null) return null;
 
@@ -503,108 +676,46 @@ namespace AcManager.UiObserver
 				role = node.IsGroup ? "group" : "element";
 			}
 
-			// Build CLASSIFY rule
-			var properties = $"role={role}";
+			// Build CLASSIFY rule with properties
+			var properties = new List<string>();
+			properties.Add($"role={role}");
 			
 			if (isModal) {
-				properties += "; modal=true";
+				properties.Add("modal=true");
 			}
+			
+			// ✅ NEW: Add TargetType for groups
+			if (isGroup) {
+				properties.Add("TargetType=\"Group\"");
+				properties.Add("NoAutoClick=true");  // Groups should not auto-click
+			}
+			
+			// Add template properties for user to fill in
+			properties.Add("KeyName=\"TODO\"");
+			properties.Add("KeyTitle=\"TODO\"");
 
-			return $"CLASSIFY: {path} => {properties}";
+			return $"CLASSIFY: {path} => {string.Join("; ", properties)}";
 		}
 
 		/// <summary>
-		/// Gets the hierarchical path without HWND components.
-		/// Strips :HWND from each path segment that contains it.
-		/// 
-		/// Example:
-		///   Input: "(unnamed):PopupRoot:3F4A21B > (unnamed):MenuItem"
-		///   Output: "(unnamed):PopupRoot > (unnamed):MenuItem"
+		/// Finds the closest group ancestor of a node (skips modal groups).
+		/// Returns the first non-modal group parent, or null if none found.
 		/// </summary>
-		private static string GetPathWithoutHwnd(NavNode node)
+		private static NavNode FindClosestGroup(NavNode node)
 		{
 			if (node == null) return null;
 
-			var path = node.HierarchicalPath;
-			if (string.IsNullOrEmpty(path)) return path;
-
-			// Split path into segments
-			var segments = path.Split(new[] { " > " }, StringSplitOptions.None);
+			var current = node.Parent;
+			while (current != null && current.TryGetTarget(out var parentNode))
+			{
+				if (parentNode.IsGroup && !parentNode.IsModal)
+				{
+					return parentNode;
+				}
+				current = parentNode.Parent;
+			}
 			
-			// Strip HWND from each segment (format: Name:Type:HWND → Name:Type)
-			for (int i = 0; i < segments.Length; i++) {
-				var parts = segments[i].Split(':');
-				if (parts.Length >= 3) {
-					// Has HWND component - keep only Name:Type
-					segments[i] = $"{parts[0]}:{parts[1]}";
-				}
-			}
-
-			return string.Join(" > ", segments);
-		}
-
-		/// <summary>
-		/// Appends a timestamped entry to the discovery file.
-		/// Creates the file with session header if it doesn't exist.
-		/// Session header is written only once per application run.
-		/// </summary>
-		private static void AppendToDiscoveryFile(string comment, string filterRule)
-		{
-			try {
-				// Get AppData path
-				var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-				var configDir = System.IO.Path.Combine(appDataPath, "AcTools Content Manager");
-				var discoveryFile = System.IO.Path.Combine(configDir, "NWRS Navigation Discovery.txt");
-
-				// Ensure directory exists
-				System.IO.Directory.CreateDirectory(configDir);
-
-				// Check if file exists and needs initial header
-				bool fileExists = System.IO.File.Exists(discoveryFile);
-				
-				// ✅ FIX: Write file header only if file doesn't exist or is empty
-				if (!fileExists || new System.IO.FileInfo(discoveryFile).Length == 0) {
-					var header = "# NWRS Navigation Discovery Session\r\n" +
-					            "# Append-only file - copy filters from here to NWRS Navigation.cfg\r\n";
-					System.IO.File.WriteAllText(discoveryFile, header);
-					fileExists = true; // File now exists after we created it
-				}
-
-				// ✅ FIX: Write session header ONCE per application run
-				if (!_discoverySessionHeaderWritten) {
-					// Add empty line before session header (if file has content)
-					var sessionHeader = fileExists && new System.IO.FileInfo(discoveryFile).Length > 0
-						? $"\r\n# ===== Session: {DateTime.Now:yyyy-MM-dd HH:mm:ss} =====\r\n"
-						: $"# ===== Session: {DateTime.Now:yyyy-MM-dd HH:mm:ss} =====\r\n";
-					
-					System.IO.File.AppendAllText(discoveryFile, sessionHeader);
-					_discoverySessionHeaderWritten = true;
-					
-					Debug.WriteLine($"[Navigator] Discovery session header written for this app run");
-				}
-
-				// Write the comment and filter rule (no extra empty lines)
-				var entry = $"{comment}\r\n{filterRule}\r\n";
-				System.IO.File.AppendAllText(discoveryFile, entry);
-
-				Debug.WriteLine($"[Navigator] Discovery entry written to: {discoveryFile}");
-			} catch (Exception ex) {
-				Debug.WriteLine($"[Navigator] ❌ Failed to write to discovery file: {ex.Message}");
-				
-				// Try to log error to error file
-				try {
-					var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-					var configDir = System.IO.Path.Combine(appDataPath, "AcTools Content Manager");
-					var errorFile = System.IO.Path.Combine(configDir, "NWRS Navigation Errors.log");
-					
-					System.IO.Directory.CreateDirectory(configDir);
-					
-					var errorEntry = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} [ERROR] Discovery file write failed: {ex.Message}\r\n";
-					System.IO.File.AppendAllText(errorFile, errorEntry);
-				} catch {
-					// If error logging fails, just give up silently
-				}
-			}
+			return null;
 		}
 
 		#endregion
@@ -658,7 +769,8 @@ namespace AcManager.UiObserver
 				
 				Debug.WriteLine($"[Navigator] Switching StreamDeck to '{pageName}' page for modal '{modalNode.SimpleName}'");
 				_streamDeckClient.SwitchPage(pageName);
-			} catch (Exception ex) {
+			} catch (Exception ex)
+			{
 				Debug.WriteLine($"[Navigator] Failed to switch StreamDeck page: {ex.Message}");
 			}
 		}
@@ -769,6 +881,113 @@ namespace AcManager.UiObserver
 					Debug.WriteLine($"[Navigator] Error toast failed: {ex.Message}");
 				}
 			});
+		}
+
+		#endregion
+		
+		#region StreamDeck Helpers
+
+		/// <summary>
+		/// Gets the hierarchical path without HWND components.
+		/// Strips :HWND from each path segment that contains it.
+		/// 
+		/// Example:
+		///   Input: "(unnamed):PopupRoot:3F4A21B > (unnamed):MenuItem"
+		///   Output: "(unnamed):PopupRoot > (unnamed):MenuItem"
+		/// </summary>
+		private static string GetPathWithoutHwnd(NavNode node)
+		{
+			if (node == null) return null;
+
+			var path = node.HierarchicalPath;
+			if (string.IsNullOrEmpty(path)) return path;
+
+			// Split path into segments
+			var segments = path.Split(new[] { " > " }, StringSplitOptions.None);
+			
+			// Strip HWND from each segment (format: Name:Type:HWND → Name:Type)
+			for (int i = 0; i < segments.Length; i++) {
+				var parts = segments[i].Split(':');
+				if (parts.Length >= 3) {
+					// Has HWND component - keep only Name:Type
+					segments[i] = $"{parts[0]}:{parts[1]}";
+				}
+			}
+
+			return string.Join(" > ", segments);
+		}
+
+		/// <summary>
+		/// Appends a timestamped entry to the discovery file.
+		/// Creates the file with session header if it doesn't exist.
+		/// Session header is written only once per application run.
+		/// ✅ NEW: Supports writing pre-formatted entries (comment + rules combined).
+		/// </summary>
+		private static void AppendToDiscoveryFile(string commentOrEntry, string filterRule = null)
+		{
+			try {
+				// Get AppData path
+				var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+				var configDir = Path.Combine(appDataPath, "AcTools Content Manager");
+				var discoveryFile = Path.Combine(configDir, "NWRS Navigation Discovery.txt");
+
+				// Ensure directory exists
+				Directory.CreateDirectory(configDir);
+
+				// Check if file exists and needs initial header
+				bool fileExists = File.Exists(discoveryFile);
+				
+				// Write file header only if file doesn't exist or is empty
+				if (!fileExists || new FileInfo(discoveryFile).Length == 0) {
+					var header = "# NWRS Navigation Discovery Session\r\n" +
+					            "# Append-only file - copy filters from here to NWRS Navigation.cfg\r\n";
+					File.WriteAllText(discoveryFile, header);
+					fileExists = true; // File now exists after we created it
+				}
+
+				// Write session header ONCE per application run
+				if (!_discoverySessionHeaderWritten) {
+					// Add empty line before session header (if file has content)
+					var sessionHeader = fileExists && new FileInfo(discoveryFile).Length > 0
+						? $"\r\n# ===== Session: {DateTime.Now:yyyy-MM-dd HH:mm:ss} =====\r\n"
+						: $"# ===== Session: {DateTime.Now:yyyy-MM-dd HH:mm:ss} =====\r\n";
+					
+					File.AppendAllText(discoveryFile, sessionHeader);
+					_discoverySessionHeaderWritten = true;
+					
+					Debug.WriteLine($"[Navigator] Discovery session header written for this app run");
+				}
+
+				// Support pre-formatted entries (element + group combined)
+				string entry;
+				if (filterRule != null) {
+					// Old format: separate comment and rule
+					entry = $"{commentOrEntry}\r\n{filterRule}\r\n";
+				} else {
+					// New format: pre-formatted entry (already contains comments and rules)
+					entry = $"{commentOrEntry}\r\n";
+				}
+				
+				File.AppendAllText(discoveryFile, entry);
+
+				Debug.WriteLine($"[Navigator] Discovery entry written to: {discoveryFile}");
+			} catch (Exception ex) {
+				Debug.WriteLine($"[Navigator] ❌ Failed to write to discovery file: {ex.Message}");
+				
+				// Try to log error to error file
+				try {
+					var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+					var configDir = Path.Combine(appDataPath, "AcTools Content Manager");
+					var errorFile = Path.Combine(configDir, "NWRS Navigation Errors.log");
+					
+					Directory.CreateDirectory(configDir);
+					
+					var errorEntry = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} [ERROR] Discovery file write failed: {ex.Message}\r\n";
+					File.AppendAllText(errorFile, errorEntry);
+				} catch {
+					// If error logging fails, just give up silently
+				}
+			}
 		}
 
 		#endregion

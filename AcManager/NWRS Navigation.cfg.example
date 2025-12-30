@@ -20,6 +20,7 @@
 #   KeyName   = Unique key identifier for shortcut (optional, MUST BE QUOTED)
 #   KeyTitle  = Text shown on StreamDeck button (optional)
 #   KeyIcon   = Icon file name or path (optional)
+#   NoAutoClick = Skip auto-click when shortcut is activated (optional, default: false)
 #
 # CUSTOM PAGE SYNTAX:
 # -------------------
@@ -69,6 +70,7 @@ CLASSIFY: Window:MainWindow > ** > (unnamed):ModernButton["Change car"] => \
     KeyTitle="Car"; \
     KeyIcon=Car; \
     PageName="CarSelection"
+# Note: Will auto-click (default) - pressing QuickChangeCar opens the car selection dialog
 
 # Quick access to "Change Track" button (switches to TrackSelection page on activation)
 CLASSIFY: Window:MainWindow > ** > (unnamed):ModernButton["Change track"] => \
@@ -77,6 +79,7 @@ CLASSIFY: Window:MainWindow > ** > (unnamed):ModernButton["Change track"] => \
     KeyTitle="Track"; \
     KeyIcon=Track; \
     PageName="TrackSelection"
+# Note: Will auto-click (default) - pressing QuickChangeTrack opens the track selection dialog
 
 # Quick access to "Go!" button
 CLASSIFY: Window:MainWindow > ** > (unnamed):Button["Go!"] => \
@@ -84,6 +87,7 @@ CLASSIFY: Window:MainWindow > ** > (unnamed):Button["Go!"] => \
     KeyName="QuickGo"; \
     KeyTitle="GO!"; \
     KeyIcon=!GO
+# Note: Will auto-click (default) - pressing QuickGo starts the race
 
 # ?????????????????????????????????????????????????????????????????????????
 # Page Switching on Focus (No Shortcuts)
@@ -93,6 +97,7 @@ CLASSIFY: Window:MainWindow > ** > (unnamed):Button["Go!"] => \
 CLASSIFY: Window:MainWindow > ** > (unnamed):ListBoxItem["PRACTICE"] => \
     role=listboxitem; \
     PageName="UpDown"
+# Note: No KeyName = no shortcut, just page switching on focus
 
 CLASSIFY: Window:MainWindow > ** > (unnamed):ListBoxItem["RACE"] => \
     role=listboxitem; \
@@ -112,7 +117,7 @@ CLASSIFY: Window:MainWindow > ** > (unnamed):ListBoxItem["HOTLAP"] => \
 # ????????????????????????????????????????????????????????????????????????
 
 # MainWindow page - Inherits from Navigation, adds Quick Drive shortcuts
-# PageName=MainWindow in CLASSIFY will resolve to this page
+# PageName="MainWindow" in CLASSIFY will resolve to this page
 # ? NOTE: Multi-line JSON is supported using backslash continuation
 PAGE: "MainWindow:Navigation" => \
 [["base","base","base"], \
@@ -122,11 +127,20 @@ PAGE: "MainWindow:Navigation" => \
  ["base","base","base"]]
 
 # ?????????????????????????????????????????????????????????????????????????
-# Dialog-Specific Pages
+# Dialog-Specific Pages (with ListBoxItem shortcuts)
 # ????????????????????????????????????????????????????????????????????????
 
 # TrackSelection page - Used when SelectTrackDialog is open
 # Inherits from Navigation, customizes for track selection
+# Includes shortcuts to filter tabs (NoAutoClick=true to avoid selection)
+#
+# Example shortcuts for SelectTrackDialog:
+# CLASSIFY: ** > *:SelectTrackDialog > ** > (unnamed):ListBoxItem["COUNTRIES"] => \
+#     KeyName="TrackCountries"; \
+#     KeyTitle="Countries"; \
+#     NoAutoClick=true
+# Note: NoAutoClick=true prevents clicking the ListBoxItem (which would select it)
+#       We just want to focus it for navigation
 PAGE: "TrackSelection:Navigation" => \
 [["base","base","base"], \
  [null,null,null], \
@@ -248,5 +262,28 @@ PAGE: "CarSelection:Navigation" => \
 #     - Configuration parse errors are FATAL (throw exceptions)
 #     - This helps discover issues quickly during development
 #     - Release builds: Errors are logged but don't crash the app
+#
+# 14. Auto-Click Behavior:
+#     By default, shortcut keys will focus AND automatically click the target element.
+#     This is ideal for buttons where the primary action is to activate them.
+#     
+#     For elements where clicking has unwanted side effects (e.g., ListBoxItems),
+#     use NoAutoClick=true to focus without clicking.
+#     
+#     Examples:
+#       # Button - Will auto-click (default behavior)
+#       CLASSIFY: ** > (unnamed):Button["OK"] => \
+#           KeyName="DialogOK"; \
+#           KeyTitle="OK"
+#       
+#       # ListBoxItem - Will NOT auto-click (explicit opt-out)
+#       CLASSIFY: ** > (unnamed):ListBoxItem["Option1"] => \
+#           KeyName="Option1"; \
+#           KeyTitle="Opt1"; \
+#           NoAutoClick=true
+#     
+#     Timing:
+#       Auto-click happens immediately after focus is established using
+#       DispatcherPriority.Input to ensure the element is fully focused.
 #
 # ???????????????????????????????????????????????????????????????????????????
