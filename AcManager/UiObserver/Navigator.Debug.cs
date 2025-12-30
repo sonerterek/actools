@@ -567,18 +567,18 @@ namespace AcManager.UiObserver
 				Debug.WriteLine("\n========== NavMapper: Highlight Rectangles (ALL NODES - Unfiltered) ==========");
 			}
 			
-			// Show modal stack
-			if (_modalContextStack.Count > 0) {
-				Debug.WriteLine($"Modal Stack ({_modalContextStack.Count} contexts):");
-				for (int i = 0; i < _modalContextStack.Count; i++) {
-					var ctx = _modalContextStack[i];
+			// Show context stack
+			if (_contextStack.Count > 0) {
+				Debug.WriteLine($"Context Stack ({_contextStack.Count} contexts):");
+				for (int i = 0; i < _contextStack.Count; i++) {
+					var ctx = _contextStack[i];
 					var focusInfo = ctx.FocusedNode != null 
 						? $" [focused: {ctx.FocusedNode.SimpleName}]" 
 						: " [no focus]";
-					Debug.WriteLine($"  [{i}] {ctx.ModalNode.HierarchicalPath}{focusInfo}");
+					Debug.WriteLine($"  [{i}] {ctx.ScopeNode.HierarchicalPath}{focusInfo}");
 				}
 			} else {
-				Debug.WriteLine("Modal Stack: (empty - waiting for root context)");
+				Debug.WriteLine("Context Stack: (empty - waiting for root context)");
 			}
 			Debug.WriteLine("");
 
@@ -646,7 +646,7 @@ namespace AcManager.UiObserver
 						var scopeInfo = "";
 						
 						// Add scope information if we're showing all nodes
-						if (!filterByModalScope && _modalContextStack.Count > 0) {
+						if (!filterByModalScope && _contextStack.Count > 0) {
 							var inScope = IsInActiveModalScope(node);
 							scopeInfo = inScope ? " {IN SCOPE}" : " {OUT OF SCOPE}";
 						}

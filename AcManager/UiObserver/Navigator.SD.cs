@@ -256,36 +256,20 @@ namespace AcManager.UiObserver
 		/// Selects the appropriate built-in page for a modal based on its type.
 		/// Returns page name, or null to use default Navigation page.
 		/// </summary>
-		private static string SelectBuiltInPageForModal(NavNode modalNode)
+		private static string SelectBuiltInPageForModal(NavNode scopeNode)
 		{
-			if (modalNode == null) return null;
+			if (scopeNode == null) return null;
+			if (!scopeNode.TryGetVisual(out var element)) return null;
 			
-			// Check if modal contains menu-like controls (use UpDown page)
-			if (modalNode.TryGetVisual(out var element)) {
-				var typeName = element.GetType().Name;
-				
-				// Menu types use vertical-only navigation
-				if (typeName == "ContextMenu" || typeName == "Menu" || typeName == "PopupRoot") {
-					// PopupRoot is the container for Menu/ContextMenu dropdowns
-					// Check if it contains MenuItems (vertical navigation only)
-					var children = Observer.GetAllNavNodes()
-						.Where(n => IsDescendantOf(n, modalNode))
-						.ToList();
-					
-					// If contains MenuItem types, use UpDown page
-					foreach (var child in children) {
-						if (child.TryGetVisual(out var childElement)) {
-							var childTypeName = childElement.GetType().Name;
-							if (childTypeName == "MenuItem" || childTypeName == "HierarchicalItem") {
-								Debug.WriteLine($"[Navigator] Modal '{modalNode.SimpleName}' contains MenuItems → using {PageUpDown} page");
-								return PageUpDown;
-							}
-						}
-					}
-				}
+			var typeName = element.GetType().Name;
+			
+			// PopupRoot indicates menu/dropdown (vertical navigation)
+			if (typeName == "PopupRoot")
+			{
+				return PageUpDown;
 			}
 			
-			// Default: use Navigation page
+			// Other modal types use default Navigation page
 			return null;
 		}
 
@@ -587,17 +571,17 @@ namespace AcManager.UiObserver
 		private static void WriteModalFilterToDiscovery()
 		{
 			try {
-				if (CurrentContext?.ModalNode == null) {
+				if (CurrentContext?.ScopeNode == null) {
 					Debug.WriteLine("[Navigator] No current modal to write filter for");
 					return;
 				}
 
-				var modalNode = CurrentContext.ModalNode;
-				var filter = GenerateFilterRule(modalNode, isModal: true);
+				var scopeNode = CurrentContext.ScopeNode;
+				var filter = GenerateFilterRule(scopeNode, isModal: true);
 				
-				AppendToDiscoveryFile($"# Modal: {modalNode.SimpleName}", filter);
+				AppendToDiscoveryFile($"# Modal: {scopeNode.SimpleName}", filter);
 				
-				Debug.WriteLine($"[Navigator] ✅ Written modal filter to discovery file: {modalNode.SimpleName}");
+				Debug.WriteLine($"[Navigator] ✅ Written modal filter to discovery file: {scopeNode.SimpleName}");
 			} catch (Exception ex) {
 				Debug.WriteLine($"[Navigator] ❌ Failed to write modal filter: {ex.Message}");
 			}
@@ -674,7 +658,7 @@ namespace AcManager.UiObserver
 				var typeName = element.GetType().Name;
 				role = typeName.ToLowerInvariant();
 			} else {
-				role = node.IsGroup ? "group" : "element";
+			role = node.IsGroup ? "group" : "element";
 			}
 
 			// Build CLASSIFY rule with properties
@@ -724,10 +708,10 @@ namespace AcManager.UiObserver
 		#region StreamDeck Page Switching
 
 		/// <summary>
-		/// Switches StreamDeck to the appropriate page for the given modal.
-		/// Uses built-in page selection based on modal type, or custom page from configuration.
+		/// Switches StreamDeck to the appropriate page for the given scope node.
+		/// Uses built-in page selection based on scope node type, or custom page from configuration.
 		/// </summary>
-		private static void SwitchStreamDeckPageForModal(NavNode modalNode)
+		private static void SwitchStreamDeckPageForModal(NavNode scopeNode)
 		{
 			if (_streamDeckClient == null) return;
 			
@@ -735,21 +719,21 @@ namespace AcManager.UiObserver
 				string pageName = null;
 				
 				// ✅ NEW: Check configuration for custom page mapping first
-				if (_navConfig != null && modalNode != null)
+				if (_navConfig != null && scopeNode != null)
 				{
-					var modalPath = GetPathWithoutHwnd(modalNode);
-					pageName = _navConfig.FindPageForElement(modalPath);
+					var scopePath = GetPathWithoutHwnd(scopeNode);
+					pageName = _navConfig.FindPageForElement(scopePath);
 					
 					if (!string.IsNullOrEmpty(pageName))
 					{
-						Debug.WriteLine($"[Navigator] Using custom page from config: '{pageName}' for modal '{modalNode.SimpleName}'");
+						Debug.WriteLine($"[Navigator] Using custom page from config: '{pageName}' for scope '{scopeNode.SimpleName}'");
 					}
 				}
 				
 				// Fallback to built-in page selection if no custom mapping
 				if (string.IsNullOrEmpty(pageName))
 				{
-					pageName = SelectBuiltInPageForModal(modalNode);
+					pageName = SelectBuiltInPageForModal(scopeNode);
 				}
 				
 				// Default to Navigation if no specific page selected
@@ -759,7 +743,7 @@ namespace AcManager.UiObserver
 				
 				// ✅ NOTE: pageName here is just the PageName (not FullPageName)
 				// This is correct - we switch to pages by their PageName only
-				Debug.WriteLine($"[Navigator] Switching StreamDeck to '{pageName}' page for modal '{modalNode.SimpleName}'");
+				Debug.WriteLine($"[Navigator] Switching StreamDeck to '{pageName}' page for scope '{scopeNode.SimpleName}'");
 				_streamDeckClient.SwitchPage(pageName);
 			} catch (Exception ex)
 			{

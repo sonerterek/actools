@@ -16,28 +16,28 @@ namespace AcManager.UiObserver
 
 	/// <summary>
 	/// Represents a navigation context within the modal hierarchy.
-	/// Each context bundles a modal scope (the root node defining the context)
+	/// Each context bundles a scope (the root node defining the context)
 	/// with the currently focused node within that scope.
 	/// </summary>
 	internal class NavContext
 	{
 		/// <summary>
-		/// The modal node that defines this context's scope.
-		/// For root context, this is the MainWindow.
-		/// For modal contexts, this is the Popup/Window/PopupRoot node.
+		/// The scope node that defines this context's boundaries.
+		/// For modal contexts, this is the Window/Popup/PopupRoot.
+		/// For future interaction modes, this could be a single control.
 		/// Never null.
 		/// </summary>
-		public NavNode ModalNode { get; }
+		public NavNode ScopeNode { get; }
 		
 		/// <summary>
-		/// Currently focused node within this modal context.
+		/// Currently focused node within this context.
 		/// Null if no focus has been established yet in this context.
 		/// </summary>
 		public NavNode FocusedNode { get; set; }
 		
-		public NavContext(NavNode modalNode, NavNode focusedNode = null)
+		public NavContext(NavNode scopeNode, NavNode focusedNode = null)
 		{
-			ModalNode = modalNode ?? throw new ArgumentNullException(nameof(modalNode));
+			ScopeNode = scopeNode ?? throw new ArgumentNullException(nameof(scopeNode));
 			FocusedNode = focusedNode;
 		}
 	}
@@ -67,13 +67,13 @@ namespace AcManager.UiObserver
 
 		private static bool _initialized = false;
 
-		// Modal context stack - each entry bundles modal scope + focused node
-		// Invariant: _modalContextStack.Count >= 1 after initialization (root context always present)
-		internal static readonly List<NavContext> _modalContextStack = new List<NavContext>();
+		// Context stack - each entry bundles scope + focused node
+		// Invariant: _contextStack.Count >= 1 after initialization (root context always present)
+		internal static readonly List<NavContext> _contextStack = new List<NavContext>();
 		
 		// Helper property for current context (never null after initialization)
-		internal static NavContext CurrentContext => _modalContextStack.Count > 0 
-			? _modalContextStack[_modalContextStack.Count - 1] 
+		internal static NavContext CurrentContext => _contextStack.Count > 0 
+			? _contextStack[_contextStack.Count - 1] 
 			: null;
 
 		// Events
@@ -318,43 +318,43 @@ namespace AcManager.UiObserver
 		/// 
 		/// ✓ NEW: Selects appropriate StreamDeck page based on modal type.
 		/// </summary>
-		private static void OnModalGroupOpened(NavNode modalNode)
+		private static void OnModalGroupOpened(NavNode scopeNode)
 		{
-			Debug.WriteLine($"[Navigator] Modal opened: {modalNode.SimpleName} @ {modalNode.HierarchicalPath}");
+			Debug.WriteLine($"[Navigator] Context opened: {scopeNode.SimpleName} @ {scopeNode.HierarchicalPath}");
 
 			// Check if this modal should be ignored (e.g., empty tooltip popups)
 			var children = Observer.GetAllNavNodes()
-				.Where(n => n.IsNavigable && !n.IsGroup && IsDescendantOf(n, modalNode))
+				.Where(n => n.IsNavigable && !n.IsGroup && IsDescendantOf(n, scopeNode))
 				.ToList();
 
 			if (children.Count == 0) {
-				Debug.WriteLine($"[Navigator] Modal '{modalNode.SimpleName}' has no navigable children - treating as non-modal overlay (ignoring)");
-				_ignoredModals.Add(modalNode);
+				Debug.WriteLine($"[Navigator] Context '{scopeNode.SimpleName}' has no navigable children - treating as non-modal overlay (ignoring)");
+				_ignoredModals.Add(scopeNode);
 				return;
 			}
 
-			Debug.WriteLine($"[Navigator] Modal has {children.Count} navigable children - creating navigation context");
+			Debug.WriteLine($"[Navigator] Context has {children.Count} navigable children - creating navigation context");
 
-			// Create modal context FIRST (so GetCandidatesInScope works correctly)
-			_modalContextStack.Add(new NavContext(modalNode, focusedNode: null));
-			var modalDepth = _modalContextStack.Count;
-			Debug.WriteLine($"[Navigator] Modal stack depth: {modalDepth}");
+			// Create context FIRST (so GetCandidatesInScope works correctly)
+			_contextStack.Add(new NavContext(scopeNode, focusedNode: null));
+			var contextDepth = _contextStack.Count;
+			Debug.WriteLine($"[Navigator] Context stack depth: {contextDepth}");
 
 			// ✓ NEW: Switch StreamDeck page based on modal type
-			SwitchStreamDeckPageForModal(modalNode);
+			SwitchStreamDeckPageForModal(scopeNode);
 
 			// ✓ FIX: Use different dispatcher priorities based on modal type
 			// MainWindow (depth 1): Loaded priority - window is already positioned at startup
 			// Nested modals (depth 2+): ApplicationIdle + 50ms delay - wait for popup positioning to complete
-			if (modalNode.TryGetVisual(out var fe)) {
-				var isNestedModal = modalDepth > 1;
+			if (scopeNode.TryGetVisual(out var fe)) {
+				var isNestedModal = contextDepth > 1;
 				var priority = isNestedModal
 					? DispatcherPriority.ApplicationIdle  // After ALL layout & positioning
 					: DispatcherPriority.Loaded;          // After layout only
 
 				var delayMs = isNestedModal ? 50 : 0;
 
-				Debug.WriteLine($"[Navigator] Deferring focus init with priority: {priority} (depth={modalDepth}, delay={delayMs}ms)");
+				Debug.WriteLine($"[Navigator] Deferring focus init with priority: {priority} (depth={contextDepth}, delay={delayMs}ms)");
 
 				fe.Dispatcher.BeginInvoke(
 					priority,
@@ -367,68 +367,68 @@ namespace AcManager.UiObserver
 							};
 							timer.Tick += (s, e) => {
 								timer.Stop();
-								if (CurrentContext?.ModalNode == modalNode) {
+								if (CurrentContext?.ScopeNode == scopeNode) {
 									TryInitializeFocusIfNeeded();
 								} else {
-									Debug.WriteLine($"[Navigator] Skipped deferred focus init - modal no longer current");
+									Debug.WriteLine($"[Navigator] Skipped deferred focus init - context no longer current");
 								}
 							};
 							timer.Start();
 						} else {
 							// MainWindow: initialize immediately after layout
-							if (CurrentContext?.ModalNode == modalNode) {
+							if (CurrentContext?.ScopeNode == scopeNode) {
 								TryInitializeFocusIfNeeded();
 							} else {
-								Debug.WriteLine($"[Navigator] Skipped deferred focus init - modal no longer current");
+								Debug.WriteLine($"[Navigator] Skipped deferred focus init - context no longer current");
 							}
 						}
 					})
 				);
 			} else {
 				// Fallback if visual reference is dead (shouldn't happen for newly opened modals)
-				Debug.WriteLine($"[Navigator] WARNING: Visual reference dead for newly opened modal, initializing immediately");
+				Debug.WriteLine($"[Navigator] WARNING: Visual reference dead for newly opened context, initializing immediately");
 				TryInitializeFocusIfNeeded();
 			}
 		}
 
-		private static void OnModalGroupClosed(NavNode modalNode)
+		private static void OnModalGroupClosed(NavNode scopeNode)
 		{
-			if (modalNode == null) return;
+			if (scopeNode == null) return;
 			
-			Debug.WriteLine($"[Navigator] Modal closed: {modalNode.SimpleName} @ {modalNode.HierarchicalPath}");
+			Debug.WriteLine($"[Navigator] Context closed: {scopeNode.SimpleName} @ {scopeNode.HierarchicalPath}");
 			
 			// ✓ NEW: Check if this was an ignored modal (empty popup like tooltip)
 			// These were never pushed to the stack, so we shouldn't try to pop them
-			if (_ignoredModals.Remove(modalNode)) {
-				Debug.WriteLine($"[Navigator] Ignored modal closed (no action needed): {modalNode.SimpleName}");
+			if (_ignoredModals.Remove(scopeNode)) {
+				Debug.WriteLine($"[Navigator] Ignored context closed (no action needed): {scopeNode.SimpleName}");
 				return;
 			}
 			
 			// Validate that this modal is actually on the stack
-			if (_modalContextStack.Count == 0) {
-				Debug.WriteLine($"[Navigator] ERROR: Modal stack is empty, cannot close modal!");
+			if (_contextStack.Count == 0) {
+				Debug.WriteLine($"[Navigator] ERROR: Context stack is empty, cannot close context!");
 				return;
 			}
 			
 			// ✅ FIX: Compare by path instead of reference (Observer may create new NavNode instances)
 			var currentTop = CurrentContext;
-			if (currentTop.ModalNode.HierarchicalPath != modalNode.HierarchicalPath) {
-				Debug.WriteLine($"[Navigator] WARNING: Closed modal not at top (expected: {currentTop.ModalNode.SimpleName}, got: {modalNode.SimpleName})");
+			if (currentTop.ScopeNode.HierarchicalPath != scopeNode.HierarchicalPath) {
+				Debug.WriteLine($"[Navigator] WARNING: Closed context not at top (expected: {currentTop.ScopeNode.SimpleName}, got: {scopeNode.SimpleName})");
 				// Try to find it in the stack by path and remove it
-				for (int i = _modalContextStack.Count - 1; i >= 0; i--) {
-					if (_modalContextStack[i].ModalNode.HierarchicalPath == modalNode.HierarchicalPath) {
-						_modalContextStack.RemoveAt(i);
-						Debug.WriteLine($"[Navigator] Removed modal from position {i}");
+				for (int i = _contextStack.Count - 1; i >= 0; i--) {
+					if (_contextStack[i].ScopeNode.HierarchicalPath == scopeNode.HierarchicalPath) {
+						_contextStack.RemoveAt(i);
+						Debug.WriteLine($"[Navigator] Removed context from position {i}");
 						break;
 					}
 				}
 			} else {
 				// Normal case: pop from top
-				_modalContextStack.RemoveAt(_modalContextStack.Count - 1);
-				Debug.WriteLine($"[Navigator] Popped modal from top");
+				_contextStack.RemoveAt(_contextStack.Count - 1);
+				Debug.WriteLine($"[Navigator] Popped context from top");
 			}
 			
-			Debug.WriteLine($"[Navigator] Modal stack depth: {_modalContextStack.Count}");
+			Debug.WriteLine($"[Navigator] Context stack depth: {_contextStack.Count}");
 			
 			// ✅ STEP 1: Clear old focus visuals immediately (the closing modal's overlay)
 			_overlay?.HideFocusRect();
@@ -437,21 +437,21 @@ namespace AcManager.UiObserver
 			// This gives WPF time to finish dismantling the closing modal's visual tree.
 			// During unload, elements exist but have invalid bounds (GetCenterDip returns null),
 			// which causes all candidates to score Double.MaxValue and focus initialization to fail.
-			if (CurrentContext != null && CurrentContext.ModalNode.TryGetVisual(out var parentModalElement)) {
-				parentModalElement.Dispatcher.BeginInvoke(
+			if (CurrentContext != null && CurrentContext.ScopeNode.TryGetVisual(out var parentScopeElement)) {
+				parentScopeElement.Dispatcher.BeginInvoke(
 					DispatcherPriority.Loaded,  // After unload completes
 					new Action(() => {
 						try {
-							Debug.WriteLine($"[Navigator] Restoring parent focus after modal closure");
-							Debug.WriteLine($"[Navigator] Current context modal: {CurrentContext.ModalNode.SimpleName} @ {CurrentContext.ModalNode.HierarchicalPath}");
+							Debug.WriteLine($"[Navigator] Restoring parent focus after context closure");
+							Debug.WriteLine($"[Navigator] Current context scope: {CurrentContext.ScopeNode.SimpleName} @ {CurrentContext.ScopeNode.HierarchicalPath}");
 							
 							// ✅ STEP 3: Now the closing modal is fully removed from visual tree
 							// Parent context's elements have valid bounds for navigation
 							ValidateAndRestoreParentFocus();
 							
-							// ✅ STEP 4: Switch StreamDeck page for the now-current modal
-							// When a modal closes, we need to switch back to the parent modal's page
-							SwitchStreamDeckPageForModal(CurrentContext.ModalNode);
+							// ✅ STEP 4: Switch StreamDeck page for the now-current context
+							// When a modal closes, we need to switch back to the parent context's page
+							SwitchStreamDeckPageForModal(CurrentContext.ScopeNode);
 						} catch (Exception ex) {
 							Debug.WriteLine($"[Navigator] Error restoring parent focus: {ex.Message}");
 						}
@@ -487,7 +487,7 @@ namespace AcManager.UiObserver
 					// Check if element is still in visual tree
 					if (PresentationSource.FromVisual(fe) != null) {
 						// Check if element is in the parent context's scope (not the closed modal's scope)
-						if (IsDescendantOf(focusToRestore, CurrentContext.ModalNode)) {
+						if (IsDescendantOf(focusToRestore, CurrentContext.ScopeNode)) {
 							isValid = true;
 						} else {
 							Debug.WriteLine($"[Navigator] Focused node '{focusToRestore.SimpleName}' is outside parent scope (was in closed modal) - clearing focus");
@@ -550,15 +550,15 @@ namespace AcManager.UiObserver
 				return;
 			}
 			
-			Debug.WriteLine($"[Navigator] Finding first navigable in scope '{CurrentContext.ModalNode.SimpleName}'...");
+			Debug.WriteLine($"[Navigator] Finding first navigable in scope '{CurrentContext.ScopeNode.SimpleName}'...");
 			
-			// Log modal node details
-			if (CurrentContext.ModalNode.TryGetVisual(out var modalVisual)) {
-				Debug.WriteLine($"[Navigator] ModalNode type: {modalVisual.GetType().Name}");
+			// Log scope node details
+			if (CurrentContext.ScopeNode.TryGetVisual(out var scopeVisual)) {
+				Debug.WriteLine($"[Navigator] ScopeNode type: {scopeVisual.GetType().Name}");
 			} else {
-				Debug.WriteLine($"[Navigator] ModalNode type: (dead reference)");
+				Debug.WriteLine($"[Navigator] ScopeNode type: (dead reference)");
 			}
-			Debug.WriteLine($"[Navigator] ModalNode path: {CurrentContext.ModalNode.HierarchicalPath}");
+			Debug.WriteLine($"[Navigator] ScopeNode path: {CurrentContext.ScopeNode.HierarchicalPath}");
 			
 			// Get all candidates and log details
 			var allNodes = Observer.GetAllNavNodes().ToList();
@@ -578,7 +578,7 @@ namespace AcManager.UiObserver
 				Debug.WriteLine($"[Navigator]   Nodes passing IsInActiveModalScope: {inScopeNodes.Count}");
 				
 				if (navigableNodes.Count > 0 && inScopeNodes.Count == 0) {
-					Debug.WriteLine($"[Navigator]   ? Modal scope filtering removed ALL candidates!");
+					Debug.WriteLine($"[Navigator]   ⚠ Scope filtering removed ALL candidates!");
 					
 					// Check first few navigable nodes
 					var samplesToCheck = Math.Min(5, navigableNodes.Count);
@@ -593,18 +593,18 @@ namespace AcManager.UiObserver
 						}
 						
 						Debug.WriteLine($"[Navigator]     Path: {sample.HierarchicalPath}");
-						Debug.WriteLine($"[Navigator]     IsDescendantOf(ModalNode): {IsDescendantOf(sample, CurrentContext.ModalNode)}");
+						Debug.WriteLine($"[Navigator]     IsDescendantOf(ScopeNode): {IsDescendantOf(sample, CurrentContext.ScopeNode)}");
 						
 						// Walk parent chain
 						var current = sample.Parent;
 						int depth = 0;
 						Debug.WriteLine($"[Navigator]     Parent chain:");
 						while (current != null && current.TryGetTarget(out var parentNode) && depth < 8) {
-							var isModal = ReferenceEquals(parentNode, CurrentContext.ModalNode);
-							Debug.WriteLine($"[Navigator]       [{depth}] {parentNode.SimpleName} {(isModal ? "← MODAL ROOT" : "")}");
+							var isScope = ReferenceEquals(parentNode, CurrentContext.ScopeNode);
+							Debug.WriteLine($"[Navigator]       [{depth}] {parentNode.SimpleName} {(isScope ? "← SCOPE ROOT" : "")}");
 							current = parentNode.Parent;
 							depth++;
-							if (isModal) break;
+							if (isScope) break;
 						}
 						if (depth >= 8) Debug.WriteLine($"[Navigator]       [...] (chain continues)");
 					}
@@ -625,10 +625,10 @@ namespace AcManager.UiObserver
 				})
 				.OrderBy(x => x.Score)
 				.ToList();
-		
+	
 			// ✅ FIX: Skip if all candidates have invalid positions
 			if (candidates.Count == 0 || candidates[0].Score == double.MaxValue) {
-				Debug.WriteLine($"[Navigator] No valid candidates found (all have invalid positions or off-screen)");
+				Debug.WriteLine($"[Navigator] No valid candidates found (all have invalid positions)");
 				return; // Don't try to set focus if nothing is positioned yet
 			}
 			
@@ -637,7 +637,7 @@ namespace AcManager.UiObserver
 				Debug.WriteLine($"  ✅ WINNER: {firstNode.SimpleName} (score: {candidates[0].Score:F1})");
 				CurrentContext.FocusedNode = firstNode;
 				
-				// ? FIX: Defer visual update until after layout is complete
+				// ✓ FIX: Defer visual update until after layout is complete
 				// SetFocusVisuals() calls UpdateFocusRect() which needs final bounds.
 				// During ModalGroupOpened, visual tree may not be fully rendered yet,
 				// so we schedule the visual update on Dispatcher with Loaded priority.
@@ -653,7 +653,7 @@ namespace AcManager.UiObserver
 					SetFocusVisuals(firstNode);
 				}
 				
-				Debug.WriteLine($"[Navigator] Initialized focus in '{CurrentContext.ModalNode.SimpleName}' -> '{firstNode.SimpleName}'");
+				Debug.WriteLine($"[Navigator] Initialized focus in '{CurrentContext.ScopeNode.SimpleName}' -> '{firstNode.SimpleName}'");
 				try { FocusChanged?.Invoke(null, firstNode); } catch { }
 			} else {
 				Debug.WriteLine($"[Navigator] No valid candidate found after filtering!");
@@ -741,7 +741,7 @@ namespace AcManager.UiObserver
 		public static bool ExitGroup()
 		{
 			if (CurrentContext == null) return false;
-			return CurrentContext.ModalNode.Close();
+			return CurrentContext.ScopeNode.Close();
 		}
 
 		#endregion
@@ -978,7 +978,7 @@ namespace AcManager.UiObserver
 				var screenWidth = System.Windows.Forms.Screen.PrimaryScreen.Bounds.Width;
 				var screenHeight = System.Windows.Forms.Screen.PrimaryScreen.Bounds.Height;
 
-				// Calculate absolute position in SendInput's coordinate space (0-65535)
+				// Calculate absolute position in SendInput's coordinate space (0-65536)
 				var absoluteX = (int)(centerDevice.X * 65536.0 / screenWidth);
 				var absoluteY = (int)(centerDevice.Y * 65536.0 / screenHeight);
 
@@ -1195,7 +1195,7 @@ namespace AcManager.UiObserver
 		}
 
 		/// <summary>
-		/// Checks if a node is within the current active modal scope.
+		/// Checks if a node is within the current active context scope.
 		/// Delegates to IsDescendantOf() for consistency.
 		/// </summary>
 		internal static bool IsInActiveModalScope(NavNode node)
@@ -1204,7 +1204,7 @@ namespace AcManager.UiObserver
 			if (node == null) return false;
 
 			// Reuse IsDescendantOf() - single source of truth for hierarchy checks
-			return IsDescendantOf(node, CurrentContext.ModalNode);
+			return IsDescendantOf(node, CurrentContext.ScopeNode);
 		}
 
 		internal static List<NavNode> GetCandidatesInScope()
