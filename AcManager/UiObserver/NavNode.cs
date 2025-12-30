@@ -961,6 +961,7 @@ namespace AcManager.UiObserver
         /// Direct property manipulation only for controls that don't benefit from click simulation:
         ///   - ComboBox/ContextMenu: Simple open/close (no complex state)
         ///   - Expander: Simple toggle (expand/collapse header click is complex)
+        ///   - Slider/DoubleSlider/RoundSlider: Enter interaction mode for value adjustment
         /// </summary>
         public bool Activate()
         {
@@ -969,6 +970,25 @@ namespace AcManager.UiObserver
             }
 
             try {
+                // ✅ Interactive controls - enter interaction mode
+                // Sliders need special handling to enter a focused adjustment mode
+                if (fe is Slider)
+                {
+                    return Navigator.EnterInteractionMode(this, "Slider");
+                }
+                
+                var typeName = fe.GetType().Name;
+                
+                if (typeName == "DoubleSlider")
+                {
+                    return Navigator.EnterInteractionMode(this, "DoubleSlider");
+                }
+                
+                if (typeName == "RoundSlider")
+                {
+                    return Navigator.EnterInteractionMode(this, "RoundSlider");
+                }
+                
                 // ✅ Single-action controls - use mouse click simulation
                 // This triggers the full WPF event chain (PreviewMouseDown → MouseDown → Click)
                 // which ensures all behaviors, animations, and handlers are invoked properly

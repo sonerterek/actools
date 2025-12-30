@@ -69,6 +69,13 @@ namespace AcManager.UiObserver
 		/// </summary>
 		public NavNode FocusedNode { get; set; }
 		
+		/// <summary>
+		/// Original value of the control when entering interaction mode.
+		/// Used for Cancel (revert) functionality.
+		/// Only populated for InteractiveControl contexts.
+		/// </summary>
+		public object OriginalValue { get; set; }
+		
 		public NavContext(NavNode scopeNode, NavContextType contextType, NavNode focusedNode = null)
 		{
 			ScopeNode = scopeNode ?? throw new ArgumentNullException(nameof(scopeNode));
@@ -795,9 +802,23 @@ namespace AcManager.UiObserver
 			return CurrentContext.FocusedNode.Activate();
 		}
 
+		/// <summary>
+		/// Exits the current group/modal or interaction mode.
+		/// Priority: Interaction mode > Modal dialog.
+		/// Called when user presses Back/Escape key.
+		/// For interaction mode: Reverts changes (Cancel behavior).
+		/// </summary>
 		public static bool ExitGroup()
 		{
 			if (CurrentContext == null) return false;
+			
+			// Priority 1: Exit interaction mode if active (with Cancel - revert changes)
+			if (CurrentContext.ContextType == NavContextType.InteractiveControl)
+			{
+				return ExitInteractionMode(revertChanges: true);
+			}
+			
+			// Priority 2: Close modal (original behavior)
 			return CurrentContext.ScopeNode.Close();
 		}
 
@@ -1544,6 +1565,369 @@ namespace AcManager.UiObserver
 			);
 			
 			#pragma warning restore CS0162 // Unreachable code detected
+		}
+
+		#endregion
+
+		#region Interaction Mode
+
+		/// <summary>
+		/// Enters interaction mode for a non-modal control (Slider, DoubleSlider, etc.).
+		/// Creates a new navigation context scoped to the single control.
+		/// 
+		/// This allows controls to create focused "modes" without requiring a popup/dialog.
+		/// Example: Slider activation switches to Slider page, locks navigation to the slider.
+		/// </summary>
+		/// <param name="control">The control to enter interaction mode for</param>
+		/// <param name="pageName">Optional StreamDeck page name (auto-detected if null)</param>
+		/// <returns>True if interaction mode was entered successfully</returns>
+		public static bool EnterInteractionMode(NavNode control, string pageName = null)
+		{
+			if (control == null)
+			{
+				Debug.WriteLine("[Navigator] EnterInteractionMode failed: control is null");
+				return false;
+			}
+			
+			if (!control.IsNavigable)
+			{
+				Debug.WriteLine($"[Navigator] EnterInteractionMode failed: {control.SimpleName} is not navigable");
+				return false;
+			}
+			
+			// ✅ Check if already in interaction mode for this control
+			if (CurrentContext != null && 
+		    CurrentContext.ContextType == NavContextType.InteractiveControl &&
+		    ReferenceEquals(CurrentContext.ScopeNode, control))
+			{
+				Debug.WriteLine($"[Navigator] Already in interaction mode for {control.SimpleName} - ignoring duplicate activation");
+				return true;  // Return true since we're already in the desired state
+			}
+			
+			// ✅ Capture original value for Cancel functionality
+			object originalValue = null;
+			if (control.TryGetVisual(out var fe))
+			{
+				if (fe is Slider slider)
+				{
+					originalValue = slider.Value;
+				}
+				else
+				{
+					var typeName = fe.GetType().Name;
+					if (typeName == "DoubleSlider" || typeName == "RoundSlider")
+					{
+						var valueProperty = fe.GetType().GetProperty("Value");
+						if (valueProperty != null)
+						{
+							originalValue = valueProperty.GetValue(fe);
+						}
+					}
+				}
+				
+				Debug.WriteLine($"[Navigator] Captured original value: {originalValue}");
+			}
+			
+			// Create interaction context (focus set to control itself)
+			var context = new NavContext(control, NavContextType.InteractiveControl, focusedNode: control)
+			{
+				OriginalValue = originalValue
+			};
+			
+			_contextStack.Add(context);
+			var depth = _contextStack.Count;
+			
+			Debug.WriteLine($"[Navigator] Entered interaction mode: {control.SimpleName}");
+			Debug.WriteLine($"[Navigator] Context stack depth: {depth}");
+			Debug.WriteLine($"[Navigator] Context type: {NavContextType.InteractiveControl}");
+			
+			// Switch StreamDeck page
+			if (string.IsNullOrEmpty(pageName) && control.TryGetVisual(out var element))
+			{
+				pageName = GetBuiltInPageForControl(element);
+			}
+			
+			if (!string.IsNullOrEmpty(pageName) && _streamDeckClient != null)
+			{
+				Debug.WriteLine($"[Navigator] Switching to page: {pageName}");
+				_streamDeckClient.SwitchPage(pageName);
+			}
+			
+			// Show focus visuals (blue highlight on the control)
+			SetFocusVisuals(control);
+			
+			return true;
+		}
+
+		/// <summary>
+		/// Exits interaction mode and restores previous navigation context.
+		/// Called when user presses Back/Escape (cancel) or MouseLeft (confirm).
+		/// </summary>
+		/// <param name="revertChanges">If true, reverts control to original value (Cancel). If false, keeps current value (Confirm).</param>
+		/// <returns>True if interaction mode was exited successfully</returns>
+		public static bool ExitInteractionMode(bool revertChanges = false)
+		{
+			if (CurrentContext == null)
+			{
+				Debug.WriteLine("[Navigator] ExitInteractionMode failed: no current context");
+				return false;
+			}
+			
+			if (CurrentContext.ContextType != NavContextType.InteractiveControl)
+			{
+				Debug.WriteLine($"[Navigator] ExitInteractionMode failed: current context is {CurrentContext.ContextType}, not InteractiveControl");
+				return false;
+			}
+			
+			var control = CurrentContext.ScopeNode;
+			
+			// ✅ Revert value if requested (Cancel)
+			if (revertChanges && CurrentContext.OriginalValue != null)
+			{
+				if (control.TryGetVisual(out var fe))
+				{
+					try
+					{
+						if (fe is Slider slider)
+						{
+							var oldValue = slider.Value;
+							slider.Value = (double)CurrentContext.OriginalValue;
+							Debug.WriteLine($"[Navigator] Reverted slider value: {oldValue:F2} → {slider.Value:F2}");
+						}
+						else
+						{
+							var typeName = fe.GetType().Name;
+							if (typeName == "DoubleSlider" || typeName == "RoundSlider")
+							{
+								var valueProperty = fe.GetType().GetProperty("Value");
+								if (valueProperty != null)
+								{
+									var oldValue = valueProperty.GetValue(fe);
+									valueProperty.SetValue(fe, CurrentContext.OriginalValue);
+									Debug.WriteLine($"[Navigator] Reverted {typeName} value: {oldValue} → {CurrentContext.OriginalValue}");
+								}
+							}
+						}
+					}
+					catch (Exception ex)
+					{
+						Debug.WriteLine($"[Navigator] Failed to revert value: {ex.Message}");
+					}
+				}
+			}
+			else if (!revertChanges)
+			{
+				Debug.WriteLine($"[Navigator] Confirmed changes (keeping current value)");
+			}
+			
+			// Pop the interaction context
+			_contextStack.RemoveAt(_contextStack.Count - 1);
+			var depth = _contextStack.Count;
+			
+			Debug.WriteLine($"[Navigator] Exited interaction mode: {control.SimpleName} (revert={revertChanges})");
+			Debug.WriteLine($"[Navigator] Context stack depth: {depth}");
+			
+			// Restore parent context focus
+			if (CurrentContext != null)
+			{
+				// Try to restore focus to the control we just exited
+				// (user is still "at" that location, just not in interaction mode)
+				if (CurrentContext.FocusedNode == null || !ReferenceEquals(CurrentContext.FocusedNode, control))
+				{
+					SetFocus(control);
+				}
+				else
+				{
+					// Focus already on control, just update visuals/page
+					SetFocusVisuals(control);
+				}
+				
+				// Switch StreamDeck page for parent context
+				SwitchStreamDeckPageForModal(CurrentContext.ScopeNode);
+			}
+			else
+			{
+				// No parent context - clear visuals
+				_overlay?.HideFocusRect();
+			}
+			
+			return true;
+		}
+
+		/// <summary>
+		/// Determines the optimal built-in StreamDeck page for a given control type.
+		/// Returns null if no special page is needed (use default Navigation page).
+		/// 
+		/// This is separate from config-based page mapping (which has higher priority).
+		/// </summary>
+		private static string GetBuiltInPageForControl(FrameworkElement element)
+		{
+			if (element == null) return null;
+			
+			var typeName = element.GetType().Name;
+			
+			// ✅ Slider family - optimize for value adjustment
+			if (element is Slider)
+				return "Slider";  // Left/Right only
+			
+			if (typeName == "DoubleSlider")
+				return "DoubleSlider";  // Vertical coarse + Horizontal fine
+			
+			if (typeName == "RoundSlider")
+				return "RoundSlider";  // All 4 directions (circular)
+			
+			// ✅ Menu items - optimize for vertical navigation
+			if (element is MenuItem)
+				return "UpDown";  // Up/Down only
+			
+			// ✅ List items - context-dependent
+			// (You might want to use UpDown for long lists, Navigation for grids)
+			// For now, return null and use default Navigation page
+			if (element is ListBoxItem)
+				return null;
+			
+			// ✅ Future control types:
+			// if (element is ComboBox comboBox && comboBox.IsDropDownOpen)
+			//     return "UpDown";  // Dropdown is vertical
+			//
+			// if (element is TreeViewItem)
+			//     return "TreeNav";  // Custom tree navigation page
+			//
+			// if ( element is DataGridCell)
+			//     return "GridNav";  // Custom grid navigation page
+			
+			return null;  // Use default Navigation page
+		}
+
+		/// <summary>
+		/// Adjusts the value of the currently focused slider control.
+		/// Only works when in InteractiveControl context (slider interaction mode).
+		/// Supports Slider, DoubleSlider, and RoundSlider types.
+		/// </summary>
+		/// <param name="direction">Direction to adjust (Left/Right for horizontal, Up/Down for vertical)</param>
+		private static void AdjustSliderValue(NavDirection direction)
+		{
+			if (CurrentContext?.ContextType != NavContextType.InteractiveControl)
+			{
+				Debug.WriteLine("[Navigator] AdjustSliderValue: Not in interaction mode");
+				return;
+			}
+			
+			var control = CurrentContext.ScopeNode;
+			if (!control.TryGetVisual(out var fe))
+			{
+				Debug.WriteLine("[Navigator] AdjustSliderValue: Visual reference dead");
+				return;
+			}
+			
+			Debug.WriteLine($"[Navigator] AdjustSliderValue: Adjusting {fe.GetType().Name} in direction {direction}");
+			
+			try
+			{
+				// Handle standard WPF Slider
+				if (fe is Slider slider)
+				{
+					var step = slider.LargeChange > 0 ? slider.LargeChange : slider.SmallChange;
+					var oldValue = slider.Value;
+					
+					if (direction == NavDirection.Left)
+						slider.Value = Math.Max(slider.Minimum, slider.Value - step);
+					else if (direction == NavDirection.Right)
+						slider.Value = Math.Min(slider.Maximum, slider.Value + step);
+					
+					Debug.WriteLine($"[Navigator] Slider adjusted: {oldValue:F2} → {slider.Value:F2} (step={step:F2})");
+					return;
+				}
+				
+				// Handle custom slider types via reflection (DoubleSlider, RoundSlider)
+				var typeName = fe.GetType().Name;
+				
+				// DoubleSlider: Up/Down for coarse adjustment, Left/Right for fine adjustment
+				if (typeName == "DoubleSlider")
+				{
+					var valueProperty = fe.GetType().GetProperty("Value");
+					var minProperty = fe.GetType().GetProperty("Minimum");
+					var maxProperty = fe.GetType().GetProperty("Maximum");
+					var largeChangeProperty = fe.GetType().GetProperty("LargeChange");
+					var smallChangeProperty = fe.GetType().GetProperty("SmallChange");
+				
+					if (valueProperty != null && minProperty != null && maxProperty != null)
+					{
+						var currentValue = (double)valueProperty.GetValue(fe);
+						var min = (double)minProperty.GetValue(fe);
+						var max = (double)maxProperty.GetValue(fe);
+						
+						// Use LargeChange for Up/Down (coarse), SmallChange for Left/Right (fine)
+						double step;
+						if (direction == NavDirection.Up || direction == NavDirection.Down)
+						{
+							// Coarse adjustment
+							step = largeChangeProperty != null ? (double)largeChangeProperty.GetValue(fe) : 1.0;
+						}
+						else
+						{
+							// Fine adjustment
+							step = smallChangeProperty != null ? (double)smallChangeProperty.GetValue(fe) : 0.1;
+						}
+						
+						// Calculate new value
+						double newValue = currentValue;
+						if (direction == NavDirection.Left || direction == NavDirection.Down)
+							newValue = Math.Max(min, currentValue - step);
+						else if (direction == NavDirection.Right || direction == NavDirection.Up)
+							newValue = Math.Min(max, currentValue + step);
+						
+						valueProperty.SetValue(fe, newValue);
+						Debug.WriteLine($"[Navigator] DoubleSlider adjusted: {currentValue:F2} → {newValue:F2} (step={step:F2}, mode={((direction == NavDirection.Up || direction == NavDirection.Down) ? "coarse" : "fine")})");
+					}
+					return;
+				}
+				
+				// RoundSlider: All 4 directions supported (circular control)
+				if (typeName == "RoundSlider")
+				{
+					var valueProperty = fe.GetType().GetProperty("Value");
+					var minProperty = fe.GetType().GetProperty("Minimum");
+					var maxProperty = fe.GetType().GetProperty("Maximum");
+					var largeChangeProperty = fe.GetType().GetProperty("LargeChange");
+					var smallChangeProperty = fe.GetType().GetProperty("SmallChange");
+				
+					if (valueProperty != null && minProperty != null && maxProperty != null)
+					{
+						var currentValue = (double)valueProperty.GetValue(fe);
+						var min = (double)minProperty.GetValue(fe);
+						var max = (double)maxProperty.GetValue(fe);
+						
+						// Use LargeChange for Up/Down, SmallChange for Left/Right
+						double step;
+						if (direction == NavDirection.Up || direction == NavDirection.Down)
+						{
+							step = largeChangeProperty != null ? (double)largeChangeProperty.GetValue(fe) : 1.0;
+						}
+						else
+						{
+							step = smallChangeProperty != null ? (double)smallChangeProperty.GetValue(fe) : 0.1;
+						}
+						
+						// RoundSlider semantics: Right/Up = increase, Left/Down = decrease
+						double newValue = currentValue;
+						if (direction == NavDirection.Left || direction == NavDirection.Down)
+							newValue = Math.Max(min, currentValue - step);
+						else if (direction == NavDirection.Right || direction == NavDirection.Up)
+							newValue = Math.Min(max, currentValue + step);
+						
+						valueProperty.SetValue(fe, newValue);
+						Debug.WriteLine($"[Navigator] RoundSlider adjusted: {currentValue:F2} → {newValue:F2} (step={step:F2})");
+					}
+					return;
+				}
+				
+				Debug.WriteLine($"[Navigator] AdjustSliderValue: Unsupported control type '{typeName}'");
+			}
+			catch (Exception ex)
+			{
+				Debug.WriteLine($"[Navigator] AdjustSliderValue ERROR: {ex.Message}");
+			}
 		}
 
 		#endregion

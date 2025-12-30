@@ -122,6 +122,10 @@ namespace AcManager.UiObserver
 			_streamDeckClient.DefineKey("Right", null, GetIconPath(icons, "Right"));
 			_streamDeckClient.DefineKey("MouseLeft", null, GetIconPath(icons, "Mouse Left"));
 			
+			// ✅ NEW: Define slider adjustment keys (use same icons as Left/Right)
+			_streamDeckClient.DefineKey("SliderDecrease", null, GetIconPath(icons, "Left"));
+			_streamDeckClient.DefineKey("SliderIncrease", null, GetIconPath(icons, "Right"));
+			
 			// Define built-in discovery keys
 			_streamDeckClient.DefineKey("WriteModalFilter", "Modal", null);
 			_streamDeckClient.DefineKey("WriteElementFilter", "Element", null);
@@ -215,35 +219,35 @@ namespace AcManager.UiObserver
 			});
 			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageUpDown}");
 			
-			// Slider page (left/right for value adjustment)
+			// ✅ NEW: Slider page (dedicated slider adjustment keys)
 			Debug.WriteLine($"[Navigator] Defining page: {PageSlider}");
 			_streamDeckClient.DefinePage(PageSlider, new[] {
 				new[] { "Back", "WriteModalFilter", "WriteElementFilter" },
 				new[] { "", "", "" },
 				new[] { "", "", "" },
-				new[] { "Left", "MouseLeft", "Right" },
+				new[] { "SliderDecrease", "MouseLeft", "SliderIncrease" },
 				new[] { "", "", "" }
 			});
 			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageSlider}");
 			
-			// DoubleSlider page (up/down for coarse, left/right for fine)
+			// ✅ NEW: DoubleSlider page (dedicated keys for both axes)
 			Debug.WriteLine($"[Navigator] Defining page: {PageDoubleSlider}");
 			_streamDeckClient.DefinePage(PageDoubleSlider, new[] {
 				new[] { "Back", "WriteModalFilter", "WriteElementFilter" },
 				new[] { "", "", "" },
 				new[] { "", "Up", "" },
-				new[] { "Left", "MouseLeft", "Right" },
+				new[] { "SliderDecrease", "MouseLeft", "SliderIncrease" },
 				new[] { "", "Down", "" }
 			});
 			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageDoubleSlider}");
 			
-			// RoundSlider page (all 4 directions for circular control)
+			// ✅ NEW: RoundSlider page (all 4 directions with dedicated slider keys)
 			Debug.WriteLine($"[Navigator] Defining page: {PageRoundSlider}");
 			_streamDeckClient.DefinePage(PageRoundSlider, new[] {
 				new[] { "Back", "WriteModalFilter", "WriteElementFilter" },
 				new[] { "", "", "" },
 				new[] { "", "Up", "" },
-				new[] { "Left", "MouseLeft", "Right" },
+				new[] { "SliderDecrease", "MouseLeft", "SliderIncrease" },
 				new[] { "", "Down", "" }
 			});
 			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageRoundSlider}");
@@ -321,13 +325,33 @@ namespace AcManager.UiObserver
 							MoveInDirection(NavDirection.Right);
 							break;
 						case "MouseLeft":
-							Debug.WriteLine($"[Navigator] Executing ActivateFocusedNode()");
-							ActivateFocusedNode();
+							// ✅ NEW: In interaction mode, MouseLeft = Confirm (accept changes and exit)
+							if (CurrentContext?.ContextType == NavContextType.InteractiveControl)
+							{
+								Debug.WriteLine($"[Navigator] Executing ExitInteractionMode(confirm)");
+								ExitInteractionMode(revertChanges: false);  // Confirm: keep current value
+							}
+							else
+							{
+								Debug.WriteLine($"[Navigator] Executing ActivateFocusedNode()");
+								ActivateFocusedNode();
+							}
 							break;
 						case "Back":
 							Debug.WriteLine($"[Navigator] Executing ExitGroup()");
 							ExitGroup();
 							break;
+						
+						// ✅ NEW: Slider adjustment keys
+						case "SliderDecrease":
+							Debug.WriteLine($"[Navigator] Executing AdjustSliderValue(Left)");
+							AdjustSliderValue(NavDirection.Left);
+							break;
+						case "SliderIncrease":
+							Debug.WriteLine($"[Navigator] Executing AdjustSliderValue(Right)");
+							AdjustSliderValue(NavDirection.Right);
+							break;
+						
 						// Discovery keys
 						case "WriteModalFilter":
 							Debug.WriteLine($"[Navigator] Executing WriteModalFilterToDiscovery()");
@@ -704,7 +728,7 @@ namespace AcManager.UiObserver
 		}
 
 		#endregion
-
+		
 		#region StreamDeck Page Switching
 
 		/// <summary>
