@@ -122,9 +122,13 @@ namespace AcManager.UiObserver
 			_streamDeckClient.DefineKey("Right", null, GetIconPath(icons, "Right"));
 			_streamDeckClient.DefineKey("MouseLeft", null, GetIconPath(icons, "Mouse Left"));
 			
-			// ✅ NEW: Define slider adjustment keys (use same icons as Left/Right)
+			// ✅ Slider value adjustment keys (use Left/Right icons for now)
 			_streamDeckClient.DefineKey("SliderDecrease", null, GetIconPath(icons, "Left"));
 			_streamDeckClient.DefineKey("SliderIncrease", null, GetIconPath(icons, "Right"));
+			
+			// ✅ NEW: Slider range adjustment keys (use Up/Down icons for now)
+			_streamDeckClient.DefineKey("SliderRangeDecrease", null, GetIconPath(icons, "Down"));
+			_streamDeckClient.DefineKey("SliderRangeIncrease", null, GetIconPath(icons, "Up"));
 			
 			// Define built-in discovery keys
 			_streamDeckClient.DefineKey("WriteModalFilter", "Modal", null);
@@ -219,7 +223,7 @@ namespace AcManager.UiObserver
 			});
 			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageUpDown}");
 			
-			// ✅ NEW: Slider page (dedicated slider adjustment keys)
+			// ✅ Slider page (value adjustment only, no range)
 			Debug.WriteLine($"[Navigator] Defining page: {PageSlider}");
 			_streamDeckClient.DefinePage(PageSlider, new[] {
 				new[] { "Back", "WriteModalFilter", "WriteElementFilter" },
@@ -230,25 +234,25 @@ namespace AcManager.UiObserver
 			});
 			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageSlider}");
 			
-			// ✅ NEW: DoubleSlider page (dedicated keys for both axes)
+			// ✅ DoubleSlider page (value + range adjustment)
 			Debug.WriteLine($"[Navigator] Defining page: {PageDoubleSlider}");
 			_streamDeckClient.DefinePage(PageDoubleSlider, new[] {
 				new[] { "Back", "WriteModalFilter", "WriteElementFilter" },
 				new[] { "", "", "" },
-				new[] { "", "Up", "" },
+				new[] { "", "SliderRangeIncrease", "" },
 				new[] { "SliderDecrease", "MouseLeft", "SliderIncrease" },
-				new[] { "", "Down", "" }
+				new[] { "", "SliderRangeDecrease", "" }
 			});
 			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageDoubleSlider}");
 			
-			// ✅ NEW: RoundSlider page (all 4 directions with dedicated slider keys)
+			// ✅ RoundSlider page (value adjustment only, circular slider doesn't have range)
 			Debug.WriteLine($"[Navigator] Defining page: {PageRoundSlider}");
 			_streamDeckClient.DefinePage(PageRoundSlider, new[] {
 				new[] { "Back", "WriteModalFilter", "WriteElementFilter" },
 				new[] { "", "", "" },
-				new[] { "", "Up", "" },
+				new[] { "", "", "" },
 				new[] { "SliderDecrease", "MouseLeft", "SliderIncrease" },
-				new[] { "", "Down", "" }
+				new[] { "", "", "" }
 			});
 			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageRoundSlider}");
 			
@@ -287,18 +291,14 @@ namespace AcManager.UiObserver
 		/// </summary>
 		private static void OnStreamDeckKeyPressed(object sender, SDPKeyPressEventArgs e)
 		{
-			Debug.WriteLine($"[Navigator] OnStreamDeckKeyPressed ENTRY: KeyName={e.KeyName}");
-			Debug.WriteLine($"[Navigator] OnStreamDeckKeyPressed: Sender={sender?.GetType().Name ?? "null"}");
-			Debug.WriteLine($"[Navigator] OnStreamDeckKeyPressed: Application.Current={Application.Current != null}");
-			
 			Debug.WriteLine($"[Navigator] StreamDeck key pressed: {e.KeyName}");
 			
 			// Marshal to UI thread (StreamDeck events fire on background thread)
 			Application.Current?.Dispatcher.BeginInvoke(new Action(() => {
 				try {
-					Debug.WriteLine($"[Navigator] OnStreamDeckKeyPressed: Executing on UI thread for '{e.KeyName}'");
+					Debug.WriteLine($"[Navigator] Executing command for '{e.KeyName}' on UI thread");
 					
-					// ✅ NEW: Check if this is a shortcut key first
+					// ✅ Check if this is a shortcut key first
 					if (_shortcutsByKey.ContainsKey(e.KeyName))
 					{
 						Debug.WriteLine($"[Navigator] Executing shortcut key: {e.KeyName}");
@@ -306,74 +306,70 @@ namespace AcManager.UiObserver
 						return;
 					}
 					
-					// Built-in navigation keys
+					// ✅ Built-in keys - each has ONE purpose, no context checking
 					switch (e.KeyName) {
+						// Navigation keys - ALWAYS navigate
 						case "Up":
-							Debug.WriteLine($"[Navigator] Executing MoveInDirection(Up)");
 							MoveInDirection(NavDirection.Up);
 							break;
 						case "Down":
-							Debug.WriteLine($"[Navigator] Executing MoveInDirection(Down)");
 							MoveInDirection(NavDirection.Down);
 							break;
 						case "Left":
-							Debug.WriteLine($"[Navigator] Executing MoveInDirection(Left)");
 							MoveInDirection(NavDirection.Left);
 							break;
 						case "Right":
-							Debug.WriteLine($"[Navigator] Executing MoveInDirection(Right)");
 							MoveInDirection(NavDirection.Right);
 							break;
+						
+						// Activation key - context-aware (Confirm in interaction mode, Activate otherwise)
 						case "MouseLeft":
-							// ✅ NEW: In interaction mode, MouseLeft = Confirm (accept changes and exit)
 							if (CurrentContext?.ContextType == NavContextType.InteractiveControl)
-							{
-								Debug.WriteLine($"[Navigator] Executing ExitInteractionMode(confirm)");
-								ExitInteractionMode(revertChanges: false);  // Confirm: keep current value
-							}
+								ExitInteractionMode(revertChanges: false);  // Confirm
 							else
-							{
-								Debug.WriteLine($"[Navigator] Executing ActivateFocusedNode()");
 								ActivateFocusedNode();
-							}
-							break;
-						case "Back":
-							Debug.WriteLine($"[Navigator] Executing ExitGroup()");
-							ExitGroup();
 							break;
 						
-						// ✅ NEW: Slider adjustment keys
+						// Exit key - context-aware (Cancel in interaction mode, Close otherwise)
+						case "Back":
+							ExitGroup();  // Already handles interaction mode internally
+							break;
+						
+						// Slider value adjustment keys - ALWAYS adjust value
 						case "SliderDecrease":
-							Debug.WriteLine($"[Navigator] Executing AdjustSliderValue(Left)");
-							AdjustSliderValue(NavDirection.Left);
+							AdjustSliderValue(SliderAdjustment.SmallDecrement);
 							break;
 						case "SliderIncrease":
-							Debug.WriteLine($"[Navigator] Executing AdjustSliderValue(Right)");
-							AdjustSliderValue(NavDirection.Right);
+							AdjustSliderValue(SliderAdjustment.SmallIncrement);
+							break;
+						
+						// Slider range adjustment keys - ALWAYS adjust range
+						case "SliderRangeDecrease":
+							AdjustSliderRange(SliderAdjustment.SmallDecrement);
+							break;
+						case "SliderRangeIncrease":
+							AdjustSliderRange(SliderAdjustment.SmallIncrement);
 							break;
 						
 						// Discovery keys
 						case "WriteModalFilter":
-							Debug.WriteLine($"[Navigator] Executing WriteModalFilterToDiscovery()");
 							WriteModalFilterToDiscovery();
 							break;
 						case "WriteElementFilter":
-							Debug.WriteLine($"[Navigator] Executing WriteElementFilterToDiscovery()");
 							WriteElementFilterToDiscovery();
 							break;
+						
 						default:
 							Debug.WriteLine($"[Navigator] Unknown key: {e.KeyName}");
 							break;
 					}
 					
-					Debug.WriteLine($"[Navigator] OnStreamDeckKeyPressed: Command completed for '{e.KeyName}'");
+					Debug.WriteLine($"[Navigator] Command completed for '{e.KeyName}'");
 				} catch (Exception ex) {
 					Debug.WriteLine($"[Navigator] StreamDeck command error: {ex.Message}");
-					Debug.WriteLine($"[Navigator] StreamDeck command stack trace: {ex.StackTrace}");
+					Debug.WriteLine($"[Navigator] Stack trace: {ex.StackTrace}");
 				}
 			}), DispatcherPriority.Input);
-			
-			Debug.WriteLine($"[Navigator] OnStreamDeckKeyPressed: Dispatched to UI thread for '{e.KeyName}'");
 		}
 
 		/// <summary>

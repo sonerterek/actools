@@ -972,21 +972,22 @@ namespace AcManager.UiObserver
             try {
                 // ✅ Interactive controls - enter interaction mode
                 // Sliders need special handling to enter a focused adjustment mode
+                // NOTE: Don't pass pageName - let EnterInteractionMode() detect it via GetBuiltInPageForControl()
                 if (fe is Slider)
                 {
-                    return Navigator.EnterInteractionMode(this, "Slider");
+                    return Navigator.EnterInteractionMode(this);  // Removed "Slider" parameter
                 }
                 
                 var typeName = fe.GetType().Name;
                 
                 if (typeName == "DoubleSlider")
                 {
-                    return Navigator.EnterInteractionMode(this, "DoubleSlider");
+                    return Navigator.EnterInteractionMode(this);  // Removed "DoubleSlider" parameter
                 }
                 
                 if (typeName == "RoundSlider")
                 {
-                    return Navigator.EnterInteractionMode(this, "RoundSlider");
+                    return Navigator.EnterInteractionMode(this);  // Removed "RoundSlider" parameter
                 }
                 
                 // ✅ Single-action controls - use mouse click simulation

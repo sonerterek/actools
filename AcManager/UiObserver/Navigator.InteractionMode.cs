@@ -243,8 +243,8 @@ namespace AcManager.UiObserver
 		/// Only works when in InteractiveControl context (slider interaction mode).
 		/// Supports Slider, DoubleSlider, and RoundSlider types.
 		/// </summary>
-		/// <param name="direction">Direction to adjust (Left/Right for horizontal, Up/Down for vertical)</param>
-		private static void AdjustSliderValue(NavDirection direction)
+		/// <param name="adjustment">The adjustment operation to perform</param>
+		private static void AdjustSliderValue(SliderAdjustment adjustment)
 		{
 			if (CurrentContext?.ContextType != NavContextType.InteractiveControl)
 			{
@@ -259,14 +259,14 @@ namespace AcManager.UiObserver
 				return;
 			}
 			
-			Debug.WriteLine($"[Navigator] AdjustSliderValue: Adjusting {fe.GetType().Name} in direction {direction}");
+			Debug.WriteLine($"[Navigator] AdjustSliderValue: Adjusting {fe.GetType().Name} with {adjustment}");
 			
 			try
 			{
 				// Handle standard WPF Slider
 				if (fe is Slider slider)
 				{
-					AdjustStandardSlider(slider, direction);
+					AdjustStandardSlider(slider, adjustment);
 					return;
 				}
 				
@@ -275,13 +275,13 @@ namespace AcManager.UiObserver
 				
 				if (typeName == "DoubleSlider")
 				{
-					AdjustDoubleSlider(fe, direction);
+					AdjustDoubleSliderValue(fe, adjustment);
 					return;
 				}
 				
 				if (typeName == "RoundSlider")
 				{
-					AdjustRoundSlider(fe, direction);
+					AdjustRoundSlider(fe, adjustment);
 					return;
 				}
 				
@@ -294,78 +294,192 @@ namespace AcManager.UiObserver
 		}
 
 		/// <summary>
-		/// Adjusts a standard WPF Slider control.
-		/// Supports Left/Right directions only (horizontal slider).
+		/// Adjusts the range (min/max bounds) of a DoubleSlider control.
+		/// Only works when in InteractiveControl context with a DoubleSlider.
 		/// </summary>
-		private static void AdjustStandardSlider(Slider slider, NavDirection direction)
+		/// <param name="adjustment">The adjustment operation to perform</param>
+		private static void AdjustSliderRange(SliderAdjustment adjustment)
 		{
-			var step = slider.LargeChange > 0 ? slider.LargeChange : slider.SmallChange;
-			var oldValue = slider.Value;
+			if (CurrentContext?.ContextType != NavContextType.InteractiveControl)
+			{
+				Debug.WriteLine("[Navigator] AdjustSliderRange: Not in interaction mode");
+				return;
+			}
 			
-			if (direction == NavDirection.Left)
-				slider.Value = Math.Max(slider.Minimum, slider.Value - step);
-			else if (direction == NavDirection.Right)
-				slider.Value = Math.Min(slider.Maximum, slider.Value + step);
+			var control = CurrentContext.ScopeNode;
+			if (!control.TryGetVisual(out var fe))
+			{
+				Debug.WriteLine("[Navigator] AdjustSliderRange: Visual reference dead");
+				return;
+			}
 			
-			Debug.WriteLine($"[Navigator] Slider adjusted: {oldValue:F2} ? {slider.Value:F2} (step={step:F2})");
+			var typeName = fe.GetType().Name;
+			if (typeName != "DoubleSlider")
+			{
+				Debug.WriteLine($"[Navigator] AdjustSliderRange: Only DoubleSlider supports range adjustment (got '{typeName}')");
+				return;
+			}
+			
+			Debug.WriteLine($"[Navigator] AdjustSliderRange: Adjusting DoubleSlider range with {adjustment}");
+			
+			try
+			{
+				AdjustDoubleSliderRange(fe, adjustment);
+			}
+			catch (Exception ex)
+			{
+				Debug.WriteLine($"[Navigator] AdjustSliderRange ERROR: {ex.Message}");
+			}
 		}
 
 		/// <summary>
-		/// Adjusts a DoubleSlider control (custom control with dual adjustment modes).
-		/// Up/Down = coarse adjustment (LargeChange)
-		/// Left/Right = fine adjustment (SmallChange)
+		/// Adjusts a standard WPF Slider control.
+		/// Uses proportional adjustment: 10% of the slider's total range.
 		/// </summary>
-		private static void AdjustDoubleSlider(FrameworkElement element, NavDirection direction)
+		private static void AdjustStandardSlider(Slider slider, SliderAdjustment adjustment)
+		{
+			var totalRange = Math.Abs(slider.Maximum - slider.Minimum);
+			var adjustmentStep = totalRange * 0.10; // 10% of total range
+			var oldValue = slider.Value;
+			
+			switch (adjustment)
+			{
+				case SliderAdjustment.SmallIncrement:
+					slider.Value = Math.Min(slider.Maximum, slider.Value + adjustmentStep);
+					break;
+				case SliderAdjustment.SmallDecrement:
+					slider.Value = Math.Max(slider.Minimum, slider.Value - adjustmentStep);
+					break;
+			}
+			
+			Debug.WriteLine($"[Navigator] Slider adjusted: {oldValue:F2} ? {slider.Value:F2} (step={adjustmentStep:F2} [10% of {totalRange:F2}], {adjustment})");
+		}
+
+		/// <summary>
+		/// Adjusts a DoubleSlider's value (within current From/To range).
+		/// Uses proportional adjustment: 10% of the slider's TOTAL range (Maximum - Minimum).
+		/// </summary>
+		private static void AdjustDoubleSliderValue(FrameworkElement element, SliderAdjustment adjustment)
 		{
 			var valueProperty = element.GetType().GetProperty("Value");
+			var fromProperty = element.GetType().GetProperty("From");
+			var toProperty = element.GetType().GetProperty("To");
 			var minProperty = element.GetType().GetProperty("Minimum");
 			var maxProperty = element.GetType().GetProperty("Maximum");
-			var largeChangeProperty = element.GetType().GetProperty("LargeChange");
-			var smallChangeProperty = element.GetType().GetProperty("SmallChange");
 			
-			if (valueProperty == null || minProperty == null || maxProperty == null)
+			if (valueProperty == null || fromProperty == null || toProperty == null || minProperty == null || maxProperty == null)
 				return;
 			
 			var currentValue = (double)valueProperty.GetValue(element);
-			var min = (double)minProperty.GetValue(element);
-			var max = (double)maxProperty.GetValue(element);
+			var currentFrom = (double)fromProperty.GetValue(element);
+			var currentTo = (double)toProperty.GetValue(element);
+			var absoluteMin = (double)minProperty.GetValue(element);
+			var absoluteMax = (double)maxProperty.GetValue(element);
 			
-			// Use LargeChange for Up/Down (coarse), SmallChange for Left/Right (fine)
-			double step;
-			if (direction == NavDirection.Up || direction == NavDirection.Down)
-			{
-				// Coarse adjustment
-				step = largeChangeProperty != null ? (double)largeChangeProperty.GetValue(element) : 1.0;
-			}
-			else
-			{
-				// Fine adjustment
-				step = smallChangeProperty != null ? (double)smallChangeProperty.GetValue(element) : 0.1;
-			}
+			// ? Calculate adjustment as 10% of TOTAL possible range (Maximum - Minimum)
+			var totalRange = Math.Abs(absoluteMax - absoluteMin);
+			var adjustmentStep = Math.Max(0.1, totalRange * 0.10);
 			
-			// Calculate new value
 			double newValue = currentValue;
-			if (direction == NavDirection.Left || direction == NavDirection.Down)
-				newValue = Math.Max(min, currentValue - step);
-			else if (direction == NavDirection.Right || direction == NavDirection.Up)
-				newValue = Math.Min(max, currentValue + step);
+			switch (adjustment)
+			{
+				case SliderAdjustment.SmallIncrement:
+					newValue = Math.Min(currentTo, currentValue + adjustmentStep);
+					break;
+				case SliderAdjustment.SmallDecrement:
+					newValue = Math.Max(currentFrom, currentValue - adjustmentStep);
+					break;
+			}
 			
 			valueProperty.SetValue(element, newValue);
-			Debug.WriteLine($"[Navigator] DoubleSlider adjusted: {currentValue:F2} ? {newValue:F2} (step={step:F2}, mode={((direction == NavDirection.Up || direction == NavDirection.Down) ? "coarse" : "fine")})");
+			Debug.WriteLine($"[Navigator] DoubleSlider value adjusted: {currentValue:F2} ? {newValue:F2} (step={adjustmentStep:F2} [10% of total range {totalRange:F2}], current from/to: [{currentFrom:F2}, {currentTo:F2}], {adjustment})");
+		}
+
+		/// <summary>
+		/// Adjusts a DoubleSlider's range (From/To bounds).
+		/// Uses proportional adjustment: 5% of the slider's TOTAL range (Maximum - Minimum).
+		/// Adjusts both From and To symmetrically to expand/contract the range around the current value.
+		/// </summary>
+		private static void AdjustDoubleSliderRange(FrameworkElement element, SliderAdjustment adjustment)
+		{
+			var valueProperty = element.GetType().GetProperty("Value");
+			var fromProperty = element.GetType().GetProperty("From");
+			var toProperty = element.GetType().GetProperty("To");
+			var minProperty = element.GetType().GetProperty("Minimum");
+			var maxProperty = element.GetType().GetProperty("Maximum");
+			
+			if (valueProperty == null || fromProperty == null || toProperty == null || minProperty == null || maxProperty == null)
+				return;
+			
+			var currentValue = (double)valueProperty.GetValue(element);
+			var currentFrom = (double)fromProperty.GetValue(element);
+			var currentTo = (double)toProperty.GetValue(element);
+			var absoluteMin = (double)minProperty.GetValue(element);
+			var absoluteMax = (double)maxProperty.GetValue(element);
+			
+			// ? Calculate adjustment as 5% of TOTAL possible range (Maximum - Minimum)
+			var totalRange = Math.Abs(absoluteMax - absoluteMin);
+			var rangeStep = Math.Max(0.1, totalRange * 0.05);
+			
+			double newFrom = currentFrom;
+			double newTo = currentTo;
+			
+			switch (adjustment)
+			{
+				case SliderAdjustment.SmallIncrement:
+					// Expand range symmetrically around current value
+					// Move From down (but not below absoluteMin)
+					newFrom = Math.Max(absoluteMin, currentFrom - rangeStep);
+					// Move To up (but not above absoluteMax)
+					newTo = Math.Min(absoluteMax, currentTo + rangeStep);
+					
+					Debug.WriteLine($"[Navigator] DoubleSlider range expanded: from {currentFrom:F2} ? {newFrom:F2}, to {currentTo:F2} ? {newTo:F2} (step={rangeStep:F2} [5% of {totalRange:F2}], bounds: [{absoluteMin:F2}, {absoluteMax:F2}])");
+					break;
+					
+				case SliderAdjustment.SmallDecrement:
+					// Contract range symmetrically toward current value
+					// Move From up (but not past currentValue - rangeStep)
+					newFrom = Math.Min(currentValue - rangeStep, currentFrom + rangeStep);
+					// Ensure From doesn't go past absoluteMax or currentValue
+					newFrom = Math.Max(absoluteMin, Math.Min(newFrom, currentValue - 0.1));
+					
+					// Move To down (but not below currentValue + rangeStep)
+					newTo = Math.Max(currentValue + rangeStep, currentTo - rangeStep);
+					// Ensure To doesn't go below absoluteMin or currentValue
+					newTo = Math.Min(absoluteMax, Math.Max(newTo, currentValue + 0.1));
+					
+					Debug.WriteLine($"[Navigator] DoubleSlider range contracted: from {currentFrom:F2} ? {newFrom:F2}, to {currentTo:F2} ? {newTo:F2} (step={rangeStep:F2} [5% of {totalRange:F2}], value={currentValue:F2})");
+					break;
+			}
+			
+			// ? Only update if values actually changed
+			bool changed = false;
+			if (Math.Abs(newFrom - currentFrom) > 0.01)
+			{
+				fromProperty.SetValue(element, newFrom);
+				changed = true;
+			}
+			if (Math.Abs(newTo - currentTo) > 0.01)
+			{
+				toProperty.SetValue(element, newTo);
+				changed = true;
+			}
+			
+			if (!changed)
+			{
+				Debug.WriteLine($"[Navigator] DoubleSlider range unchanged (at limits or would be too small)");
+			}
 		}
 
 		/// <summary>
 		/// Adjusts a RoundSlider control (custom circular slider).
-		/// All 4 directions supported: Right/Up = increase, Left/Down = decrease
-		/// Up/Down = LargeChange, Left/Right = SmallChange
+		/// Uses proportional adjustment: 10% of the slider's total range.
 		/// </summary>
-		private static void AdjustRoundSlider(FrameworkElement element, NavDirection direction)
+		private static void AdjustRoundSlider(FrameworkElement element, SliderAdjustment adjustment)
 		{
 			var valueProperty = element.GetType().GetProperty("Value");
 			var minProperty = element.GetType().GetProperty("Minimum");
 			var maxProperty = element.GetType().GetProperty("Maximum");
-			var largeChangeProperty = element.GetType().GetProperty("LargeChange");
-			var smallChangeProperty = element.GetType().GetProperty("SmallChange");
 			
 			if (valueProperty == null || minProperty == null || maxProperty == null)
 				return;
@@ -374,26 +488,23 @@ namespace AcManager.UiObserver
 			var min = (double)minProperty.GetValue(element);
 			var max = (double)maxProperty.GetValue(element);
 			
-			// Use LargeChange for Up/Down, SmallChange for Left/Right
-			double step;
-			if (direction == NavDirection.Up || direction == NavDirection.Down)
-			{
-				step = largeChangeProperty != null ? (double)largeChangeProperty.GetValue(element) : 1.0;
-			}
-			else
-			{
-				step = smallChangeProperty != null ? (double)smallChangeProperty.GetValue(element) : 0.1;
-			}
+			// Calculate adjustment as 10% of total range
+			var totalRange = Math.Abs(max - min);
+			var adjustmentStep = totalRange * 0.10;
 			
-			// RoundSlider semantics: Right/Up = increase, Left/Down = decrease
 			double newValue = currentValue;
-			if (direction == NavDirection.Left || direction == NavDirection.Down)
-				newValue = Math.Max(min, currentValue - step);
-			else if (direction == NavDirection.Right || direction == NavDirection.Up)
-				newValue = Math.Min(max, currentValue + step);
+			switch (adjustment)
+			{
+				case SliderAdjustment.SmallIncrement:
+					newValue = Math.Min(max, currentValue + adjustmentStep);
+					break;
+				case SliderAdjustment.SmallDecrement:
+					newValue = Math.Max(min, currentValue - adjustmentStep);
+					break;
+			}
 			
 			valueProperty.SetValue(element, newValue);
-			Debug.WriteLine($"[Navigator] RoundSlider adjusted: {currentValue:F2} ? {newValue:F2} (step={step:F2})");
+			Debug.WriteLine($"[Navigator] RoundSlider adjusted: {currentValue:F2} ? {newValue:F2} (step={adjustmentStep:F2} [10% of {totalRange:F2}], {adjustment})");
 		}
 
 		#endregion
@@ -401,48 +512,35 @@ namespace AcManager.UiObserver
 		#region StreamDeck Page Mapping
 
 		/// <summary>
-		/// Determines the optimal built-in StreamDeck page for a given control type.
-		/// Returns null if no special page is needed (use default Navigation page).
-		/// 
-		/// This is separate from config-based page mapping (which has higher priority).
+		/// Gets the appropriate built-in StreamDeck page for a control type.
+		/// Returns null if no specific page mapping exists (caller should use default).
 		/// </summary>
 		private static string GetBuiltInPageForControl(FrameworkElement element)
 		{
-			if (element == null) return null;
-			
 			var typeName = element.GetType().Name;
 			
-			// ? Slider family - optimize for value adjustment
-			if (element is Slider)
-				return "Slider";  // Left/Right only
+			Debug.WriteLine($"[Navigator] GetBuiltInPageForControl: typeName='{typeName}'");
 			
 			if (typeName == "DoubleSlider")
-				return "DoubleSlider";  // Vertical coarse + Horizontal fine
+			{
+				Debug.WriteLine($"[Navigator] GetBuiltInPageForControl: Returning 'DoubleSlider' page");
+				return "DoubleSlider";
+			}
 			
 			if (typeName == "RoundSlider")
-				return "RoundSlider";  // All 4 directions (circular)
+			{
+				Debug.WriteLine($"[Navigator] GetBuiltInPageForControl: Returning 'RoundSlider' page");
+				return "RoundSlider";
+			}
 			
-			// ? Menu items - optimize for vertical navigation
-			if (element is System.Windows.Controls.MenuItem)
-				return "UpDown";  // Up/Down only
+			if (typeName == "Slider" || typeName == "FormattedSlider")
+			{
+				Debug.WriteLine($"[Navigator] GetBuiltInPageForControl: Returning 'Slider' page");
+				return "Slider";
+			}
 			
-			// ? List items - context-dependent
-			// (You might want to use UpDown for long lists, Navigation for grids)
-			// For now, return null and use default Navigation page
-			if (element is System.Windows.Controls.ListBoxItem)
-				return null;
-			
-			// ? Future control types:
-			// if (element is ComboBox comboBox && comboBox.IsDropDownOpen)
-			//     return "UpDown";  // Dropdown is vertical
-			//
-			// if (element is TreeViewItem)
-			//     return "TreeNav";  // Custom tree navigation page
-			//
-			// if (element is DataGridCell)
-			//     return "GridNav";  // Custom grid navigation page
-			
-			return null;  // Use default Navigation page
+			Debug.WriteLine($"[Navigator] GetBuiltInPageForControl: No specific page for '{typeName}', returning null");
+			return null;
 		}
 
 		#endregion

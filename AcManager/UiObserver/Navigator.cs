@@ -15,6 +15,19 @@ namespace AcManager.UiObserver
 	internal enum NavDirection { Up, Down, Left, Right }
 
 	/// <summary>
+	/// Slider adjustment operations (independent of navigation directions).
+	/// Used for adjusting slider values and ranges without directional coupling.
+	/// </summary>
+	internal enum SliderAdjustment
+	{
+		SmallIncrement,
+		SmallDecrement
+		// Future extensions:
+		// LargeIncrement,
+		// LargeDecrement
+	}
+
+	/// <summary>
 	/// Describes the source and behavior of a navigation context.
 	/// Different context types have different scope resolution rules.
 	/// </summary>
