@@ -15,7 +15,36 @@ namespace AcManager.UiObserver
 	internal enum NavDirection { Up, Down, Left, Right }
 
 	/// <summary>
-	/// Represents a navigation context within the modal hierarchy.
+	/// Describes the source and behavior of a navigation context.
+	/// Different context types have different scope resolution rules.
+	/// </summary>
+	internal enum NavContextType
+	{
+		/// <summary>
+		/// Root window context (MainWindow).
+		/// Scope: All descendants of the window.
+		/// Lifecycle: Managed by Observer (window lifecycle).
+		/// </summary>
+		RootWindow,
+		
+		/// <summary>
+		/// Modal dialog or popup context (SelectCarDialog, ContextMenu, PopupRoot, etc.).
+		/// Scope: All descendants of the popup/dialog.
+		/// Lifecycle: Managed by Observer (ModalGroupOpened/Closed events).
+		/// </summary>
+		ModalDialog,
+		
+		/// <summary>
+		/// Interactive control context (Slider, DoubleSlider, RoundSlider, etc.).
+		/// Scope: Only the control itself (single element).
+		/// Lifecycle: Managed by Navigator (EnterInteractionMode/ExitInteractionMode).
+		/// Future: Could be extended for ComboBox dropdowns, menu submenus, etc.
+		/// </summary>
+		InteractiveControl
+	}
+
+	/// <summary>
+	/// Represents a navigation context within the context hierarchy.
 	/// Each context bundles a scope (the root node defining the context)
 	/// with the currently focused node within that scope.
 	/// </summary>
@@ -24,10 +53,15 @@ namespace AcManager.UiObserver
 		/// <summary>
 		/// The scope node that defines this context's boundaries.
 		/// For modal contexts, this is the Window/Popup/PopupRoot.
-		/// For future interaction modes, this could be a single control.
+		/// For interaction mode contexts, this is a single control (Slider, etc.).
 		/// Never null.
 		/// </summary>
 		public NavNode ScopeNode { get; }
+		
+		/// <summary>
+		/// The type of this context, which determines scope resolution behavior.
+		/// </summary>
+		public NavContextType ContextType { get; }
 		
 		/// <summary>
 		/// Currently focused node within this context.
@@ -35,9 +69,10 @@ namespace AcManager.UiObserver
 		/// </summary>
 		public NavNode FocusedNode { get; set; }
 		
-		public NavContext(NavNode scopeNode, NavNode focusedNode = null)
+		public NavContext(NavNode scopeNode, NavContextType contextType, NavNode focusedNode = null)
 		{
 			ScopeNode = scopeNode ?? throw new ArgumentNullException(nameof(scopeNode));
+			ContextType = contextType;
 			FocusedNode = focusedNode;
 		}
 	}
@@ -335,10 +370,14 @@ namespace AcManager.UiObserver
 
 			Debug.WriteLine($"[Navigator] Context has {children.Count} navigable children - creating navigation context");
 
+			// ✅ NEW: Determine context type based on scope node
+			var contextType = DetermineModalContextType(scopeNode);
+			
 			// Create context FIRST (so GetCandidatesInScope works correctly)
-			_contextStack.Add(new NavContext(scopeNode, focusedNode: null));
+			_contextStack.Add(new NavContext(scopeNode, contextType, focusedNode: null));
 			var contextDepth = _contextStack.Count;
 			Debug.WriteLine($"[Navigator] Context stack depth: {contextDepth}");
+			Debug.WriteLine($"[Navigator] Context type: {contextType}");
 
 			// ✓ NEW: Switch StreamDeck page based on modal type
 			SwitchStreamDeckPageForModal(scopeNode);
@@ -389,6 +428,24 @@ namespace AcManager.UiObserver
 				Debug.WriteLine($"[Navigator] WARNING: Visual reference dead for newly opened context, initializing immediately");
 				TryInitializeFocusIfNeeded();
 			}
+		}
+
+		/// <summary>
+		/// Determines the context type for an Observer-discovered modal.
+		/// MainWindow is special - it's the root context.
+		/// All other Observer-discovered modals are dialogs/popups.
+		/// </summary>
+		private static NavContextType DetermineModalContextType(NavNode scopeNode)
+		{
+			if (!scopeNode.TryGetVisual(out var element))
+				return NavContextType.ModalDialog; // Safe default
+		
+			// MainWindow is special - it's the root context
+			if (element is Window window && window == Application.Current.MainWindow)
+				return NavContextType.RootWindow;
+		
+			// All other Observer-discovered modals are dialogs/popups
+			return NavContextType.ModalDialog;
 		}
 
 		private static void OnModalGroupClosed(NavNode scopeNode)
@@ -1196,15 +1253,37 @@ namespace AcManager.UiObserver
 
 		/// <summary>
 		/// Checks if a node is within the current active context scope.
-		/// Delegates to IsDescendantOf() for consistency.
+		/// Scope resolution depends on the context type:
+		/// - RootWindow: All descendants
+		/// - ModalDialog: All descendants
+		/// - InteractiveControl: Only the control itself (single element)
 		/// </summary>
 		internal static bool IsInActiveModalScope(NavNode node)
 		{
 			if (CurrentContext == null) return true;
 			if (node == null) return false;
 
-			// Reuse IsDescendantOf() - single source of truth for hierarchy checks
-			return IsDescendantOf(node, CurrentContext.ScopeNode);
+			// ✅ Type-specific scope resolution
+			switch (CurrentContext.ContextType)
+			{
+				case NavContextType.RootWindow:
+					// Root window - everything is in scope (descendants)
+					return IsDescendantOf(node, CurrentContext.ScopeNode);
+				
+				case NavContextType.ModalDialog:
+					// Modal dialog - descendants are in scope
+					return IsDescendantOf(node, CurrentContext.ScopeNode);
+				
+				case NavContextType.InteractiveControl:
+					// Interactive control - ONLY the control itself is in scope
+					// This restricts navigation to just the slider/control being interacted with
+					return ReferenceEquals(node, CurrentContext.ScopeNode);
+				
+				default:
+					// Unknown type - fail safe to descendant check
+					Debug.WriteLine($"[Navigator] WARNING: Unknown context type: {CurrentContext.ContextType}");
+					return IsDescendantOf(node, CurrentContext.ScopeNode);
+			}
 		}
 
 		internal static List<NavNode> GetCandidatesInScope()
