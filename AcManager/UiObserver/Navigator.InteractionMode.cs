@@ -398,7 +398,16 @@ namespace AcManager.UiObserver
 		/// <summary>
 		/// Adjusts a DoubleSlider's range (From/To bounds).
 		/// Uses proportional adjustment: 1% of the slider's TOTAL range (Maximum - Minimum).
-		/// Adjusts both From and To symmetrically to expand/contract the range around the current value.
+		/// 
+		/// SIMPLE BOUNDARY HANDLING:
+		/// - Expand: Increase To by rangeStep, decrease From by rangeStep independently
+		///   - If one hits limit, it stops but the other continues normally
+		/// - Contract: Move boundaries toward Value by rangeStep
+		///   - If asymmetric (one at limit), only move the side that's further away
+		/// 
+		/// ✅ USES FROM/TO DIRECTLY: Sets From and To properties directly.
+		///    In FromToFixed mode, this will cause Value to auto-center between From and To.
+		///    This is the INTENDED BEHAVIOR of FromToFixed mode.
 		/// </summary>
 		private static void AdjustDoubleSliderRange(FrameworkElement element, SliderAdjustment adjustment)
 		{
@@ -408,8 +417,12 @@ namespace AcManager.UiObserver
 			var minProperty = element.GetType().GetProperty("Minimum");
 			var maxProperty = element.GetType().GetProperty("Maximum");
 			
-			if (valueProperty == null || fromProperty == null || toProperty == null || minProperty == null || maxProperty == null)
+			if (valueProperty == null || fromProperty == null || toProperty == null || 
+			    minProperty == null || maxProperty == null)
+			{
+				Debug.WriteLine("[Navigator] AdjustDoubleSliderRange: Required properties not found");
 				return;
+			}
 			
 			var currentValue = (double)valueProperty.GetValue(element);
 			var currentFrom = (double)fromProperty.GetValue(element);
@@ -417,7 +430,7 @@ namespace AcManager.UiObserver
 			var absoluteMin = (double)minProperty.GetValue(element);
 			var absoluteMax = (double)maxProperty.GetValue(element);
 			
-			// ✅ Calculate adjustment as 1% of TOTAL possible range (Maximum - Minimum)
+			// Calculate adjustment as 1% of TOTAL possible range
 			var totalRange = Math.Abs(absoluteMax - absoluteMin);
 			var rangeStep = Math.Max(0.1, totalRange * 0.01);
 			
@@ -427,47 +440,96 @@ namespace AcManager.UiObserver
 			switch (adjustment)
 			{
 				case SliderAdjustment.SmallIncrement:
-					// Expand range symmetrically around current value
-					// Move From down (but not below absoluteMin)
+					// ✅ EXPAND: Move both boundaries independently
+					// From moves down by rangeStep (or until it hits absoluteMin)
 					newFrom = Math.Max(absoluteMin, currentFrom - rangeStep);
-					// Move To up (but not above absoluteMax)
+					
+					// To moves up by rangeStep (or until it hits absoluteMax)
 					newTo = Math.Min(absoluteMax, currentTo + rangeStep);
 					
-					Debug.WriteLine($"[Navigator] DoubleSlider range expanded: from {currentFrom:F2} → {newFrom:F2}, to {currentTo:F2} → {newTo:F2} (step={rangeStep:F2} [1% of {totalRange:F2}], bounds: [{absoluteMin:F2}, {absoluteMax:F2}])");
+					Debug.WriteLine($"[Navigator] DoubleSlider range EXPANDED: " +
+						$"From {currentFrom:F2}→{newFrom:F2}, To {currentTo:F2}→{newTo:F2} " +
+						$"(step={rangeStep:F2}, bounds=[{absoluteMin:F2}, {absoluteMax:F2}])");
 					break;
 					
 				case SliderAdjustment.SmallDecrement:
-					// Contract range symmetrically toward current value
-					// Move From up (but not past currentValue - rangeStep)
-					newFrom = Math.Min(currentValue - rangeStep, currentFrom + rangeStep);
-					// Ensure From doesn't go past absoluteMax or currentValue
-					newFrom = Math.Max(absoluteMin, Math.Min(newFrom, currentValue - 0.1));
+					// ✅ CONTRACT: Move boundaries toward Value
 					
-					// Move To down (but not below currentValue + rangeStep)
-					newTo = Math.Max(currentValue + rangeStep, currentTo - rangeStep);
-					// Ensure To doesn't go below absoluteMin or currentValue
-					newTo = Math.Min(absoluteMax, Math.Max(newTo, currentValue + 0.1));
+					// Check if we're in an asymmetric state (one boundary at limit)
+					bool fromAtLimit = (currentFrom <= absoluteMin + 0.01);
+					bool toAtLimit = (currentTo >= absoluteMax - 0.01);
 					
-					Debug.WriteLine($"[Navigator] DoubleSlider range contracted: from {currentFrom:F2} → {newFrom:F2}, to {currentTo:F2} → {newTo:F2} (step={rangeStep:F2} [1% of {totalRange:F2}], value={currentValue:F2})");
+					if (fromAtLimit && !toAtLimit)
+					{
+						// From is at minimum limit, only contract To
+						newTo = Math.Max(currentValue + rangeStep, currentTo - rangeStep);
+						Debug.WriteLine($"[Navigator] From at limit, only contracting To: {currentTo:F2}→{newTo:F2}");
+					}
+					else if (toAtLimit && !fromAtLimit)
+					{
+						// To is at maximum limit, only contract From
+						newFrom = Math.Min(currentValue - rangeStep, currentFrom + rangeStep);
+						Debug.WriteLine($"[Navigator] To at limit, only contracting From: {currentFrom:F2}→{newFrom:F2}");
+					}
+					else
+					{
+						// Symmetric state: move both toward Value by rangeStep
+						// From moves up (toward Value)
+						newFrom = Math.Min(currentValue - rangeStep, currentFrom + rangeStep);
+						
+						// To moves down (toward Value)
+						newTo = Math.Max(currentValue + rangeStep, currentTo - rangeStep);
+						
+						Debug.WriteLine($"[Navigator] Symmetric contraction: " +
+							$"From {currentFrom:F2}→{newFrom:F2}, To {currentTo:F2}→{newTo:F2}");
+					}
+					
+					// ✅ Enforce minimum range (prevent From and To from getting too close)
+					double minAllowedRange = rangeStep * 2;
+					if (newTo - newFrom < minAllowedRange)
+					{
+						Debug.WriteLine($"[Navigator] Range too small ({newTo - newFrom:F2} < {minAllowedRange:F2}), " +
+							$"keeping current range");
+						newFrom = currentFrom;
+						newTo = currentTo;
+					}
+					
+					Debug.WriteLine($"[Navigator] DoubleSlider range CONTRACTED: " +
+						$"[{currentFrom:F2}, {currentTo:F2}] → [{newFrom:F2}, {newTo:F2}] " +
+						$"(value={currentValue:F2})");
 					break;
 			}
 			
-			// ✅ Only update if values actually changed
+			// ✅ Apply changes using From/To properties directly
+			// In FromToFixed mode, Value will auto-center between From and To (by design)
 			bool changed = false;
+			
 			if (Math.Abs(newFrom - currentFrom) > 0.01)
 			{
 				fromProperty.SetValue(element, newFrom);
 				changed = true;
+				Debug.WriteLine($"[Navigator] Set From: {currentFrom:F2} → {newFrom:F2}");
 			}
+			
 			if (Math.Abs(newTo - currentTo) > 0.01)
 			{
 				toProperty.SetValue(element, newTo);
 				changed = true;
+				Debug.WriteLine($"[Navigator] Set To: {currentTo:F2} → {newTo:F2}");
 			}
 			
-			if (!changed)
+			if (changed)
 			{
-				Debug.WriteLine($"[Navigator] DoubleSlider range unchanged (at limits or would be too small)");
+				// Read back the actual values (Value may have auto-centered)
+				var actualFrom = (double)fromProperty.GetValue(element);
+				var actualTo = (double)toProperty.GetValue(element);
+				var actualValue = (double)valueProperty.GetValue(element);
+				
+				Debug.WriteLine($"[Navigator] Applied range: [{actualFrom:F2}, {actualTo:F2}], Value={actualValue:F2}");
+			}
+			else
+			{
+				Debug.WriteLine($"[Navigator] DoubleSlider range unchanged");
 			}
 		}
 
