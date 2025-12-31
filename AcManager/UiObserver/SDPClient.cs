@@ -150,17 +150,21 @@ namespace AcManager.UiObserver
         private readonly SemaphoreSlim _connectionLock = new SemaphoreSlim(1, 1);
         private readonly object _writeLock = new object();
 
-        // ???????????????????????????????????????????????????????????????
+        // ??????????????????????????????????????????
         // AUTHORITATIVE STATE (what SHOULD be on the plugin)
-        // ???????????????????????????????????????????????????????????????
+        // ??????????????????????????????????????????
 
         private readonly Dictionary<string, SDPKeyDef> _keys = new Dictionary<string, SDPKeyDef>();
         private readonly Dictionary<string, SDPPageDef> _pages = new Dictionary<string, SDPPageDef>();
         private string _currentPage = null;
+        
+        // ? NEW: Page navigation history
+        private readonly Stack<string> _pageHistory = new Stack<string>();
+        private const int MaxPageHistorySize = 20;
 
-        // ???????????????????????????????????????????????????????????????
+        // ??????????????????????????????????????????
         // REPLICATION STATE
-        // ???????????????????????????????????????????????????????????????
+        // ??????????????????????????????????????????
 
         private bool _isReplicaSynced = false;
         private bool _isReplicating = false;
@@ -533,6 +537,7 @@ namespace AcManager.UiObserver
         /// <summary>
         /// Switches to the specified page (fire-and-forget, synchronous).
         /// Updates authoritative state and queues for sending.
+        /// Also tracks page history for RestorePreviousPage().
         /// </summary>
         public void SwitchPage(string pageName)
         {
@@ -540,6 +545,30 @@ namespace AcManager.UiObserver
             {
                 LogError($"SwitchPage failed: pageName cannot be empty");
                 return;
+            }
+
+            // ? NEW: Track page history (only if changing to a different page)
+            if (_currentPage != null && _currentPage != pageName)
+            {
+                _pageHistory.Push(_currentPage);
+                
+                // Limit history size to prevent unbounded growth
+                if (_pageHistory.Count > MaxPageHistorySize)
+                {
+                    // Convert to list, remove oldest, convert back
+                    var list = _pageHistory.ToList();
+                    list.RemoveAt(list.Count - 1);
+                    _pageHistory.Clear();
+                    for (int i = list.Count - 1; i >= 0; i--)
+                    {
+                        _pageHistory.Push(list[i]);
+                    }
+                }
+                
+                if (SDPVerboseDebug)
+                {
+                    Debug.WriteLine($"[SDPClient] Page history: {_currentPage} ? {pageName} (depth: {_pageHistory.Count})");
+                }
             }
 
             _currentPage = pageName;
@@ -555,6 +584,65 @@ namespace AcManager.UiObserver
             {
                 Debug.WriteLine($"[SDPClient] Current page set to '{pageName}'");
             }
+        }
+        
+        /// <summary>
+        /// Restores the previous page from navigation history.
+        /// Returns true if a previous page was restored, false if history is empty.
+        /// </summary>
+        public bool RestorePreviousPage()
+        {
+            if (_pageHistory.Count == 0)
+            {
+                if (SDPVerboseDebug)
+                {
+                    Debug.WriteLine($"[SDPClient] RestorePreviousPage: No previous page in history");
+                }
+                return false;
+            }
+            
+            var previousPage = _pageHistory.Pop();
+            
+            Debug.WriteLine($"[SDPClient] Restoring previous page: '{previousPage}' (history depth: {_pageHistory.Count})");
+            
+            // Set _currentPage directly without pushing to history (we're going back)
+            _currentPage = previousPage;
+            
+            if (_isReplicaSynced)
+            {
+                SendCommandImmediate($"SwitchPage {previousPage}");
+            }
+            
+            return true;
+        }
+        
+        /// <summary>
+        /// Clears the page navigation history.
+        /// Useful when navigating to a root page where back button should be disabled.
+        /// </summary>
+        public void ClearPageHistory()
+        {
+            _pageHistory.Clear();
+            if (SDPVerboseDebug)
+            {
+                Debug.WriteLine($"[SDPClient] Page history cleared");
+            }
+        }
+        
+        /// <summary>
+        /// Gets the current page name.
+        /// </summary>
+        public string GetCurrentPage()
+        {
+            return _currentPage;
+        }
+        
+        /// <summary>
+        /// Gets the depth of the page history stack.
+        /// </summary>
+        public int GetPageHistoryDepth()
+        {
+            return _pageHistory.Count;
         }
 
         #endregion

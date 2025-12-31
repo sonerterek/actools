@@ -148,7 +148,30 @@ namespace AcManager.UiObserver
 
 						// Exit key (including Interaction mode)
 						case "Back":
-							ExitGroup(); 
+							// ✅ Check if we're at root window (MainWindow) - exit requires confirmation
+							if (CurrentContext?.ContextType == NavContextType.RootWindow)
+							{
+								RequestConfirmation(
+									description: "Exit Application",
+									onConfirm: () =>
+									{
+										Debug.WriteLine($"[Navigator] ✅ Exiting application (user confirmed)");
+										Application.Current?.Dispatcher.Invoke(() =>
+										{
+											Application.Current.Shutdown();
+										});
+									},
+									onCancel: () =>
+									{
+										Debug.WriteLine($"[Navigator] User cancelled exit, staying in application");
+									}
+								);
+							}
+							else
+							{
+								// Regular back navigation (exit group/modal/interaction mode)
+								ExitGroup();
+							}
 							break;
 						// Activation key (not used in Interaction mode any more
 						case "MouseLeft":
@@ -183,6 +206,14 @@ namespace AcManager.UiObserver
 							AdjustSliderValue(SliderAdjustment.SmallIncrement);
 							break;
 
+						// ✅ Confirmation keys
+						case "Yes":
+							ConfirmAction();
+							break;
+						case "No":
+							CancelAction();
+							break;
+
 						// Discovery keys
 						case "WriteModalFilter":
 							WriteModalFilterToDiscovery();
@@ -209,6 +240,7 @@ namespace AcManager.UiObserver
 		/// ✅ NEW: Supports both Element and Group targeting via TargetType property.
 		/// - Element: Targets specific element (existing behavior)
 		/// - Group: Targets first navigable child of group container
+		/// ✅ NEW: Supports confirmation for critical operations (QuickGo)
 		/// </summary>
 		private static void ExecuteShortcutKey(string keyName)
 		{
@@ -220,6 +252,33 @@ namespace AcManager.UiObserver
 
 			Debug.WriteLine($"[Navigator] Executing shortcut: {shortcut}");
 
+			// ✅ Special handling for QuickGo - requires confirmation
+			if (keyName == "QuickGo")
+			{
+				RequestConfirmation(
+					description: "Launch Simulator",
+					onConfirm: () =>
+					{
+						Debug.WriteLine($"[Navigator] ✅ Launching simulator (user confirmed)");
+						ExecuteShortcutKeyInternal(keyName, shortcut);
+					},
+					onCancel: () =>
+					{
+						Debug.WriteLine($"[Navigator] User cancelled simulator launch");
+					}
+				);
+				return;
+			}
+
+			// Regular shortcut execution
+			ExecuteShortcutKeyInternal(keyName, shortcut);
+		}
+
+		/// <summary>
+		/// Internal implementation of shortcut execution (separated for confirmation support)
+		/// </summary>
+		private static void ExecuteShortcutKeyInternal(string keyName, NavShortcutKey shortcut)
+		{
 			var candidates = GetCandidatesInScope();
 			
 			NavNode targetNode = null;

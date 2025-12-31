@@ -51,7 +51,7 @@ namespace AcManager.UiObserver
 		/// Interactive control context (Slider, DoubleSlider, RoundSlider, etc.).
 		/// Scope: Only the control itself (single element).
 		/// Lifecycle: Managed by Navigator (EnterInteractionMode/ExitInteractionMode).
-		/// Future: Could be extended for ComboBox dropdowns, menu submenus, etc.
+		/// Future: Could be extended for ComboBox dropdowns, menu submenus, etc
 		/// </summary>
 		InteractiveControl
 	}
@@ -814,5 +814,24 @@ namespace AcManager.UiObserver
 		// ✅ Focus Guard moved to Navigator.FocusGuard.cs (experimental, currently disabled)
 		
 		// ✅ Interaction Mode (Slider logic) moved to Navigator.InteractionMode.cs
+
+		/// <summary>
+		/// Restores the previous StreamDeck page before confirmation was requested.
+		/// Uses SDPClient's page history tracking for reliable restoration.
+		/// </summary>
+		private static void RestorePreviousPage()
+		{
+			if (_streamDeckClient == null) return;
+			
+			// ✅ Use SDPClient's built-in page history tracking
+			if (!_streamDeckClient.RestorePreviousPage())
+			{
+				// Fallback: If history is empty, restore to current context's page
+				if (CurrentContext != null)
+				{
+					SwitchStreamDeckPageForModal(CurrentContext.ScopeNode);
+				}
+			}
+		}
 	}
 }

@@ -23,9 +23,10 @@ namespace AcManager.UiObserver
 		private const string PageSlider = "Slider";
 		private const string PageDoubleSlider = "DoubleSlider";
 		private const string PageRoundSlider = "RoundSlider";
+		private const string PageConfirm = "Confirm";
 
 		/// <summary>
-		/// Defines all built-in StreamDeck keys (navigation, slider adjustment, discovery).
+		/// Defines all built-in StreamDeck keys (navigation, slider adjustment, discovery, confirmation).
 		/// Also defines configured shortcut keys from NavConfiguration.
 		/// Called during StreamDeck initialization.
 		/// </summary>
@@ -52,6 +53,10 @@ namespace AcManager.UiObserver
 			// ✅ Round Slider adjustment keys (Called TurnCCW and TurnCW, but use Left/Right icons for now)
 			_streamDeckClient.DefineKey("SliderTurnCCW", null, GetIconPath(icons, "Left"));
 			_streamDeckClient.DefineKey("SliderTurnCW", null, GetIconPath(icons, "Right"));
+
+			// ✅ Confirmation keys
+			_streamDeckClient.DefineKey("Yes", "YES", GetIconPath(icons, "confirm_yes"));
+			_streamDeckClient.DefineKey("No", "NO", GetIconPath(icons, "confirm_no"));
 
 			// Define built-in discovery keys
 			_streamDeckClient.DefineKey("WriteModalFilter", "Modal", null);
@@ -158,6 +163,17 @@ namespace AcManager.UiObserver
 				new[] { "", "", "" }
 			});
 			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageRoundSlider}");
+			
+			// ✅ Confirm page (Yes/No confirmation dialog)
+			Debug.WriteLine($"[Navigator] Defining page: {PageConfirm}");
+			_streamDeckClient.DefinePage(PageConfirm, new[] {
+				new[] { "", "", "" },
+				new[] { "", "", "" },
+				new[] { "Yes", "", "No" },
+				new[] { "", "", "" },
+				new[] { "", "", "" }
+			});
+			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageConfirm}");
 			
 			Debug.WriteLine("[Navigator] DefineBuiltInPages() END");
 			Debug.WriteLine($"[Navigator] SDPClient page count: {_streamDeckClient.PageCount}");
