@@ -644,6 +644,47 @@ namespace AcManager.UiObserver
         {
             return _pageHistory.Count;
         }
+        
+        /// <summary>
+        /// Switches to a different StreamDeck profile.
+        /// Updates authoritative state and queues for sending.
+        /// Note: Profile names are case-sensitive and must exist in StreamDeck software.
+        /// </summary>
+        public void SwitchProfile(string profileName)
+        {
+            if (string.IsNullOrWhiteSpace(profileName))
+            {
+                LogError($"SwitchProfile failed: profileName cannot be empty");
+                return;
+            }
+
+            if (_isReplicaSynced)
+            {
+                SendCommandImmediate($"SwitchProfile {profileName}");
+            }
+
+            if (SDPVerboseDebug)
+            {
+                Debug.WriteLine($"[SDPClient] Switching to profile '{profileName}'");
+            }
+        }
+        
+        /// <summary>
+        /// Returns to the previous StreamDeck profile.
+        /// Uses the profile stack maintained by the plugin.
+        /// </summary>
+        public void SwitchProfileBack()
+        {
+            if (_isReplicaSynced)
+            {
+                SendCommandImmediate($"SwitchProfileBack");
+            }
+
+            if (SDPVerboseDebug)
+            {
+                Debug.WriteLine($"[SDPClient] Switching back to previous profile");
+            }
+        }
 
         #endregion
 

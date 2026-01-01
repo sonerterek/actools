@@ -415,8 +415,9 @@ namespace NWRS_AC_SDPlugin
 
 			Debug.Assert(SDKeys[row, col] is not null);
 			Debug.Assert(SDKeys[row, col].Context == context);
-			// Don't do anything since context never changes
-			// This only means that the SDKey is not on display which we don't care
+			
+			// Clear the context so OnKeyDisappeared can properly count remaining keys
+			SDKeys[row, col].Context = null;
 		}
 
 		private void onKey(Coordinates coord, string context, Action<SDKey> action)
@@ -487,6 +488,57 @@ namespace NWRS_AC_SDPlugin
 		
 		// Active state - only manage profiles when active
 		private static bool _isActive = false;
+		
+		// Track expected VirtualKey disappearance (CM switching profiles or disconnecting)
+		private static bool _cmExpectsVirtualKeysGone = false;
+		
+		/// <summary>
+		/// Check if virtual keys are currently ready
+		/// Used by CM connection handler to determine if immediate profile switch is needed
+		/// </summary>
+		public static bool AreVirtualKeysReady()
+		{
+			lock (_stateLock)
+			{
+				return _virtualKeysReady;
+			}
+		}
+		
+		/// <summary>
+		/// Force an immediate profile switch to NWRS AC, bypassing the command queue
+		/// Used when CM connects and we need to take control of StreamDeck immediately
+		/// </summary>
+		public static void ForceImmediateProfileSwitch()
+		{
+			lock (_stateLock)
+			{
+				if (!_isActive)
+				{
+					Debug.WriteLine("?? SDeck.ForceImmediateProfileSwitch: Cannot switch - not active");
+					return;
+				}
+				
+				if (_currentProfile == PROFILE_NAME && _virtualKeysReady)
+				{
+					Debug.WriteLine("? SDeck.ForceImmediateProfileSwitch: Already in NWRS AC with keys ready");
+					return;
+				}
+				
+				Debug.WriteLine($"? SDeck.ForceImmediateProfileSwitch: Forcing immediate switch to {PROFILE_NAME}");
+				
+				// Execute profile switch immediately, not via queue
+				if (IsReadyForCommands())
+				{
+					ExecuteProfileSwitch(PROFILE_NAME);
+				}
+				else
+				{
+					Debug.WriteLine("?? SDeck.ForceImmediateProfileSwitch: Connection not ready yet, queuing");
+					// Fall back to queuing
+					_pendingCommands.Enqueue(() => ExecuteProfileSwitch(PROFILE_NAME));
+				}
+			}
+		}
 		
 		/// <summary>
 		/// Initialize the StreamDeck manager with connection parameters from command line
@@ -568,18 +620,17 @@ namespace NWRS_AC_SDPlugin
 					return;
 				}
 				
-				Debug.WriteLine("?? SDeck: Deactivating profile management");
+				Debug.WriteLine("?? SDeck: Deactivating profile management (CM disconnected)");
 				
 				_isActive = false;
 				_desiredProfile = null;
 				_profileStack.Clear();
 				
-				// NOTE: We do NOT clear _virtualKeysReady here!
-				// The SDKeys are still present on the StreamDeck hardware.
-				// _virtualKeysReady should only be cleared when OnKeyDisappeared fires.
+				// Expect VirtualKeys to disappear (CM is gone, may clear visuals)
+				_cmExpectsVirtualKeysGone = true;
 				
-				Debug.WriteLine("?? SDeck: Entering passive mode - no longer managing profiles");
-				Debug.WriteLine($"?? SDeck: VirtualKeys flag remains: {_virtualKeysReady} (will be cleared only when keys disappear)");
+				Debug.WriteLine("? SDeck: Set flag - expecting VirtualKeys to disappear (CM disconnect)");
+				Debug.WriteLine("?? SDeck: Entering passive mode - no profile management");
 			}
 		}
 		
@@ -672,7 +723,7 @@ namespace NWRS_AC_SDPlugin
 		{
 			if (string.IsNullOrEmpty(profileName))
 			{
-				Debug.WriteLine("? SDeck.SwitchToProfile: Invalid profile name");
+				Debug.WriteLine("?? SDeck.SwitchToProfile: Invalid profile name");
 				return;
 			}
 			
@@ -694,6 +745,13 @@ namespace NWRS_AC_SDPlugin
 				}
 				
 				_desiredProfile = profileName;
+				
+				// Expect VirtualKeys to disappear if switching AWAY from NWRS AC
+				if (profileName != PROFILE_NAME && _virtualKeysReady)
+				{
+					_cmExpectsVirtualKeysGone = true;
+					Debug.WriteLine($"? SDeck: Switching away from NWRS AC - expecting VirtualKeys to disappear");
+				}
 				
 				// Queue the command for execution
 				_pendingCommands.Enqueue(() => ExecuteProfileSwitch(profileName));
@@ -1197,8 +1255,31 @@ namespace NWRS_AC_SDPlugin
 					lock (_stateLock)
 					{
 						_virtualKeysReady = false;
-						Debug.WriteLine($"?? SDeck: All virtual keys disappeared - _virtualKeysReady set to FALSE");
-						Debug.WriteLine($"?? SDeck: This indicates user switched away from '{PROFILE_NAME}' profile or StreamDeck disconnected");
+						
+						// Check if we expected this disappearance
+						if (_cmExpectsVirtualKeysGone)
+						{
+							// EXPECTED: CM switched profiles OR CM disconnected
+							Debug.WriteLine("? SDeck: VirtualKeys disappeared (EXPECTED - CM switched profile or disconnected)");
+							_cmExpectsVirtualKeysGone = false;  // Reset flag
+							_currentProfile = null;  // Don't know where we are anymore
+						}
+						else
+						{
+							// UNEXPECTED: User manually switched away
+							Debug.WriteLine("?? SDeck: VirtualKeys disappeared (UNEXPECTED - user manual switch?)");
+							_currentProfile = null;
+							
+							// Only trigger recovery if still active
+							if (_isActive)
+							{
+								Debug.WriteLine("?? SDeck: Active mode - recovery will be attempted by CheckAndCorrectProfileMismatch");
+							}
+							else
+							{
+								Debug.WriteLine("?? SDeck: Passive mode - no recovery needed");
+							}
+						}
 					}
 				}
 			}
@@ -1211,33 +1292,47 @@ namespace NWRS_AC_SDPlugin
 		
 		private static void OnKeyDown(object sender, StreamDeckEventReceivedEventArgs<KeyDownEvent> e)
 		{
-			// Only process keys when in NWRS AC profile
+			// Check if BackKey was pressed (works in any profile)
+			if (_backKey != null && e.Event.Context == _backKey.GetContext())
+			{
+				// BackKey down - do nothing (wait for release)
+				return;
+			}
+			
+			// Only process VirtualKeys when in NWRS AC profile
 			if (_currentProfile == PROFILE_NAME)
 			{
-				if (_backKey != null && e.Event.Context == _backKey.GetContext())
-				{
-					// Handle back key
-				}
-				else
-				{
-					SDPage.OnKeyDown(e.Event.Payload.Coordinates, e.Event.Context);
-				}
+				SDPage.OnKeyDown(e.Event.Payload.Coordinates, e.Event.Context);
 			}
 		}
 		
 		private static void OnKeyUp(object sender, StreamDeckEventReceivedEventArgs<KeyUpEvent> e)
 		{
-			// Only process keys when in NWRS AC profile
+			// Check if BackKey was pressed (works in any profile)
+			if (_backKey != null && e.Event.Context == _backKey.GetContext())
+			{
+				Debug.WriteLine("?? SDeck: BackKey pressed - returning to NWRS AC profile");
+				
+				// Switch back to NWRS AC (this will restore _desiredVPage when keys reappear)
+				lock (_stateLock)
+				{
+					if (_isActive)
+					{
+						Debug.WriteLine($"?? SDeck: Switching from current profile to {PROFILE_NAME}");
+						SwitchToProfile(PROFILE_NAME);
+					}
+					else
+					{
+						Debug.WriteLine("?? SDeck: BackKey pressed but SDeck not active - ignoring");
+					}
+				}
+				return;
+			}
+			
+			// Only process VirtualKeys when in NWRS AC profile
 			if (_currentProfile == PROFILE_NAME)
 			{
-				if (_backKey != null && e.Event.Context == _backKey.GetContext())
-				{
-					// Handle back key
-				}
-				else
-				{
-					SDPage.OnKeyUp(e.Event.Payload.Coordinates, e.Event.Context);
-				}
+				SDPage.OnKeyUp(e.Event.Payload.Coordinates, e.Event.Context);
 			}
 		}
 	}

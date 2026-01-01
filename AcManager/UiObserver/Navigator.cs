@@ -186,6 +186,7 @@ namespace AcManager.UiObserver
 			Observer.ModalGroupClosed += OnModalGroupClosed;
 			Observer.WindowLayoutChanged += OnWindowLayoutChanged;
 			Observer.NodeUnloaded += OnNodeUnloaded;  // ✅ NEW: Subscribe to node unload events
+			Observer.NavigableNodeDiscovered += OnNavigableNodeDiscovered;  // ✅ NEW: Subscribe to incremental discovery
 			
 			// ✅ FIX: Create overlay BEFORE starting Observer to avoid race condition
 			// When Observer discovers MainWindow and fires ModalGroupOpened, the overlay
@@ -327,37 +328,31 @@ namespace AcManager.UiObserver
 			unloadingNode.HasFocus = false;
 			CurrentContext.FocusedNode = null;
 
-			// Schedule focus re-initialization for after the new content loads
-			// Use a short delay to allow the new content to be discovered by Observer
-			Application.Current?.Dispatcher.BeginInvoke(
-				DispatcherPriority.Loaded,
-				new Action(() => {
-					try {
-						// Re-check that we're still in the same modal context and still have no focus
-						if (CurrentContext == null) {
-							if (VerboseNavigationDebug) {
-								Debug.WriteLine($"[Navigator] Focus re-init skipped - no current context");
-							}
-							return;
-						}
+			// Don't schedule re-initialization here - wait for NavigableNodeDiscovered event
+			// When new content loads, Observer will fire NavigableNodeDiscovered for each new element
+			// and we'll focus the first one that appears in our scope
+		}
 
-						if (CurrentContext.FocusedNode != null) {
-							if (VerboseNavigationDebug) {
-								Debug.WriteLine($"[Navigator] Focus re-init skipped - focus already set to '{CurrentContext.FocusedNode.SimpleName}'");
-							}
-							return;
-						}
-
-						// Try to initialize focus to the new content
-						Debug.WriteLine($"[Navigator] Re-initializing focus after in-modal navigation");
-						TryInitializeFocusIfNeeded();
-					} catch (Exception ex) {
-						if (VerboseNavigationDebug) {
-							Debug.WriteLine($"[Navigator] Error re-initializing focus: {ex.Message}");
-						}
-					}
-				})
-			);
+		/// <summary>
+		/// Called by Observer when a navigable (non-group) node is discovered.
+		/// Handles dynamic content loading in existing modals (e.g., GameDialog result buttons).
+		/// If current scope has no focus, immediately focuses the first discovered element.
+		/// </summary>
+		private static void OnNavigableNodeDiscovered(NavNode newNode)
+		{
+			if (CurrentContext == null) return;
+			
+			// Only care if we currently have no focus
+			if (CurrentContext.FocusedNode != null) return;
+			
+			// Check if this new node is in our current scope
+			if (!IsInActiveModalScope(newNode)) return;
+			
+			Debug.WriteLine($"[Navigator] ✅ First navigable node discovered in scope with no focus: {newNode.SimpleName}");
+			Debug.WriteLine($"[Navigator] Setting focus immediately");
+			
+			// Focus this node immediately
+			SetFocus(newNode);
 		}
 
 		/// <summary>
@@ -787,7 +782,7 @@ namespace AcManager.UiObserver
 					break;
 				case Key.Left:
 					MoveInDirection(NavDirection.Left);
-					e.Handled = true;
+				 e.Handled = true;
 					break;
 				case Key.Right:
 					MoveInDirection(NavDirection.Right);

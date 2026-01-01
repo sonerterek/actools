@@ -54,6 +54,10 @@ namespace AcManager.UiObserver
 			_streamDeckClient.ConnectionLost += OnStreamDeckDisconnected;
 			_streamDeckClient.ReconnectionAttempt += OnStreamDeckReconnecting;
 			
+			// ✅ NEW: Hook up game lifecycle events for StreamDeck profile management
+			AcManager.Tools.SemiGui.GameWrapper.Started += OnGameStarted;
+			AcManager.Tools.SemiGui.GameWrapper.Ended += OnGameEnded;
+			
 			// Define all keys and pages
 			DefineStreamDeckKeys(icons);
 			DefineStreamDeckPages();
@@ -237,10 +241,10 @@ namespace AcManager.UiObserver
 
 		/// <summary>
 		/// Executes a shortcut key by finding and focusing the matching element.
-		/// ✅ NEW: Supports both Element and Group targeting via TargetType property.
+		/// ✅ Supports both Element and Group targeting via TargetType property.
 		/// - Element: Targets specific element (existing behavior)
 		/// - Group: Targets first navigable child of group container
-		/// ✅ NEW: Supports confirmation for critical operations (QuickGo)
+		/// ✅ Supports confirmation for critical operations via RequireConfirmation property.
 		/// </summary>
 		private static void ExecuteShortcutKey(string keyName)
 		{
@@ -252,25 +256,30 @@ namespace AcManager.UiObserver
 
 			Debug.WriteLine($"[Navigator] Executing shortcut: {shortcut}");
 
-			// ✅ Special handling for QuickGo - requires confirmation
-			if (keyName == "QuickGo")
+			// ✅ Generic confirmation handling
+			if (shortcut.RequireConfirmation)
 			{
+				// Use custom message or generate default
+				var confirmMessage = string.IsNullOrEmpty(shortcut.ConfirmationMessage)
+					? $"Execute {keyName}"
+					: shortcut.ConfirmationMessage;
+				
 				RequestConfirmation(
-					description: "Launch Simulator",
+					description: confirmMessage,
 					onConfirm: () =>
 					{
-						Debug.WriteLine($"[Navigator] ✅ Launching simulator (user confirmed)");
+						Debug.WriteLine($"[Navigator] ✅ Executing '{keyName}' (user confirmed)");
 						ExecuteShortcutKeyInternal(keyName, shortcut);
 					},
 					onCancel: () =>
 					{
-						Debug.WriteLine($"[Navigator] User cancelled simulator launch");
+						Debug.WriteLine($"[Navigator] User cancelled '{keyName}'");
 					}
 				);
 				return;
 			}
 
-			// Regular shortcut execution
+			// Regular execution (no confirmation needed)
 			ExecuteShortcutKeyInternal(keyName, shortcut);
 		}
 
@@ -749,6 +758,26 @@ namespace AcManager.UiObserver
 					Debug.WriteLine($"[Navigator] Error toast failed: {ex.Message}");
 				}
 			});
+		}
+		
+		/// <summary>
+		/// Called when game/simulator starts launching.
+		/// Switches StreamDeck to the ACS profile for in-game controls.
+		/// </summary>
+		private static void OnGameStarted(object sender, AcManager.Tools.SemiGui.GameStartedArgs e)
+		{
+			Debug.WriteLine($"[Navigator] Game started: {e.Mode}, switching to ACS profile");
+			_streamDeckClient?.SwitchProfile("ACS");
+		}
+		
+		/// <summary>
+		/// Called when game/simulator exits.
+		/// Switches StreamDeck back to the previous profile (NWRS AC).
+		/// </summary>
+		private static void OnGameEnded(object sender, AcManager.Tools.SemiGui.GameEndedArgs e)
+		{
+			Debug.WriteLine($"[Navigator] Game ended, switching back from ACS profile");
+			_streamDeckClient?.SwitchProfileBack();
 		}
 
 		#endregion

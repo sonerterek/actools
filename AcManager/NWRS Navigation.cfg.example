@@ -21,6 +21,9 @@
 #   KeyTitle  = Text shown on StreamDeck button (optional)
 #   KeyIcon   = Icon file name or path (optional)
 #   NoAutoClick = Skip auto-click when shortcut is activated (optional, default: false)
+#   TargetType = "Element" or "Group" - what the shortcut targets (optional, default: Element)
+#   RequireConfirmation = Require YES/NO confirmation before executing (optional, default: false)
+#   ConfirmationMessage = Custom confirmation message (optional, defaults to "Execute {KeyName}")
 #
 # CUSTOM PAGE SYNTAX:
 # -------------------
@@ -86,8 +89,10 @@ CLASSIFY: Window:MainWindow > ** > (unnamed):Button["Go!"] => \
     role=button; \
     KeyName="QuickGo"; \
     KeyTitle="GO!"; \
-    KeyIcon=!GO
-# Note: Will auto-click (default) - pressing QuickGo starts the race
+    KeyIcon=!GO; \
+    RequireConfirmation=true; \
+    ConfirmationMessage="Launch Simulator"
+# Note: RequireConfirmation=true shows confirmation page before launching
 
 # ?????????????????????????????????????????????????????????????????????????
 # Page Switching on Focus (No Shortcuts)
@@ -285,5 +290,44 @@ PAGE: "CarSelection:Navigation" => \
 #     Timing:
 #       Auto-click happens immediately after focus is established using
 #       DispatcherPriority.Input to ensure the element is fully focused.
+#
+# 15. Confirmation System:
+#     For critical operations (like launching the simulator or deleting content),
+#     you can require explicit YES/NO confirmation before execution.
+#     
+#     Properties:
+#       RequireConfirmation=true    - Shows confirmation page before execution
+#       ConfirmationMessage="..."   - Custom message (optional)
+#     
+#     Example - Launch simulator with confirmation:
+#       CLASSIFY: ** > (unnamed):Button["Go!"] => \
+#           KeyName="QuickGo"; \
+#           KeyTitle="GO!"; \
+#           RequireConfirmation=true; \
+#           ConfirmationMessage="Launch Simulator"
+#     
+#     Example - Delete with confirmation:
+#       CLASSIFY: ** > (unnamed):Button["Delete"] => \
+#           KeyName="DeleteCar"; \
+#           KeyTitle="Delete"; \
+#           RequireConfirmation=true; \
+#           ConfirmationMessage="Delete Car"
+#     
+#     Example - Default message:
+#       CLASSIFY: ** > (unnamed):Button["Clear"] => \
+#           KeyName="ClearAll"; \
+#           RequireConfirmation=true
+#       # Message will be "Execute ClearAll"
+#     
+#     Behavior:
+#       1. User presses shortcut key on StreamDeck
+#       2. StreamDeck switches to "Confirm" page showing YES and NO buttons
+#       3. User presses YES ? action executes
+#       4. User presses NO  ? returns to previous page, no action
+#       5. Page history automatically restored after confirmation
+#     
+#     Built-in Confirmations:
+#       - Back button on MainWindow (exit application) - always confirmed
+#       - Any shortcut with RequireConfirmation=true
 #
 # ???????????????????????????????????????????????????????????????????????????

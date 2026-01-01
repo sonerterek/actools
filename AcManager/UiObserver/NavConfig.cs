@@ -53,6 +53,12 @@ namespace AcManager.UiObserver
 
 		/// <summary>What this shortcut targets (default: Element)</summary>
 		public ShortcutTargetType TargetType { get; set; }
+		
+		/// <summary>Whether to require confirmation before executing this shortcut (default: false)</summary>
+		public bool RequireConfirmation { get; set; }
+		
+		/// <summary>Custom confirmation message (optional, defaults to "Execute {KeyName}")</summary>
+		public string ConfirmationMessage { get; set; }
 
 		/// <summary>Compiled regex pattern for path matching (null if no wildcards)</summary>
 		public Regex PathPattern { get; set; }
@@ -309,7 +315,11 @@ namespace AcManager.UiObserver
 				               properties["NoAutoClick"] == "1"),
 				TargetType = ParseTargetType(properties.ContainsKey("TargetType") 
 				              ? properties["TargetType"] 
-				              : "Element")
+				              : "Element"),
+				RequireConfirmation = properties.ContainsKey("RequireConfirmation") && 
+				                      (properties["RequireConfirmation"].Equals("true", StringComparison.OrdinalIgnoreCase) || 
+				                       properties["RequireConfirmation"] == "1"),
+				ConfirmationMessage = properties.ContainsKey("ConfirmationMessage") ? properties["ConfirmationMessage"] : null
 			};
 
 			// Compile path pattern if it contains wildcards

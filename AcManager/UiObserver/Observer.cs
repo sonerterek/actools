@@ -34,7 +34,7 @@ namespace AcManager.UiObserver {
         /// Controls verbose debug output for Observer discovery.
         /// Toggle via Navigator's Ctrl+Shift+F9 hotkey.
         /// </summary>
-        private static bool _verboseDebug = false;
+        private static bool _verboseDebug = true;
 
         /// <summary>
         /// Gets or sets the verbose debug flag for Observer discovery logging.
@@ -111,6 +111,12 @@ namespace AcManager.UiObserver {
         /// This allows consumers (like Navigator) to react to nodes disappearing.
         /// </summary>
         internal static event Action<NavNode> NodeUnloaded;
+
+        /// <summary>
+        /// Fired when a navigable (non-group) node is discovered.
+        /// Allows Navigator to handle dynamic content in existing modals.
+        /// </summary>
+        internal static event Action<NavNode> NavigableNodeDiscovered;
 
         #endregion
 
@@ -349,7 +355,7 @@ namespace AcManager.UiObserver {
                 var navNode = NavNode.CreateNavNode(fe);
                 if (navNode != null) {
                     if (_nodesByElement.TryAdd(fe, navNode)) {
-                        // ? NEW: Hook Unloaded event to track when element is removed from visual tree
+                        // Hook Unloaded event to track when element is removed from visual tree
                         fe.Unloaded += OnElementUnloaded;
                         
                         // Build Parent/Children relationships (visual tree with PlacementTarget bridging)
@@ -370,9 +376,16 @@ namespace AcManager.UiObserver {
                                 Debug.WriteLine($"[Observer] Dynamic NavNode added: {fe.GetType().Name} '{navNode.SimpleName}'");
                             }
 
-                            // ? REMOVED: Don't fire modal event for dynamically added nodes
-                            // Modal events should only fire during bulk SyncRoot() after all children are linked
-                            // If this is a problem for dynamically opened popups, we can schedule a re-sync instead
+                            // Fire NavigableNodeDiscovered for non-group navigable nodes
+                            if (navNode.IsNavigable && !navNode.IsGroup) {
+                                try {
+                                    NavigableNodeDiscovered?.Invoke(navNode);
+                                } catch (Exception ex) {
+                                    if (_verboseDebug) {
+                                        Debug.WriteLine($"[Observer] NavigableNodeDiscovered event handler threw exception: {ex.Message}");
+                                    }
+                                }
+                            }
                         }
 						// ✅ NEW: Scan descendants if this is a container type that might have virtualized children
 						if (ShouldScanDescendants(fe)) {
@@ -766,12 +779,12 @@ namespace AcManager.UiObserver {
                             }
                             return;
                         } else {
-                            // Owner not yet discovered, continue walking up from PlacementTarget
-                            // Add PlacementTarget to path since it's not a NavNode yet
-                            visualPath.Add(new WeakReference<FrameworkElement>(placementTarget));
-                            current = placementTarget;
-                            Debug.WriteLine($"[Observer] Bridged Popup boundary for {childNode.SimpleName}, continuing from {placementTarget.GetType().Name}");
-                            continue;
+                          // Owner not yet discovered, continue walking up from PlacementTarget
+                          // Add PlacementTarget to path since it's not a NavNode yet
+                          visualPath.Add(new WeakReference<FrameworkElement>(placementTarget));
+                          current = placementTarget;
+                          Debug.WriteLine($"[Observer] Bridged Popup boundary for {childNode.SimpleName}, continuing from {placementTarget.GetType().Name}");
+                          continue;
                         }
                     }
                 }
