@@ -1,188 +1,170 @@
 ﻿# Navigation System (UiObserver) - Design Document
 
-## 📋 Table of Contents
-1. [Architecture Overview](#architecture-overview)
-2. [Key Design Decisions](#key-design-decisions)
-3. [File Responsibilities](#file-responsibilities)
-4. [Critical Implementation Details](#critical-implementation-details)
-5. [Known Issues & Solutions](#known-issues--solutions)
-6. [Pattern Syntax Reference](#pattern-syntax-reference)
-7. [StreamDeck Integration](#streamdeck-integration)
+**Version:** 2.0  
+**Last Updated:** December 2024  
+**Target Framework:** .NET Framework 4.5.2  
+**Status:** Current implementation (reflects codebase as of Dec 2024)
 
 ---
 
-## ??? Architecture Overview
+## 📋 Table of Contents
+1. [Architecture Overview](#architecture-overview)
+2. [Key Design Decisions](#key-design-decisions)
+3. [File Organization](#file-organization)
+4. [Critical Implementation Details](#critical-implementation-details)
+5. [Navigation Context System](#navigation-context-system)
+6. [Interaction Mode System](#interaction-mode-system)
+7. [Known Issues & Solutions](#known-issues--solutions)
+8. [Pattern Syntax Reference](#pattern-syntax-reference)
+9. [Debugging Guide](#debugging-guide)
+
+---
+
+## 🏗️ Architecture Overview
 
 ### Three-Layer "Observe and React" Architecture
 
 ```
-???????????????????????????????????????????????????????????
-?                      Navigator                         ?
-?  (Navigation Logic & Modal Stack Management)            ?
-?  - Subscribes to Observer events ONLY                   ?
-?  - Manages modal context stack (scope + focus)          ?
-?  - Handles keyboard input (Ctrl+Shift+Arrow navigation) ?
-?  - Initializes focus on modal open (complete info!)     ?
-?  - Filters candidates by modal scope                    ?
-?  - Spatial navigation algorithm                         ?
-?  - Focus highlighting overlay                           ?
-???????????????????????????????????????????????????????????
-                           ? events (Observer ? Navigator)
-                           ? • ModalGroupOpened
-                           ? • ModalGroupClosed
-                           ? • WindowLayoutChanged
-???????????????????????????????????????????????????????????
-?                      Observer                           ?
-?  (Discovery Engine - Silent Scanning)                   ?
-?  - Auto-discovers PresentationSource roots              ?
-?  - Hooks existing windows for lifecycle management      ?
-?  - Scans visual trees SILENTLY (no per-node events!)    ?
-?  - Creates NavNodes via factory pattern                 ?
-?  - Builds Parent/Child relationships                    ?
-?  - Tracks Popup?PlacementTarget bridges                 ?
-?  - Emits events ONLY for modal lifecycle & layout       ?
-???????????????????????????????????????????????????????????
-                           ? creates
-                           ?
-???????????????????????????????????????????????????????????
-?                       NavNode                           ?
-?  (Pure Data + Type-Specific Behaviors)                  ?
-?  - Factory method: CreateNavNode(fe)                    ?
-?  - Type classification (leaf vs group)                  ?
-?  - Whitelist-based filtering                            ?
-?  - Path-based exclusion rules (NavPathFilter)           ?
-?  - Behaviors: Activate(), Close()                       ?
-?  - Stores: HierarchicalPath, Parent, Children           ?
-???????????????????????????????????????????????????????????
+┌─────────────────────────────────────────────────────────────┐
+│                      Navigator                              │
+│  (Navigation Logic & Context Management)                    │
+│  • Subscribes to Observer events ONLY                       │
+│  • Manages context stack (RootWindow/Modal/Interaction)     │
+│  • StreamDeck integration (see separate doc)                │
+│  • Spatial navigation algorithm                             │
+│  • Focus highlighting overlay                               │
+│  • Interaction mode (slider adjustment, confirmation)       │
+└─────────────────────────────────────────────────────────────┘
+                           ↓ events (Observer → Navigator)
+                           • ModalGroupOpened
+                           • ModalGroupClosed
+                           • WindowLayoutChanged
+                           • NodesUpdated (batch)
+┌─────────────────────────────────────────────────────────────┐
+│                      Observer                               │
+│  (Discovery Engine - Silent Scanning)                       │
+│  • Auto-discovers PresentationSource roots                  │
+│  • Hooks windows for lifecycle management                   │
+│  • Scans visual trees SILENTLY (no per-node events!)        │
+│  • Creates NavNodes via factory pattern                     │
+│  • Builds Parent/Child relationships (for cleanup)          │
+│  • Emits events ONLY for modal lifecycle & layout           │
+└─────────────────────────────────────────────────────────────┘
+                           ↓ creates
+┌─────────────────────────────────────────────────────────────┐
+│                       NavNode                               │
+│  (Pure Data + Type-Specific Behaviors)                      │
+│  • Factory: CreateNavNode(fe)                               │
+│  • Type classification (leaf vs group)                      │
+│  • Whitelist-based filtering                                │
+│  • Path-based exclusion (NavPathFilter)                     │
+│  • Behaviors: Activate(), Close()                           │
+│  • Data: HierarchicalPath, Parent, Children                 │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-**Key Architectural Principle:** 
-- **Silent Discovery:** Observer discovers nodes without firing events
-- **Modal-Only Events:** Only modal lifecycle changes trigger events
-- **Complete Information:** When ModalGroupOpened fires, ALL nodes in the modal scope are already discovered
-- **Single Focus Attempt:** Focus initialization happens once per modal with complete candidate list
-- **Event-Driven Navigation:** Navigator reacts ONLY to Observer's events, never calls Observer directly
+### Key Architectural Principles
+
+1. **Silent Discovery** - Observer discovers nodes without firing per-node events
+2. **Modal-Only Events** - Events fire only for modal lifecycle changes and batch updates
+3. **Complete Information** - When `ModalGroupOpened` fires, ALL nodes in scope are already discovered
+4. **Event-Driven Navigation** - Navigator is purely reactive, never calls Observer for discovery
+5. **Context Stack** - Three context types: RootWindow, ModalDialog, InteractiveControl
 
 ---
 
-## ?? Key Design Decisions
+## 🎯 Key Design Decisions
 
 ### 1. "Observe, Don't Predict" Philosophy
 
 **Decision:** We observe actual UI state (Popup.IsOpen, Window visibility) rather than predicting behavior.
 
 **Why:**
-- **Simplicity:** No complex state machines tracking "will this ComboBox open a popup?"
-- **Correctness:** We react to what WPF actually creates (PopupRoot) instead of guessing
-- **Maintainability:** Less code to break when WPF internals change
+- **Simplicity:** No complex state machines
+- **Correctness:** React to what WPF actually creates (PopupRoot)
+- **Maintainability:** Less code to break
 
 **Example:**
 ```csharp
-// ? OLD (Predict): ComboBox is a "dual-role" modal
-// ? NEW (Observe): ComboBox is a leaf; PopupRoot (created by WPF) is the modal
+// ❌ OLD: ComboBox is a "dual-role" modal
+// ✅ NEW: ComboBox is a leaf; PopupRoot (created by WPF) is the modal
 ```
 
 ---
 
 ### 2. Whitelist-Based Type Classification
 
-**Decision:** Only track types explicitly added to `_leafTypes` or `_groupTypes`.
+**Decision:** Only track types explicitly in `_leafTypes` or `_groupTypes` (NavNode.cs).
 
 **Why:**
-- **Performance:** Avoid tracking every TextBlock, Border, Grid in the app (thousands of elements)
-- **Intent:** Only navigation-relevant controls are tracked
-- **Safety:** Unknown types are ignored by default
+- **Performance:** Avoid tracking every Border, Grid (thousands of elements)
+- **Intent:** Only navigation-relevant controls tracked
+- **Safety:** Unknown types ignored by default
 
-**Leaf Types:** Buttons, MenuItems, ComboBox, Menu, Sliders, etc.  
-**Group Types:** Popup, ListBox, TabControl, DataGrid, **Window** (see below)
+**Leaf Types:** Button, MenuItem, ComboBox, Slider, DoubleSlider, RoundSlider  
+**Group Types:** Window, Popup, ListBox, TabControl, DataGrid
 
-**?? CRITICAL: Window Added to Group Types**
-
-**What changed:** `typeof(Window)` was added to `_groupTypes` whitelist in `NavNode.cs`.
-
-**Why it was needed:** Window wasn't being discovered as a NavNode, so MainWindow couldn't become the root modal context. This caused `CurrentContext` to remain `null`, breaking the entire navigation system.
-
-**Impact:**
-- Root window discovery now works correctly
-- Modal stack initialization succeeds
-- First architectural fix that made the system functional
-
-**Code:**
-```csharp
-private static readonly HashSet<Type> _groupTypes = new HashSet<Type>
-{
-    typeof(Window),        // Root modal: application windows (MainWindow, dialogs, etc.)
-    typeof(Popup),         // Pure container: never directly navigable
-    // ...rest of types
-};
-```
+**Critical:** `typeof(Window)` added to `_groupTypes` to enable root modal discovery.
 
 ---
 
-### 3. Modal Context Stack = Linear Chain with Focus
+### 3. Navigation Context Stack - Three Context Types
 
-**Decision:** Modal stack is a **List<NavContext>** where each context bundles **modal scope + focused node**.
-
-**Why:**
-- **Atomic State:** Modal scope and focus are inseparable - bundling prevents desync
-- **No Special Cases:** Root window (MainWindow) is just the first modal context
-- **Stack Never Empty:** After initialization, stack always has ?1 context (root)
-- **Automatic Focus Restore:** When modal closes, previous context's focus is automatically restored
+**Decision:** Context stack is `List<NavContext>` with **three distinct context types**.
 
 **Structure:**
 ```csharp
 class NavContext {
-    NavNode ModalNode;    // Scope root (Window, Popup, PopupRoot)
-    NavNode FocusedNode;  // Currently focused node in this scope (or null)
+    NavNode ScopeNode;           // Defines context boundaries
+    NavContextType ContextType;  // RootWindow, ModalDialog, InteractiveControl
+    NavNode FocusedNode;         // Currently focused (or null)
+    object OriginalValue;        // For Cancel in InteractiveControl
+}
+
+enum NavContextType {
+    RootWindow,         // MainWindow - root context (always present)
+    ModalDialog,        // Popup/Dialog - restricts navigation to descendants
+    InteractiveControl  // Slider/Control - single-element scope for value adjustment
 }
 ```
 
-**Example Valid Stack:**
+**Example Stack:**
 ```
-[0] NavContext(MainWindow, Button1)        ? Root context, always present
-[1] NavContext(Popup, MenuItem3)           ? Dropdown menu opened
-[2] NavContext(PopupRoot, SubMenuItem5)    ? Submenu opened
-```
-
-**Stack Lifecycle:**
-```
-User opens dropdown:
-  OnModalGroupOpened(Popup)
-  ? Push NavContext(Popup, null)
-  ? TryInitializeFocusIfNeeded() ? finds MenuItem3 ? sets focus
-
-User closes dropdown:
-  OnModalGroupClosed(Popup)
-  ? Pop context
-  ? Restore focus from previous context (Button1) ?
+[0] NavContext(MainWindow, RootWindow, Button1)
+[1] NavContext(Popup, ModalDialog, MenuItem3)
+[2] NavContext(DoubleSlider, InteractiveControl, DoubleSlider)  ← Slider interaction mode
 ```
 
-**Invariant:** `_modalContextStack.Count >= 1` at all times after first modal discovered
+**Why Three Types:**
+- **RootWindow:** Root scope, always present after init
+- **ModalDialog:** Observer-managed (ModalGroupOpened/Closed events)
+- **InteractiveControl:** Navigator-managed (EnterInteractionMode/ExitInteractionMode)
+
+**Scope Resolution:**
+- `RootWindow` / `ModalDialog`: All descendants in scope
+- `InteractiveControl`: **Only the control itself** (single-element scope)
 
 ---
 
 ### 4. Clean Separation: Observer vs Navigator
 
-**Decision:** Observer handles ALL discovery and lifecycle management. Navigator ONLY reacts to Observer's events.
-
-**Why:**
-- **Single Responsibility:** Observer = discovery, Navigator = navigation/overlay
-- **No Leaky Abstractions:** Navigator never calls `Observer.RegisterRoot()` or manages windows
-- **Testability:** Can test Observer without Navigator (and vice versa)
-- **Maintainability:** Discovery changes stay in Observer, navigation changes stay in Navigator
+**Decision:** Observer handles ALL discovery. Navigator ONLY reacts to events.
 
 **Observer's Responsibilities:**
-- ? Auto-discover PresentationSource roots
-- ? Hook existing windows for lifecycle events
-- ? Re-register roots when window layout changes
-- ? Emit `WindowLayoutChanged` event for overlay synchronization
+- ✅ Auto-discover PresentationSource roots
+- ✅ Hook windows for lifecycle events
+- ✅ Re-register roots on layout changes
+- ✅ Emit `WindowLayoutChanged` for overlay sync
+- ✅ Fire `NodesUpdated` for batch node changes
 
 **Navigator's Responsibilities:**
-- ? Subscribe to Observer events (`ModalGroupOpened`, `ModalGroupClosed`, `WindowLayoutChanged`)
-- ? Manage modal context stack
-- ? Handle keyboard input
-- ? Update overlay position (react to `WindowLayoutChanged`)
-- ? Never call `Observer.RegisterRoot()` or hook windows
+- ✅ Subscribe to Observer events (never calls Observer for discovery)
+- ✅ Manage context stack
+- ✅ Handle keyboard/StreamDeck input
+- ✅ Update overlay position
+- ✅ Manage interaction mode contexts
+
+**Architectural Invariant:** Navigator NEVER calls `Observer.RegisterRoot()` or hooks windows.
 
 ---
 
@@ -190,113 +172,56 @@ User closes dropdown:
 
 **Decision:** Compute `HierarchicalPath` in `NavNode.CreateNavNode()` and pass to constructor.
 
-**Why:**
-- **Exclusion Check:** Needed BEFORE node creation to filter out unwanted elements
-- **Performance:** Compute once during creation, not repeatedly
-- **Consistency:** Path never changes after creation (element's position in tree is fixed)
-
 **Format:** `"ElementName:ElementType[:WindowHandle] > ChildName:ChildType > ..."`
 
-**Key Insight:** Path includes ALL ancestors in visual tree, not just NavNode ancestors.
+**Critical Feature - WindowHandle for Uniqueness:}
 
-**✅ CRITICAL: SimpleName with WindowHandle for Uniqueness**
+**Problem Solved:** Multiple PopupRoots had identical paths `(unnamed):PopupRoot`.
 
-**Problem Solved:** Multiple PopupRoots (main menu, submenus) had identical paths `(unnamed):PopupRoot`, causing scope filtering failures. Navigator couldn't distinguish between different popups because they looked identical.
-
-**Solution:** SimpleName includes WindowHandle (HWND) as a third component for top-level elements (Window, PopupRoot):
+**Solution:** Include HWND as third component for top-level elements:
 ```
 Name:Type[:WindowHandle]
 ```
 
 **Examples:**
-- Regular element: `SaveButton:Button`
-- Main window: `Window:MainWindow:2E04AE` ← includes HWND
-- Main menu popup: `(unnamed):PopupRoot:1A02D4` ← unique HWND
-- Submenu popup: `(unnamed):PopupRoot:3703EA` ← different HWND!
+- Regular: `SaveButton:Button`
+- Window: `Window:MainWindow:2E04AE`
+- Popup: `(unnamed):PopupRoot:1A02D4` ← Unique HWND per popup
 
-**Why It Works:**
-- Every WPF Popup creates its own OS-level window (HWND)
-- HWND is guaranteed unique at OS level
-- No complex PlacementTarget bridging needed for uniqueness
-- Clean, simple solution leveraging OS guarantees
+**Why It Works:** Every WPF Popup creates its own OS-level window (HWND), guaranteed unique.
 
-**Result:** Each popup has a unique path, making `IsDescendantOf()` correctly filter candidates by scope.
-
-**Debug Output:**
-```
-[Observer] Modal opened: (unnamed):PopupRoot:1A02D4
-[Observer] Modal opened: (unnamed):PopupRoot:3703EA  ← Different!
-[Navigator] Modal closed: (unnamed):PopupRoot:3703EA
-[Navigator] Restored focus correctly  ← Works!
-```
+**Result:** Each popup has unique path, making `IsDescendantOf()` work correctly.
 
 ---
 
-### 6. Parent/Child Relationships - Cleanup & Diagnostics
+### 6. Parent/Child Relationships - Cleanup Only
 
-**Decision:** `Observer.LinkToParent()` builds bidirectional Parent/Child WeakReference chains when nodes are created.
+**Decision:** Bidirectional Parent/Child WeakReference chains for memory management.
 
-**Current Primary Uses:**
-1. **Memory Management (`UnlinkNode()`):** Removes child from parent's Children list when nodes are disposed, preventing memory leaks
-2. **Debug Validation (DEBUG builds only):** Consistency checks verify Parent/Child relationships match the actual visual tree
-3. **Diagnostic Logging:** Parent chain information aids in debugging hierarchy issues
+**Primary Uses:**
+1. **Memory Management** - `UnlinkNode()` removes child from parent's Children list
+2. **Debug Validation** - Consistency checks (DEBUG builds only)
+3. **Diagnostic Logging** - Parent chain info for debugging
 
-**⚠️ IMPORTANT: Navigation Logic Does NOT Use Parent/Child!**
-- `IsDescendantOf()` uses **HierarchicalPath string comparison** (not Parent chain walking)
-- Scope filtering uses **path prefix matching** (not Parent references)
-- Modal validation uses **path comparison** (not Parent traversal)
+**⚠️ IMPORTANT: Navigation Does NOT Use Parent/Child!**
+- `IsDescendantOf()` uses **HierarchicalPath string comparison**
+- Scope filtering uses **path prefix matching**
+- Modal validation uses **path comparison**
 
-**Why Parent/Child Still Exists:**
-The bidirectional references serve as a **cleanup aid** and **diagnostic safety net**, but are **not required for navigation functionality**.
-
-**PlacementTarget Bridging:**
-When walking the visual tree to build Parent/Child links, we use `Popup.PlacementTarget` to bridge visual tree gaps:
-
+**Implementation:**
 ```csharp
-// Walk up visual tree to find first parent NavNode
-while (current != null) {
-    current = VisualTreeHelper.GetParent(current);
-    
-    // If we hit a Popup boundary, bridge using PlacementTarget
-    if (current is Popup popup && popup.PlacementTarget != null) {
-        current = popup.PlacementTarget; // Jump across visual tree gap
-        continue; // Continue walking up from PlacementTarget
-    }
-}
-```
-
-**Current Implementation:**
-```csharp
-// Establish bidirectional link
+// Establish link
 childNode.Parent = new WeakReference<NavNode>(parentNode);
 parentNode.Children.Add(new WeakReference<NavNode>(childNode));
+
+// Cleanup
+parent.Children.RemoveAll(wr => {
+    if (!wr.TryGetTarget(out var child)) return true; // Dead reference
+    return ReferenceEquals(child, node);
+});
 ```
 
-**Cleanup Implementation:**
-```csharp
-// UnlinkNode() removes child from parent's Children list
-if (node.Parent != null && node.Parent.TryGetTarget(out var parent)) {
-    parent.Children.RemoveAll(wr => {
-        if (!wr.TryGetTarget(out var child)) return true; // Dead reference
-        return ReferenceEquals(child, node);
-    });
-}
-```
-
-**Future Simplification Potential:**
-
-The system could potentially be simplified by:
-1. **Removing Children list:** Only cleanup uses it, and we could scan all nodes to find children instead
-2. **Keeping Parent reference:** Still useful for diagnostic output ("what's my parent?")
-3. **Path-only navigation:** Already implemented - paths work everywhere except across Popup boundaries
-
-**Blocker for Full Removal:**
-HierarchicalPath is computed by walking the **visual tree** (includes Popups with PlacementTarget bridging), so paths already encode the full ancestry. However, Parent/Child references provide:
-- Fast cleanup without scanning all nodes
-- Debug validation that visual tree matches our data structure
-- Minimal memory overhead (WeakReferences are lightweight)
-
-**Recommendation:** Keep for now - the complexity cost is low, and it provides valuable diagnostic capabilities.
+**Why Keep It:** Fast cleanup without scanning all nodes, minimal memory overhead.
 
 ---
 
@@ -305,307 +230,112 @@ HierarchicalPath is computed by walking the **visual tree** (includes Popups wit
 **Decision:** Create overlay once, reuse it (Hide/Show instead of Dispose/Create).
 
 **Why:**
-- **Gen 2 GC Deadlock:** Old approach created 7 dead overlay instances ? finalizers tried to use Dispatcher ? circular wait ? permanent deadlock
-- **Performance:** Reusing window is faster than creating/destroying
+- **Gen 2 GC Deadlock:** Old approach created dead overlays → finalizers → circular wait → deadlock
+- **Performance:** Reusing window is faster
 - **Simplicity:** Less code, fewer edge cases
 
-**Implementation:**
+**Critical Fix:** `GC.SuppressFinalize(this)` in `HighlightOverlay.Dispose()`.
+
+---
+
+### 8. Ignored Modals - Empty Popup Handling
+
+**Decision:** Track empty popups (tooltips) that shouldn't create contexts.
+
+**Problem:** Tooltip popups have no navigable children but WPF still fires Unloaded.
+
+**Solution:**
 ```csharp
-// OLD (BAD):
-_overlay?.Dispose();
-_overlay = null;
-_overlay = new HighlightOverlay(); // Creates new instance
+// Navigator.cs
+private static readonly HashSet<NavNode> _ignoredModals = new HashSet<NavNode>();
 
-// NEW (GOOD):
-_overlay?.Hide(); // Reuse same instance
-```
+// OnModalGroupOpened: Check children count
+if (children.Count == 0) {
+    _ignoredModals.Add(scopeNode);
+    return; // Don't create context
+}
 
-**Critical Fix:** `GC.SuppressFinalize(this)` in `HighlightOverlay.Dispose()` prevents finalizer deadlock.
-
----
-
-### 8. Minimal Public API Surface
-
-**Decision:** Only `Navigator.Initialize()` is truly public. Most APIs are `internal` or `private`.
-
-**Why:**
-- **Encapsulation:** External code should only initialize the system, not manage it
-- **Simplicity:** Fewer entry points = fewer potential misuses
-- **Maintainability:** Internal refactoring doesn't affect external callers
-
-**Public API (Navigator):**
-- `Initialize()` - Main initialization *(called from AppUi.cs)*
-- `MoveInDirection(dir)` - Keyboard navigation
-- `ActivateFocusedNode()` - Activate current focus
-- `ExitGroup()` - Exit current modal
-
-**Internal API (Navigator):**
-- `FocusChanged` event - Internal subscribers only
-- `GetAllNavNodes()` - Internal queries only
-
-**Public API (Observer):**
-- `Initialize()` - Main initialization (auto-hooks windows)
-- `RegisterRoot(...)` / `UnregisterRoot(...)` - Manual root management
-- `SyncRoot(...)` - Manual sync
-- `GetAllNavNodes()` - Query API (used by Navigator)
-- `TryGetNavNode(...)` - Lookup API (used by NavNode validation)
-- `ModalGroupOpened` / `ModalGroupClosed` events - Modal lifecycle
-- `WindowLayoutChanged` event - Layout change notifications
-
-**Architectural Note:** All other classes (NavNode, NavPathFilter, HighlightOverlay, NavContext) are `internal` - never exposed outside UiObserver directory.
-
----
-
-## ?? File Responsibilities
-
-### NavNode.cs - Data Structure + Factory
-
-**Purpose:** Pure data + type-specific behaviors + creation logic.
-
-**Key Methods:**
-- `CreateNavNode(fe)` - Factory method with 11-step validation pipeline
-- `Activate()` - Type-specific activation (click button, open menu, select item)
-- `Close()` - Type-specific close (close window, close popup, collapse menu)
-- `GetHierarchicalPath(fe)` - Walks visual tree to build path string
-
-**Key Data:**
-- `SimpleName` - Human-readable name (not unique)
-- `HierarchicalPath` - Full path for filtering (unique)
-- `Parent` - WeakReference to parent NavNode
-- `Children` - List of WeakReferences to child NavNodes
-- `IsGroup` / `IsModal` / `IsNavigable` - Classification flags
-
-**Design Patterns:**
-- **Factory Pattern:** `CreateNavNode()` centralizes creation logic
-- **Strategy Pattern:** `Activate()` / `Close()` behavior varies by type
-- **Whitelist Pattern:** Only whitelisted types are tracked
-
----
-
-### Observer.js - Discovery Engine
-
-**Purpose:** Scans visual trees silently, creates NavNodes, builds hierarchy, emits events only for modal lifecycle and layout changes.
-
-**Key Methods:**
-- `Initialize()` - Auto-discover roots + hook existing windows (self-sufficient!)
-- `HookExistingWindow(Window w)` - Hook layout events for window (private)
-- `OnWindowLayoutChanged(object, EventArgs)` - Re-register root + fire event
-- `RegisterRoot(fe)` - Register a PresentationSource root for scanning
-- `UnregisterRoot(fe)` - Cleanup when root is unloaded
-- `SyncRoot(root)` - Rescan visual tree and sync with tracked nodes (silent operation)
-- `LinkToParent(node, fe)` - Build Parent/Child relationships (handles Popup bridging)
-- `UnlinkNode(node)` - Clean up Parent/Child links on removal
-- `TryCreateNavNodeForElement(fe)` - Create node for dynamically loaded elements (silent)
-- `HandleRemovedNodeModalTracking(node)` - Fire ModalGroupClosed for removed modals
-
-**Key Events:**
-- `ModalGroupOpened` - Modal opened (Window, PopupRoot) - ALL children already discovered
-- `ModalGroupClosed` - Modal closed
-- `WindowLayoutChanged` - Window layout changed (position, size, loaded state) - for overlay sync
-
-**Key Data Structures:**
-- `_nodesByElement` - ConcurrentDictionary<FrameworkElement, NavNode> (source of truth)
-- `_presentationSourceRoots` - Map PresentationSource ? root element
-- `_rootIndex` - Map root ? all elements in that tree
-- `_pendingSyncs` - Debouncing for layout changes
-
-**Design Patterns:**
-- **Event-Driven Architecture:** Emits events only for modal lifecycle & layout (not per-node!)
-- **Silent Discovery:** Nodes are tracked internally without firing events
-- **Debouncing:** Coalesces multiple layout changes into single scan
-- **Weak References:** Parent/Child links use WeakReference to avoid memory leaks
-- **Self-Sufficient:** Manages its own lifecycle, doesn't require Navigator's help
-
-**Architectural Decision:** Observer is completely self-sufficient. It hooks windows, manages roots, and fires events. Navigator never calls Observer for discovery purposes, only subscribes to events.
-
----
-
-### Navigator.cs - Navigation Logic
-
-**Purpose:** Subscribes to Observer events, manages modal context stack, handles keyboard input, spatial navigation, overlay management.
-
-**Key Methods:**
-- `Initialize()` - One-time setup (subscribes to Observer events, registers keyboard handler)
-- `MoveInDirection(dir)` - Find best candidate in direction using spatial algorithm
-- `ActivateFocusedNode()` - Activate current focus
-- `ExitGroup()` - Close topmost modal
-- `TryInitializeFocusIfNeeded()` - Initialize focus when modal opens (complete candidate list!)
-- `SetFocusVisuals(node)` - Update overlay highlight
-
-**Key Data:**
-- `_modalContextStack` - List<NavContext> (modal scope + focused node per context)
-- `CurrentContext` - Helper property for top of stack
-- `_overlay` - HighlightOverlay for visual feedback
-
-**Event Handlers (reactive architecture):**
-- `OnModalGroupOpened` - Push new context, initialize focus with complete info
-- `OnModalGroupClosed` - Pop context, restore previous focus
-- `OnWindowLayoutChanged` - Update overlay position (no Observer calls!)
-
-**Internal API:**
-- `FocusChanged` event - Internal subscribers only (not public)
-
-**Design Patterns:**
-- **Observer Pattern:** Subscribes to Observer events only (never calls Observer)
-- **Command Pattern:** Keyboard shortcuts trigger navigation commands
-- **Strategy Pattern:** Spatial navigation algorithm (directional cost calculation)
-- **Single-Pass Initialization:** Focus initialized once per modal with complete information
-- **Reactive Architecture:** All actions are reactions to Observer's events
-
-**Architectural Decision:** Navigator is purely reactive. It never calls `Observer.RegisterRoot()` or manages windows. It only subscribes to events and updates its own state (modal stack, focus) and visual feedback (overlay).
-
----
-
-### NavPathFilter.cs - Pattern Matching
-
-**Purpose:** Filter/classify nodes based on hierarchical path patterns.
-
-**Pattern Syntax:**
-```
-EXCLUDE: *:HighlightOverlay > **
-CLASSIFY: ** > *:SelectCarDialog => role=group; modal=true
-```
-
-**Wildcards:**
-- `*` - Match any single segment (name or type)
-- `**` - Match 0+ segments (any depth including current level)
-- `***` - Match 1+ segments (at least one ancestor away)
-
-**Key Methods:**
-- `IsExcluded(path)` - Check if path matches any exclusion rule
-- `GetClassification(path)` - Get classification override for path
-- `ParseRules(rules[])` - Parse rule array
-
-**Design Patterns:**
-- **Interpreter Pattern:** Parse and evaluate path patterns
-- **Chain of Responsibility:** Check rules in priority order
-
----
-
-### HighlightOverlay.cs - Visual Feedback
-
-**Purpose:** Topmost transparent window showing focus rectangle + debug rectangles.
-
-**Key Methods:**
-- `ShowFocusRect(rect)` - Show blue rectangle for focused node
-- `HideFocusRect()` - Hide focus rectangle
-- `ShowDebugRects(leafs, groups)` - Show all navigable elements (debug mode)
-- `ClearDebugRects()` - Clear debug rectangles
-- `Dispose()` - **CRITICAL:** Includes `GC.SuppressFinalize(this)` to prevent deadlock
-
-**Key Properties:**
-- `AllowsTransparency = true` - Transparent background
-- `Topmost = true` - Always on top
-- `IsHitTestVisible = false` - Click-through
-- `ShowInTaskbar = false` - Hidden from taskbar
-
-**Design Patterns:**
-- **Singleton-ish:** Navigator keeps one persistent instance
-- **Observer Pattern:** Updates when focus changes (via Navigator)
-
----
-
-### NavContext.cs - Context Data Structure
-
-**Purpose:** Bundle modal scope with focused node (atomic state management).
-
-**Key Properties:**
-- `ModalNode` - The modal defining this context's scope (Window, Popup, PopupRoot)
-- `FocusedNode` - Currently focused node within this scope (or null)
-
-**Design Pattern:**
-- **Value Object:** Immutable modal node, mutable focus
-
----
-
-## ? Design Philosophy Summary
-
-1. **Observe, Don't Predict:** React to actual UI state, not guessed behavior
-2. **Whitelist Everything:** Performance through explicit tracking
-3. **Modal-Only Events:** Silent node discovery, events only for modal lifecycle & layout
-4. **Complete Information:** Focus selection sees all candidates at once (not incremental)
-5. **Weak References Everywhere:** Prevent memory leaks in Parent/Child links
-6. **Compute Once, Store Forever:** HierarchicalPath computed at creation
-7. **Path-Based Hierarchy:** Use HierarchicalPath string comparison for all navigation logic (IsDescendantOf, scope filtering)
-8. **Parent/Child for Cleanup Only:** Bidirectional WeakReference chains used for memory management and diagnostics, NOT navigation
-9. **Popup Bridging via PlacementTarget:** Jump across Popup boundaries when building Parent/Child links and computing paths
-10. **Modal Context = Scope + Focus:** Atomic bundling prevents desync
-11. **Stack Never Empty:** Root context always present after initialization
-12. **Single-Pass Initialization:** Focus initialized once per modal with complete candidate list
-13. **Persistent Resources:** Reuse windows/objects instead of recreate
-14. **Finalizers Are Dangerous:** Always suppress when implementing Dispose()
-15. **✅ Optimistic Validation:** Accept unlinked modals, reject only provably wrong hierarchies
-16. **✅ Pattern-Based Exclusion:** Context-aware filtering better than global type rules
-17. **✅ Silent Discovery:** Node tracking is internal, events signal user-facing state changes only
-18. **✅ Minimal Public API:** Only expose what external code needs (`Initialize()` + navigation commands)
-19. **✅ Clean Separation:** Observer handles discovery, Navigator handles navigation - NO overlap!
-
----
-
-## ?? Critical Implementation Details
-
-### 1. CreateNavNode() - 11-Step Pipeline
-
-```csharp
-public static NavNode CreateNavNode(FrameworkElement fe) {
-    // Step 1: Type-based detection (IsLeafType / IsGroupType)
-    // Step 2: Compute HierarchicalPath (for filtering)
-    // Step 3: Check classification overrides (CLASSIFY rules)
-    // Step 4: Whitelist check (reject if not leaf/group)
-    // Step 5: Nested leaf constraint (reject button inside button)
-    // Step 6: Compute ID (AutomationId > Name > Type+Hash)
-    // Step 7: Exclusion check (EXCLUDE rules)
-    // Step 8: Modal type detection (Window, Popup, PopupRoot)
-    // Step 9: Modal override (from classification)
-    // Step 10: Non-modal group nesting validation
-    // Step 11: Create node with all computed values
+// OnModalGroupClosed: Check if ignored
+if (_ignoredModals.Remove(scopeNode)) {
+    return; // No action needed
 }
 ```
 
-**Key Insight:** HierarchicalPath computed at Step 2, used at Step 7 (exclusion), then passed to constructor.
+**Result:** No warnings for tooltip closure, cleaner logs.
 
 ---
 
-### 2. Observer.Initialize() - Self-Sufficient Discovery
+## 📁 File Organization
+
+### Core Classes
+
+| File | Purpose | Lines | Status |
+|------|---------|-------|--------|
+| `NavNode.cs` | Data + factory + behaviors | ~800 | ✅ Current |
+| `Observer.cs` | Discovery engine | ~600 | ✅ Current |
+| `Navigator.cs` | Core navigation logic | ~400 | ✅ Current |
+| `Navigator.Focus.cs` | Focus management | ~300 | ✅ Current |
+| `Navigator.Navigation.cs` | Navigation algorithm | ~200 | ✅ Current |
+| `Navigator.InteractionMode.cs` | Slider interaction | ~500 | ✅ Current |
+| `Navigator.Confirmation.cs` | Confirmation dialog | ~150 | ✅ Current |
+| `Navigator.SD.cs` | StreamDeck integration | ~500 | ✅ See separate doc |
+| `Navigator.SD.BuiltInDefinitions.cs` | SD pages/keys | ~200 | ✅ See separate doc |
+
+### Supporting Classes
+
+| File | Purpose | Lines | Status |
+|------|---------|-------|--------|
+| `NavContext.cs` | Context data structure | ~50 | ✅ Current |
+| `NavPathFilter.cs` | Pattern matching | ~300 | ✅ Current |
+| `HighlightOverlay.cs` | Visual feedback | ~200 | ✅ Current |
+| `SDPClient.cs` | Named pipe client | ~800 | ✅ See separate doc |
+| `NavConfig.cs` | Configuration model | ~150 | ✅ Current |
+| `NavConfigParser.cs` | Config file parser | ~300 | ✅ Current |
+| `SDPIconHelper.cs` | Icon management | ~100 | ✅ See separate doc |
+
+**Total:** ~5,600 lines
+
+---
+
+## 🔧 Critical Implementation Details
+
+### 1. Observer.Initialize() - Self-Sufficient Discovery
 
 ```csharp
 internal static void Initialize() {
-    // Register global event handlers
-    EventManager.RegisterClassHandler(typeof(FrameworkElement), FrameworkElement.LoadedEvent, ...);
+    // Register handler for Window.Loaded ONLY (not all FrameworkElements)
+    EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent, ...);
+    
+    // Listen for popup open events
     EventManager.RegisterClassHandler(typeof(ContextMenu), ContextMenu.OpenedEvent, ...);
     EventManager.RegisterClassHandler(typeof(MenuItem), MenuItem.SubmenuOpenedEvent, ...);
     
-    // ? NEW: Hook all existing windows (self-sufficient!)
-    if (Application.Current != null) {
-        Application.Current.Dispatcher.BeginInvoke(new Action(() => {
-            foreach (Window w in Application.Current.Windows) {
-                HookExistingWindow(w);
-            }
-        }), DispatcherPriority.ApplicationIdle);
-    }
+    // Hook all existing windows (self-sufficient!)
+    Application.Current.Dispatcher.BeginInvoke(new Action(() => {
+        foreach (Window w in Application.Current.Windows) {
+            HookExistingWindow(w);
+        }
+    }), DispatcherPriority.Background);
 }
 
 private static void HookExistingWindow(Window w) {
-    // Register root for discovery
-    var content = w.Content as FrameworkElement;
-    if (content != null) {
-        RegisterRoot(content);
-    }
+    // Register the Window itself as root (not Content)
+    RegisterRoot(w);
     
-    // Hook layout events to fire WindowLayoutChanged
+    // Hook layout events
     w.Loaded += OnWindowLayoutChanged;
     w.LayoutUpdated += OnWindowLayoutChanged;
     w.LocationChanged += OnWindowLayoutChanged;
     w.SizeChanged += OnWindowLayoutChanged;
+    
+    // Periodic rescan for dynamic content (tab switches)
+    var timer = new DispatcherTimer(TimeSpan.FromSeconds(1), ...);
 }
 
 private static void OnWindowLayoutChanged(object sender, EventArgs e) {
-    // Re-register root to handle dynamic content changes
+    // Re-register root on layout changes
     if (sender is Window w) {
-        var content = w.Content as FrameworkElement;
-        if (content != null) {
-            RegisterRoot(content);
-        }
+        RegisterRoot(w);
     }
     
     // Notify subscribers (Navigator's overlay)
@@ -613,291 +343,426 @@ private static void OnWindowLayoutChanged(object sender, EventArgs e) {
 }
 ```
 
-**Key Insight:** Observer is completely self-sufficient. It manages its own lifecycle and fires events. Navigator never calls Observer for discovery purposes.
+**Key Insight:** Observer is completely self-sufficient. Navigator never calls Observer for discovery.
 
 ---
 
-### 3. Navigator.Initialize() - Pure Subscriber
+### 2. Navigator.Initialize() - Pure Subscriber + Subsystem Init
 
 ```csharp
 public static void Initialize() {
-    // Initialize navigation rules
+    // Initialize StreamDeck (expensive but async)
+    InitializeStreamDeck();
+    
+    // Initialize navigation rules (EXCLUDE/CLASSIFY patterns)
     InitializeNavigationRules();
-
-    // ? Subscribe to Observer events ONLY
+    
+    // Disable tooltips globally (prevent popup during mouse tracking)
+    DisableTooltips();
+    
+    // Subscribe to Observer events ONLY
     Observer.ModalGroupOpened += OnModalGroupOpened;
     Observer.ModalGroupClosed += OnModalGroupClosed;
-    Observer.WindowLayoutChanged += OnWindowLayoutChanged;  // ? NEW!
+    Observer.WindowLayoutChanged += OnWindowLayoutChanged;
+    Observer.NodesUpdated += Observer_NodesUpdated;
     
-    // Startup Observer (it will hook windows itself)
+    // ✅ FIX: Create overlay BEFORE starting Observer (avoid race condition)
+    EnsureOverlay();
+    
+    // Startup Observer (it hooks windows itself)
     Observer.Initialize();
-
-    // Register keyboard handler
+    
+    // Install focus guard (prevent WPF from stealing focus)
+    InstallFocusGuard();
+    
+    // Register keyboard handler (DEBUG only)
+#if DEBUG
     EventManager.RegisterClassHandler(typeof(Window), UIElement.PreviewKeyDownEvent, ...);
+#endif
+}
+```
 
-    // Initialize overlay
-    if (Application.Current != null) {
-        Application.Current.Dispatcher.BeginInvoke(new Action(() => {
-            EnsureOverlay();
-        }), DispatcherPriority.ApplicationIdle);
-    }
+**Key Changes from Old Design Doc:**
+- ✅ `InitializeStreamDeck()` - Entire subsystem initialization
+- ✅ `InitializeNavigationRules()` - Pattern parsing
+- ✅ `DisableTooltips()` - Global tooltip management
+- ✅ `Observer.NodesUpdated` - Batch update handler
+- ✅ `EnsureOverlay()` - Synchronous, before Observer starts
+
+---
+
+### 3. NodesUpdated Event - Focus Re-initialization
+
+**Purpose:** Handle focus when focused node is removed during a sync.
+
+```csharp
+// Observer.cs - Fires at end of SyncRoot
+if (addedNodes.Count > 0 || removedNodes.Count > 0) {
+    NodesUpdated?.Invoke(addedNodes.ToArray(), removedNodes.ToArray());
 }
 
-private static void OnWindowLayoutChanged(object sender, EventArgs e) {
-    // ? Only update overlay (no Observer calls!)
-    if (CurrentContext?.FocusedNode != null) {
-        UpdateFocusRect(CurrentContext.FocusedNode);
+// Navigator.cs - Handler
+private static void Observer_NodesUpdated(NavNode[] addedNodes, NavNode[] removedNodes) {
+    // Check if our currently focused node was removed
+    if (CurrentContext.FocusedNode != null && removedNodes != null) {
+        foreach (var removedNode in removedNodes) {
+            if (ReferenceEquals(CurrentContext.FocusedNode, removedNode)) {
+                removedNode.HasFocus = false;
+                CurrentContext.FocusedNode = null;
+                _needsFocusReinit = true;
+                break;
+            }
+        }
+    }
+    
+    // If we need focus re-init and new navigable nodes were added, try to focus one
+    if (_needsFocusReinit && addedNodes != null) {
+        foreach (var addedNode in addedNodes) {
+            if (addedNode.IsNavigable && IsInActiveModalScope(addedNode)) {
+                SetFocus(addedNode);
+                _needsFocusReinit = false;
+                return;
+            }
+        }
     }
 }
 ```
 
-**Key Insight:** Navigator is purely reactive. All its actions are reactions to Observer's events. It never calls `Observer.RegisterRoot()` or manages windows.
+**Scenario:** Button focused → content changed (tab switch) → button removed → re-initialize to new button.
 
 ---
 
 ### 4. Modal Context Stack Management
 
 ```csharp
-private static void OnModalGroupOpened(NavNode modalNode) {
-    // Validate linear chain: new modal MUST be descendant of current top
-    if (_modalContextStack.Count > 0) {
-        var currentTop = CurrentContext.ModalNode;
-        if (modalNode.Parent != null && !IsDescendantOf(modalNode, currentTop)) {
-            Debug.WriteLine("ERROR: Modal not descendant of top!");
-            return; // Reject!
-        }
-    }
-    
-    // Push new context
-    var newContext = new NavContext(modalNode, focusedNode: null);
-    _modalContextStack.Add(newContext);
-    
-    // Clear old focus visuals
-    _overlay?.HideFocusRect();
-    
-    // Try to initialize focus in new context
-    TryInitializeFocusIfNeeded();
-}
-
-private static void OnModalGroupClosed(NavNode modalNode) {
-    // Pop context
-    if (_modalContextStack.Count > 0 
-        && CurrentContext.ModalNode.HierarchicalPath == modalNode.HierarchicalPath) {
-        _modalContextStack.RemoveAt(_modalContextStack.Count - 1);
-    }
-    
-    // Restore focus from previous context
-    if (CurrentContext != null && CurrentContext.FocusedNode != null) {
-        SetFocusVisuals(CurrentContext.FocusedNode);
-    } else {
-        // No previous focus - try to initialize
-        TryInitializeFocusIfNeeded();
-    }
-}
-```
-
----
-
-### 5. Optimistic Modal Validation
-
-**?? ARCHITECTURAL CHANGE:** Modified modal validation to handle timing-sensitive initialization.
-
-**Problem:** PopupRoot fires `ModalGroupOpened` event BEFORE `LinkToParent()` runs, so `modalNode.Parent` is `null` when validation occurs. The original strict validation rejected these modals, breaking popup navigation.
-
-**Solution:** Accept modals with no parent optimistically, reject only if they have a parent but it's the wrong one:
-
-```csharp
-private static void OnModalGroupOpened(NavNode modalNode) {
-    if (_modalContextStack.Count > 0) {
-        var currentTop = CurrentContext.ModalNode;
-        
-        // ? NEW: Only reject if HAS parent but WRONG parent
-        if (modalNode.Parent != null && !IsDescendantOf(modalNode, currentTop)) {
-            Debug.WriteLine($"ERROR: Modal {modalNode.SimpleName} not descendant!");
-            return; // Reject invalid hierarchy
-        }
-        
-        // If Parent == null, accept optimistically
-        // (Observer will link it immediately after this event)
-    }
-    
-    // Push new context
-    var newContext = new NavContext(modalNode, focusedNode: null);
-    _modalContextStack.Add(newContext);
-    
-    // Clear old focus visuals
-    _overlay?.HideFocusRect();
-    
-    // Try to initialize focus in new context
-    TryInitializeFocusIfNeeded();
-}
-```
-
-**Event Sequence:**
-1. PopupRoot discovered ? `ModalGroupOpened` fires (`Parent = null`)
-2. Validation check passes (`Parent == null` is OK)
-3. New context pushed to stack ?
-4. `LinkToParent()` runs immediately after ? `Parent` set correctly
-5. Validation would pass retroactively
-
-**Risk Mitigation:** Invalid modals with wrong parent hierarchy are still rejected (have parent but not descendant of current top). Only nodes with no parent yet are accepted optimistically.
-
-**Impact:**
-- PopupRoot modals now work correctly
-- Dropdown menus can be navigated
-- Timing-sensitive initialization issues resolved
-
----
-
-### 6. Modal-Driven Focus Initialization
-
-```csharp
-private static void TryInitializeFocusIfNeeded() {
-    // No context yet? Wait for first modal (MainWindow)
-    if (CurrentContext == null) return;
-    
-    // Already has focus? Nothing to do
-    if (CurrentContext.FocusedNode != null) return;
-    
-    // Find first navigable node in current scope (top-left preference)
-    // All nodes are ALREADY discovered - complete candidate list!
-    var candidates = GetCandidatesInScope()
-        .Where(n => CurrentContext.ModalNode == null || IsDescendantOf(n, CurrentContext.ModalNode))
-        .OrderBy(n => {
-            // Prefer top-left (Y weight > X weight)
-            var center = n.GetCenterDip();
-            if (!center.HasValue) return double.MaxValue;
-            return center.Value.X + center.Value.Y * 10000.0;
-        })
+private static void OnModalGroupOpened(NavNode scopeNode) {
+    // Check if modal has no navigable children (tooltip popup)
+    var children = Observer.GetAllNavNodes()
+        .Where(n => n.IsNavigable && !n.IsGroup && IsDescendantOf(n, scopeNode))
         .ToList();
     
-    var firstNode = candidates.FirstOrDefault()?.Node;
-    if (firstNode != null) {
-        CurrentContext.FocusedNode = firstNode;
-        SetFocusVisuals(firstNode);
-        Debug.WriteLine($"Initialized focus in '{CurrentContext.ModalNode.SimpleName}' -> '{firstNode.SimpleName}'");
+    if (children.Count == 0) {
+        _ignoredModals.Add(scopeNode);
+        return; // Don't create context
+    }
+    
+    // Determine context type (RootWindow vs ModalDialog)
+    var contextType = DetermineModalContextType(scopeNode);
+    
+    // Create context
+    _contextStack.Add(new NavContext(scopeNode, contextType, focusedNode: null));
+    
+    // Switch StreamDeck page
+    SwitchStreamDeckPageForModal(scopeNode);
+    
+    // Defer focus initialization (wait for layout to complete)
+    scopeNode.TryGetVisual(out var fe);
+    fe.Dispatcher.BeginInvoke(
+        isNestedModal ? DispatcherPriority.ApplicationIdle : DispatcherPriority.Loaded,
+        new Action(() => TryInitializeFocusIfNeeded())
+    );
+}
+
+private static void OnModalGroupClosed(NavNode scopeNode) {
+    // Check if this was an ignored modal (tooltip)
+    if (_ignoredModals.Remove(scopeNode)) {
+        return; // No action needed
+    }
+    
+    // Pop context (compare by path, not reference)
+    for (int i = _contextStack.Count - 1; i >= 0; i--) {
+        if (_contextStack[i].ScopeNode.HierarchicalPath == scopeNode.HierarchicalPath) {
+            _contextStack.RemoveAt(i);
+            break;
+        }
+    }
+    
+    // Defer parent focus restoration (wait for WPF to finish unload)
+    CurrentContext.ScopeNode.TryGetVisual(out var parentElement);
+    parentElement.Dispatcher.BeginInvoke(
+        DispatcherPriority.Loaded,
+        new Action(() => {
+            ValidateAndRestoreParentFocus();
+            SwitchStreamDeckPageForModal(CurrentContext.ScopeNode);
+        })
+    );
+}
+```
+
+---
+
+## 🎮 Navigation Context System
+
+### Context Types and Scope Resolution
+
+```csharp
+enum NavContextType {
+    RootWindow,         // MainWindow context (always present)
+    ModalDialog,        // Popup/Dialog context (Observer-managed)
+    InteractiveControl  // Slider interaction (Navigator-managed)
+}
+```
+
+### Scope Resolution Logic
+
+```csharp
+internal static bool IsInActiveModalScope(NavNode node) {
+    if (CurrentContext == null) return true;
+    
+    switch (CurrentContext.ContextType) {
+        case NavContextType.RootWindow:
+            // All descendants in scope
+            return IsDescendantOf(node, CurrentContext.ScopeNode);
+        
+        case NavContextType.ModalDialog:
+            // All descendants in scope
+            return IsDescendantOf(node, CurrentContext.ScopeNode);
+        
+        case NavContextType.InteractiveControl:
+            // ONLY the control itself is in scope (single-element)
+            return ReferenceEquals(node, CurrentContext.ScopeNode);
     }
 }
 ```
 
-**Trigger Points (modal lifecycle only):**
-- `OnModalGroupOpened` ? New context created, initialize focus with complete node list
-- `OnModalGroupClosed` ? Previous context may need focus if it had none
+### Context Lifecycle
 
-**Selection Strategy:** Top-left position preferred (Y-coordinate has 10,000× weight)
+**RootWindow Context:**
+- **Created:** When MainWindow discovered by Observer
+- **Destroyed:** Never (persists until app exit)
+- **Management:** Observer-managed
 
-**Key Improvement:** Unlike the old per-node event model, this executes **once per modal** with a **complete candidate list**, ensuring optimal selection every time.
+**ModalDialog Context:**
+- **Created:** When Popup/PopupRoot discovered by Observer
+- **Destroyed:** When Popup closes (Observer fires ModalGroupClosed)
+- **Management:** Observer-managed
+
+**InteractiveControl Context:**
+- **Created:** When user activates slider (calls `EnterInteractionMode`)
+- **Destroyed:** When user exits with Back/MouseLeft (calls `ExitInteractionMode`)
+- **Management:** Navigator-managed
 
 ---
 
-## ?? Known Issues & Solutions
+## 🎛️ Interaction Mode System
 
-### Issue 1: ? SOLVED - ScrollBar Hijacking Focus
+### Purpose
 
-**Problem:** ScrollBars inside dropdown menus were winning focus selection because they had lower Y-coordinates than menu items.
+Allows controls (Sliders, DoubleSlider, RoundSlider) to enter a focused "mode" where:
+- Navigation is locked to the control (single-element scope)
+- Value adjustments are performed
+- Original value is captured for Cancel
+- StreamDeck page switches to control-specific page
 
-**Why:** Top-left preference algorithm (Y weight = 10,000×) made ScrollBar (Y=0) beat MenuItem (Y=50).
+### Enter Interaction Mode
 
-**Solution:** Added exclusion rules to filter ScrollBars from navigation:
+```csharp
+public static bool EnterInteractionMode(NavNode control, string pageName = null) {
+    // Capture original value for Cancel
+    object originalValue = CaptureControlValue(control);
+    
+    // Create interaction context
+    var context = new NavContext(
+        control, 
+        NavContextType.InteractiveControl, 
+        focusedNode: control
+    ) {
+        OriginalValue = originalValue
+    };
+    
+    _contextStack.Add(context);
+    
+    // Switch StreamDeck page (auto-detected if null)
+    if (string.IsNullOrEmpty(pageName)) {
+        pageName = GetBuiltInPageForControl(control); // Slider, DoubleSlider, RoundSlider
+    }
+    _streamDeckClient?.SwitchPage(pageName);
+    
+    // Show focus visuals
+    SetFocusVisuals(control);
+}
+```
+
+### Exit Interaction Mode
+
+```csharp
+public static bool ExitInteractionMode(bool revertChanges = false) {
+    var control = CurrentContext.ScopeNode;
+    
+    // Revert value if requested (Cancel)
+    if (revertChanges && CurrentContext.OriginalValue != null) {
+        RestoreControlValue(control, CurrentContext.OriginalValue);
+    }
+    
+    // Pop the interaction context
+    _contextStack.RemoveAt(_contextStack.Count - 1);
+    
+    // Restore parent context focus
+    if (CurrentContext != null) {
+        SetFocus(control); // Stay on control, just exit interaction mode
+        SwitchStreamDeckPageForModal(CurrentContext.ScopeNode);
+    }
+}
+```
+
+### Slider Value Adjustment
+
+**Proportional Adjustment:** 2% of total range (Maximum - Minimum)
+
+```csharp
+private static void AdjustSliderValue(SliderAdjustment adjustment) {
+    var control = CurrentContext.ScopeNode;
+    
+    if (control.TryGetVisual(out var fe)) {
+        if (fe is Slider slider) {
+            var totalRange = Math.Abs(slider.Maximum - slider.Minimum);
+            var adjustmentStep = totalRange * 0.02; // 2%
+            
+            switch (adjustment) {
+                case SliderAdjustment.SmallIncrement:
+                    slider.Value = Math.Min(slider.Maximum, slider.Value + adjustmentStep);
+                    break;
+                case SliderAdjustment.SmallDecrement:
+                    slider.Value = Math.Max(slider.Minimum, slider.Value - adjustmentStep);
+                    break;
+            }
+        }
+        
+        // DoubleSlider: Adjust value within current From/To range
+        // RoundSlider: Adjust with wrap-around (0° ↔ 360°)
+    }
+}
+```
+
+### DoubleSlider Range Adjustment
+
+**Proportional Adjustment:** 1% of total range (for boundaries)
+
+```csharp
+private static void AdjustDoubleSliderRange(FrameworkElement element, SliderAdjustment adjustment) {
+    // Get properties via reflection
+    var currentFrom = (double)fromProperty.GetValue(element);
+    var currentTo = (double)toProperty.GetValue(element);
+    var currentValue = (double)valueProperty.GetValue(element);
+    
+    var totalRange = Math.Abs(absoluteMax - absoluteMin);
+    var rangeStep = Math.Max(0.1, totalRange * 0.01); // 1%
+    
+    switch (adjustment) {
+        case SliderAdjustment.SmallIncrement: // EXPAND
+            newFrom = Math.Max(absoluteMin, currentFrom - rangeStep);
+            newTo = Math.Min(absoluteMax, currentTo + rangeStep);
+            break;
+        
+        case SliderAdjustment.SmallDecrement: // CONTRACT
+            // Move boundaries toward Value
+            newFrom = Math.Min(currentValue - rangeStep, currentFrom + rangeStep);
+            newTo = Math.Max(currentValue + rangeStep, currentTo - rangeStep);
+            
+            // Enforce minimum range
+            if (newTo - newFrom < rangeStep * 2) {
+                // Keep current range (too small)
+            }
+            break;
+    }
+    
+    // Apply changes (Value will auto-center in FromToFixed mode)
+    fromProperty.SetValue(element, newFrom);
+    toProperty.SetValue(element, newTo);
+}
+```
+
+### StreamDeck Page Mapping
+
+**Built-in Pages:**
+- `Navigation` - Standard 4-way navigation (default)
+- `UpDown` - Vertical navigation only (menus)
+- `Slider` - Value adjustment only (standard slider)
+- `DoubleSlider` - Value + range adjustment (4-way)
+- `RoundSlider` - Circular adjustment (wrap-around)
+- `Confirm` - Yes/No confirmation dialog
+
+**Page Selection Logic:**
+```csharp
+private static string GetBuiltInPageForControl(FrameworkElement element) {
+    var typeName = element.GetType().Name;
+    
+    if (typeName == "DoubleSlider") return "DoubleSlider";
+    if (typeName == "RoundSlider") return "RoundSlider";
+    if (typeName == "Slider" || typeName == "FormattedSlider") return "Slider";
+    
+    return null; // Default to Navigation
+}
+```
+
+---
+
+## ✅ Known Issues & Solutions
+
+### Issue 1: ✅ SOLVED - ScrollBar Hijacking Focus
+
+**Problem:** ScrollBars had lower Y-coordinates than menu items.
+
+**Solution:** Added exclusion rules:
 ```csharp
 "EXCLUDE: *:PopupRoot > ** > *:ScrollBar",
 "EXCLUDE: *:PopupRoot > ** > *:BetterScrollBar",
 ```
 
-**Impact:** Menu items now correctly get focus when dropdowns open.
+---
+
+### Issue 2: ✅ SOLVED - MainWindow Not Modal
+
+**Problem:** Window wasn't in `_groupTypes` whitelist.
+
+**Solution:** Added `typeof(Window)` to `_groupTypes`.
 
 ---
 
-### Issue 2: ? SOLVED - MainWindow Not Modal
+### Issue 3: ✅ SOLVED - HighlightOverlay GC Deadlock
 
-**Problem:** Root window wasn't being discovered, so modal stack remained empty and navigation failed.
+**Problem:** Multiple overlay instances → finalizers → circular wait.
 
-**Why:** Window wasn't in `_groupTypes` whitelist, so it was ignored during scanning.
-
-**Solution:** Added `typeof(Window)` to `_groupTypes`:
-```csharp
-private static readonly HashSet<Type> _groupTypes = new HashSet<Type>
-{
-    typeof(Window),  // ? Added this
-    // ...rest
-};
-```
-
-**Impact:** Root modal context now initializes correctly, navigation system functional.
+**Solution:** Reuse single instance + `GC.SuppressFinalize(this)`.
 
 ---
 
-### Issue 3: ? SOLVED - HighlightOverlay GC Deadlock
+### Issue 4: ✅ SOLVED - PopupRoot Modal Validation Failure
 
-**Problem:** App freezes during Gen 2 GC, debugger shows circular wait between GC thread and Dispatcher thread.
+**Problem:** `ModalGroupOpened` fires before `LinkToParent()`.
 
-**Why:** Multiple overlay instances created ? finalizers queued ? Gen 2 GC runs finalizers ? finalizers try to use Dispatcher ? circular deadlock.
-
-**Solution 1:** Reuse single overlay instance (Hide/Show instead of Dispose/Create)
-**Solution 2:** Add `GC.SuppressFinalize(this)` in `Dispose()` method
-
-**Impact:** No more freezes, overlay works reliably.
-
----
-
-### Issue 4: ? SOLVED - PopupRoot Modal Validation Failure
-
-**Problem:** PopupRoot modals were rejected during validation because `Parent == null` when event fired.
-
-**Why:** `ModalGroupOpened` event fires immediately after node creation, before `LinkToParent()` runs.
-
-**Solution:** Optimistic validation - accept modals with no parent yet:
+**Solution:** Optimistic validation:
 ```csharp
 // Only reject if HAS parent but WRONG parent
 if (modalNode.Parent != null && !IsDescendantOf(modalNode, currentTop)) {
     return; // Reject
 }
-// If Parent == null, accept (will be linked immediately after)
+// If Parent == null, accept (will be linked after)
 ```
-
-**Impact:** Dropdown menus now navigate correctly.
 
 ---
 
-### Issue 5: ? SOLVED - Navigator Managing Windows (Architectural Violation)
+### Issue 5: ✅ SOLVED - Navigator Managing Windows
 
-**Problem:** Navigator was calling `Observer.RegisterRoot()` and hooking windows, violating separation of concerns.
+**Problem:** Navigator was calling `Observer.RegisterRoot()`.
 
-**Why:** Initial implementation didn't fully separate discovery (Observer) from navigation (Navigator).
-
-**Solution:** Moved window hooking to `Observer.Initialize()` and added `WindowLayoutChanged` event:
-```csharp
-// Observer now hooks windows itself
-private static void HookExistingWindow(Window w) {
-    RegisterRoot(w.Content);  // Discovery
-    w.Loaded += OnWindowLayoutChanged;  // Fire event for overlay
-}
-
-// Navigator only subscribes to event
-Observer.WindowLayoutChanged += OnWindowLayoutChanged;
-```
-
-**Impact:** 
-- Clean architectural separation achieved
-- Observer is self-sufficient (doesn't need Navigator's help)
-- Navigator is purely reactive (only subscribes to events)
-- No more `Observer.RegisterRoot()` calls from Navigator
+**Solution:** Observer now hooks windows itself, Navigator only subscribes to events.
 
 ---
 
-## ?? Pattern Syntax Reference
+## 📝 Pattern Syntax Reference
 
 ### Exclusion Rules
 
 ```csharp
-// Exclude HighlightOverlay and all descendants
+// Exclude HighlightOverlay
 "EXCLUDE: *:HighlightOverlay > **"
 
-// Exclude ModernMenu inside MainWindow
-"EXCLUDE: Window:MainWindow > WindowBorder:Border > ** > PART_Menu:ModernMenu"
-
-// Exclude ScrollBars inside popups
+// Exclude ScrollBars in popups
 "EXCLUDE: *:PopupRoot > ** > *:ScrollBar"
+
+// Exclude ModernMenu
+"EXCLUDE: Window:MainWindow > WindowBorder:Border > ** > PART_Menu:ModernMenu"
 ```
 
 ### Classification Rules
@@ -906,11 +771,17 @@ Observer.WindowLayoutChanged += OnWindowLayoutChanged;
 // Make SelectCarDialog a modal group
 "CLASSIFY: ** > *:SelectCarDialog => role=group; modal=true"
 
-// Make SettingsPanel a non-modal group
-"CLASSIFY: ** > SettingsPanel:Border => role=group; modal=false"
+// Configuration: Shortcut key with custom page
+"CLASSIFY: ** > *:DoubleSlider => KeyName=\"AdjustFuel\"; KeyTitle=\"Fuel\"; TargetType=\"Element\""
 
-// Override ComboBox modality
-"CLASSIFY: *** > QuickFilter:ComboBox => modal=false"
+// Configuration: Group targeting (jumps to first child)
+"CLASSIFY: ** > *:ListBox => KeyName=\"GoToList\"; KeyTitle=\"List\"; TargetType=\"Group\""
+
+// Configuration: Custom page mapping
+"CLASSIFY: ** > *:SettingsPanel => Page=\"CustomSettings\""
+
+// Configuration: Confirmation required
+"CLASSIFY: ** > *:DeleteButton => KeyName=\"Delete\"; RequireConfirmation=true; ConfirmationMessage=\"Delete this item?\""
 ```
 
 ### Wildcard Reference
@@ -919,161 +790,111 @@ Observer.WindowLayoutChanged += OnWindowLayoutChanged;
 |----------|---------|---------|
 | `*` | Match any single segment | `*:Button` = any Button |
 | `**` | Match 0+ segments | `** > *:Button` = Button at any depth |
-| `***` | Match 1+ segments | `*** > *:Button` = Button with at least 1 ancestor |
-| `>` | Parent-child separator | `A:Panel > B:Button` = Button B inside Panel A |
+| `***` | Match 1+ segments | `*** > *:Button` = Button with ≥1 ancestor |
+| `>` | Parent-child separator | `A:Panel > B:Button` |
 
 ### Segment Format
 
 ```
-Name:Type
+Name:Type[:WindowHandle]
 ```
 
-- **Name:** Element's `fe.Name` property (use `*` for any name)
-- **Type:** Element's type name (use `*` for any type)
-
-**Examples:**
-- `SaveButton:Button` - Button named "SaveButton"
-- `*:Button` - Any Button (any name)
-- `PART_Content:*` - Any element named "PART_Content"
-- `*:*` - Any element (same as `*`)
+- **Name:** Element's `fe.Name` (use `*` for any)
+- **Type:** Element's type name (use `*` for any)
+- **WindowHandle:** HWND (top-level elements only)
 
 ---
 
-## ?? Debugging Tips
+## 🐛 Debugging Guide
 
-### 1. Enable Verbose Debug Output
+### 1. Enable Verbose Debug
 
-Set `VERBOSE_DEBUG = true` in `NavNode.cs`:
+**Hotkey:** Ctrl+Shift+F9 (toggles on/off)
 
-```csharp
-private const bool VERBOSE_DEBUG = true;
+**Output:**
 ```
-
-Output example:
-```
-[NavNode] Evaluating: Button 'SaveButton'
-[NavNode]   -> Type-based: IsGroup=false, IsLeaf=true
-[NavNode]   -> CREATED: Button Id=N:SaveButton
-[NavNode]   -> Final: IsGroup=false, IsModal=false
-[NavNode]   -> Path: MainWindow:Window > SaveButton:Button
+[Observer] NavNode discovered: Button 'SaveButton'
+[Navigator] Initialized focus in 'MainWindow' -> 'SaveButton'
+[Navigator] Modal opened: (unnamed):PopupRoot:1A02D4
 ```
 
 ---
 
-### 2. Toggle Debug Overlay
+### 2. Debug Overlay
 
-Press **Ctrl+Shift+F12** to show all navigable elements with colored rectangles:
-- **Orange:** Leaf nodes (navigable targets)
-- **Gray:** Group nodes (containers)
+**Show Navigables:** Ctrl+Shift+F12
+- **Blue:** Current focus
+- **Orange:** Leaf nodes
+- **Gray:** Group nodes
 
-Press **Ctrl+Shift+F11** to show ALL discovered nodes (including out-of-scope).
+**Show All Nodes:** Ctrl+Shift+F11
 
 ---
 
-### 3. Enable Consistency Validation (DEBUG builds only)
+### 3. Consistency Validation
 
-Consistency validation runs automatically in DEBUG builds when toggling the overlay:
+Runs automatically on overlay toggle (DEBUG builds):
 
-```csharp
-#if DEBUG
-    ValidateNodeConsistency();  // Runs on Ctrl+Shift+F12/F11
-#endif
-```
-
-Output example:
 ```
 ========== NavNode Consistency Check ==========
-Total nodes to validate: 47
+Total nodes: 47
 Dead visuals: 0
 Parent mismatches: 0
-Child consistency errors: 0
-Orphaned nodes: 0
-Circular references: 0
-? All nodes are CONSISTENT with visual tree!
+✅ All nodes CONSISTENT
 ```
 
 ---
 
-### 4. Watch Modal Stack State
-
-Modal stack is logged during overlay toggle (Ctrl+Shift+F12/F11):
-
-```
-Modal Stack (2 contexts):
-  [0] MainWindow:Window > LayoutRoot:DockPanel [focused: Button1:Button]
-  [1] Popup:Popup [focused: MenuItem3:MenuItem]
-```
-
----
-
-### 5. Watch Focus Selection
-
-`TryInitializeFocusIfNeeded()` logs detailed candidate scoring:
+### 4. Watch Focus Selection
 
 ```
 [Navigator] Finding first navigable in scope 'PopupRoot'...
-  Candidate: MenuItem @ path...
-    Center: 150.0,50.0 | Score: 500150.0
-  Candidate: ScrollBar @ path...
-    Center: 450.0,0.0 | Score: 450.0
-  ? WINNER: ScrollBar (score: 450.0)
+  Candidate: MenuItem @ Center: 150.0,50.0 | Score: 500150.0
+  ✅ WINNER: MenuItem (score: 500150.0)
 ```
 
-This helped identify the ScrollBar hijacking issue.
+---
+
+### 5. Watch Context Stack
+
+```
+Context Stack (3 contexts):
+  [0] RootWindow: MainWindow [focused: Button1:Button]
+  [1] ModalDialog: Popup [focused: MenuItem3:MenuItem]
+  [2] InteractiveControl: DoubleSlider [focused: DoubleSlider]
+```
 
 ---
 
-## DPI Scaling & Coordinate Systems
+## 📚 Related Documentation
 
-### WPF Coordinate Systems
-- **DIP (Device Independent Pixels):** WPF's native unit (96 DPI base)
-- **Device Pixels:** Physical screen pixels (scaled by Windows DPI setting)
-- **Screen Coordinates:** Absolute position on screen
-
-### Transformation Rules
-1. **Overlay positioning:** Uses DIP (screen-absolute)
-2. **Mouse input (Win32):** Requires device pixels
-3. **Coordinate calculations:** Always done in DIP first
-4. **Final conversion:** `TransformToDevice` before Win32 API calls
-
-### WPF Popup Timing
-Popup positioning happens AFTER `DispatcherPriority.ApplicationIdle`:
-- `Loaded` event: Popup created, temporary position
-- `Measure/Arrange`: Layout calculated
-- `ApplicationIdle`: Pending UI updates processed
-- **Popup positioning:** PlacementTarget calculations, screen bounds checks ← HAPPENS HERE
-- Use 50ms timer after ApplicationIdle to get final coordinates
-
-### Critical Methods
-- `GetCenterDip()`: Returns DIP (screen-absolute) - for overlays
-- `MoveMouseToFocusedNode()`: DIP → device pixels → mouse input
-- `UpdateFocusRect()`: Device pixels → DIP for overlay
-
----
-
-## ?? Further Reading
-
+- **StreamDeck Integration Design.md** - Complete StreamDeck integration architecture
+- **Configuration System Documentation.md** - Config file format and parser
+- **Protocol.md** - Named pipe communication protocol (in NWRS AC SD Plugin)
 - **CHANGELOG.md** - Chronological history of architectural changes
-- **NavNode.cs** - Factory pattern + type classification
-- **Observer.cs** - Discovery engine implementation
-- **Navigator.cs** - Navigation logic + modal stack management
-- **NavPathFilter.cs** - Pattern matching implementation
 
 ---
 
-## 🎮 StreamDeck Integration
+## 🎨 Design Philosophy Summary
 
-**Integration Approach:** StreamDeck SDK code will be imported from another existing project and compiled directly into AcManager.exe. No external processes, plugins, or IPC mechanisms required.
-
-**Navigator API:** The existing public methods in Navigator are sufficient for external input sources:
-- `MoveInDirection(NavDirection dir)` - Directional navigation
-- `ActivateFocusedNode()` - Activate current focus
-- `ExitGroup()` - Exit current modal
-
-**Threading:** StreamDeck button events fire on background threads. Input handlers must marshal to WPF UI thread before calling Navigator methods.
-
-**Initialization:** StreamDeck bridge initializes after `Navigator.Initialize()` completes.
+1. **Observe, Don't Predict** - React to actual UI state
+2. **Whitelist Everything** - Performance through explicit tracking
+3. **Silent Discovery** - Nodes tracked internally, events for lifecycle only
+4. **Complete Information** - Focus selection sees all candidates at once
+5. **Weak References** - Prevent memory leaks
+6. **Compute Once** - HierarchicalPath never changes after creation
+7. **Path-Based Hierarchy** - String comparison for all navigation logic
+8. **Parent/Child for Cleanup** - Not used for navigation
+9. **Context Stack** - Three types: RootWindow, ModalDialog, InteractiveControl
+10. **Persistent Resources** - Reuse windows/objects
+11. **Finalizers Are Dangerous** - Always suppress in Dispose()
+12. **Minimal Public API** - Only expose what's needed
+13. **Clean Separation** - Observer = discovery, Navigator = navigation
 
 ---
 
-**Last Updated:** After StreamDeck integration note (embedded SDK, reuses existing Navigator API)
+**Document Version:** 2.0  
+**Last Verified:** December 2024  
+**Next Review:** After major architectural changes
+
+---

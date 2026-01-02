@@ -110,6 +110,7 @@ namespace AcManager.UiObserver
             typeof(ListBox),       // Pure container: never directly navigable
             typeof(ListView),      // Pure container: never directly navigable
             typeof(DataGrid),      // Pure container: never directly navigable
+            Type.GetType("FirstFloor.ModernUI.Windows.Controls.ReferenceSwitch, FirstFloor.ModernUI")  // Content-swapping container for GameDialog post-game UI
 		};
 
         #endregion

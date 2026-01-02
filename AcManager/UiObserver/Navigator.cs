@@ -150,6 +150,9 @@ namespace AcManager.UiObserver
 		// But WPF still fires Unloaded event when it closes, so we need to track these
 		// to avoid "WARNING: Closed modal not at top" messages.
 		private static readonly HashSet<NavNode> _ignoredModals = new HashSet<NavNode>();
+		
+		// Track when we need to re-initialize focus after focused node unloads
+		private static bool _needsFocusReinit = false;
 
 		/// <summary>
 		/// Gets whether verbose navigation debug output is enabled.
@@ -185,9 +188,8 @@ namespace AcManager.UiObserver
 			Observer.ModalGroupOpened += OnModalGroupOpened;
 			Observer.ModalGroupClosed += OnModalGroupClosed;
 			Observer.WindowLayoutChanged += OnWindowLayoutChanged;
-			Observer.NodeUnloaded += OnNodeUnloaded;  // ✅ NEW: Subscribe to node unload events
-			Observer.NavigableNodeDiscovered += OnNavigableNodeDiscovered;  // ✅ NEW: Subscribe to incremental discovery
-			
+			Observer.NodesUpdated += Observer_NodesUpdated;
+
 			// ✅ FIX: Create overlay BEFORE starting Observer to avoid race condition
 			// When Observer discovers MainWindow and fires ModalGroupOpened, the overlay
 			// must already exist so focus initialization can show the blue rectangle
@@ -308,51 +310,46 @@ namespace AcManager.UiObserver
 		#region Event Handlers
 
 		/// <summary>
-		/// Called by Observer when any NavNode's element is being unloaded from the visual tree.
-		/// We check if this is our currently focused node and handle the in-modal navigation case.
+		/// Called by Observer when nodes are added or removed during a sync.
+		/// Handles focus re-initialization when focused node is removed and new navigable nodes appear.
 		/// </summary>
-		private static void OnNodeUnloaded(NavNode unloadingNode)
+		private static void Observer_NodesUpdated(NavNode[] addedNodes, NavNode[] removedNodes)
 		{
 			if (CurrentContext == null) return;
-
-			// Check if the unloading node is our currently focused node
-			if (!ReferenceEquals(CurrentContext.FocusedNode, unloadingNode)) {
-				// Not our focused node - ignore
-				return;
+			
+			// Check if our currently focused node was removed
+			if (CurrentContext.FocusedNode != null && removedNodes != null)
+			{
+				foreach (var removedNode in removedNodes)
+				{
+					if (ReferenceEquals(CurrentContext.FocusedNode, removedNode))
+					{
+						Debug.WriteLine($"[Navigator] ⚠ Focused node was removed: {removedNode.SimpleName}");
+						removedNode.HasFocus = false;
+						CurrentContext.FocusedNode = null;
+						_needsFocusReinit = true;
+						break;
+					}
+				}
 			}
-
-			// Our focused node is being unloaded!
-			Debug.WriteLine($"[Navigator] ⚠ Focused node is unloading: {unloadingNode.SimpleName} - will re-initialize focus when new content loads");
-
-			// Clear the focused node (it's about to be dead)
-			unloadingNode.HasFocus = false;
-			CurrentContext.FocusedNode = null;
-
-			// Don't schedule re-initialization here - wait for NavigableNodeDiscovered event
-			// When new content loads, Observer will fire NavigableNodeDiscovered for each new element
-			// and we'll focus the first one that appears in our scope
-		}
-
-		/// <summary>
-		/// Called by Observer when a navigable (non-group) node is discovered.
-		/// Handles dynamic content loading in existing modals (e.g., GameDialog result buttons).
-		/// If current scope has no focus, immediately focuses the first discovered element.
-		/// </summary>
-		private static void OnNavigableNodeDiscovered(NavNode newNode)
-		{
-			if (CurrentContext == null) return;
 			
-			// Only care if we currently have no focus
-			if (CurrentContext.FocusedNode != null) return;
-			
-			// Check if this new node is in our current scope
-			if (!IsInActiveModalScope(newNode)) return;
-			
-			Debug.WriteLine($"[Navigator] ✅ First navigable node discovered in scope with no focus: {newNode.SimpleName}");
-			Debug.WriteLine($"[Navigator] Setting focus immediately");
-			
-			// Focus this node immediately
-			SetFocus(newNode);
+			// If we need focus re-init and new navigable nodes were added in our scope, try to focus one
+			if (_needsFocusReinit && addedNodes != null && addedNodes.Length > 0)
+			{
+				// Find first added node that's navigable and in our scope
+				foreach (var addedNode in addedNodes)
+				{
+					if (!addedNode.IsGroup && addedNode.IsNavigable && IsInActiveModalScope(addedNode))
+					{
+						Debug.WriteLine($"[Navigator] ✅ Re-initializing focus to newly added node: {addedNode.SimpleName}");
+						SetFocus(addedNode);
+						_needsFocusReinit = false;
+						return;
+					}
+				}
+				
+				Debug.WriteLine($"[Navigator] ⏳ No navigable nodes in added batch, will wait for next sync");
+			}
 		}
 
 		/// <summary>
