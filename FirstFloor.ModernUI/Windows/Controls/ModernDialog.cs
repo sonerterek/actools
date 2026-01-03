@@ -82,23 +82,28 @@ namespace FirstFloor.ModernUI.Windows.Controls {
             }
         }
 
-        protected void CloseWithResult(MessageBoxResult? result) {
-            if (result.HasValue) {
-                MessageBoxResult = result.Value;
-                try {
-                    // sets the Window.DialogResult as well
-                    if (DialogResult != ToDialogResult(result.Value)) {
-                        DialogResult = ToDialogResult(result.Value);
-                        return;
-                    }
-                } catch (InvalidOperationException) { }
-            }
-            Close();
-        }
+		protected void CloseWithResult(MessageBoxResult? result)
+		{
+			if (result.HasValue) {
+				MessageBoxResult = result.Value;
+				try {
+					// sets the Window.DialogResult as well
+					var targetDialogResult = ToDialogResult(result.Value);
 
-        // TODO: Sort those methods, it’s too much
+					// Only attempt to set DialogResult if the window was shown as a modal dialog
+					// Check ShownAsDialog property (from DpiAwareWindow) instead of accessing DialogResult
+					if (ShownAsDialog && DialogResult != targetDialogResult) {
+						DialogResult = targetDialogResult;
+						return;
+					}
+				} catch (InvalidOperationException) { }
+			}
+			Close();
+		}
 
-        public static T CreateExtraDialogButton<T>(string content, ICommand command, bool isDefault = false, string toolTip = null) where T : Button, new() {
+		// TODO: Sort those methods, it’s too much
+
+		public static T CreateExtraDialogButton<T>(string content, ICommand command, bool isDefault = false, string toolTip = null) where T : Button, new() {
             return new T {
                 Content = content /*.ToLower()*/,
                 IsDefault = isDefault,

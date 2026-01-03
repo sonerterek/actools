@@ -21,6 +21,126 @@ namespace AcManager.UiObserver
 	/// </summary>
 	internal static partial class Navigator
 	{
+		#region Mouse Position Restoration
+		
+		// ? NEW: Mouse position restoration timer
+		// Checks every 500ms if mouse was moved externally and restores it to focused element
+		// Stops after 3 seconds (6 checks total) or when focus changes
+		private static DispatcherTimer _mouseRestoreTimer;
+		private static Point? _expectedMousePosition;
+		private static DateTime _mouseRestoreStartTime;
+		private static readonly TimeSpan _mouseRestoreMaxDuration = TimeSpan.FromSeconds(3);
+		private static readonly TimeSpan _mouseRestoreInterval = TimeSpan.FromMilliseconds(500);
+		
+		private static void StartMouseRestoreTimer(NavNode node)
+		{
+			if (!_enableMouseTracking) return;
+			
+			// Stop any existing timer
+			StopMouseRestoreTimer();
+			
+			// Create new timer
+			_mouseRestoreTimer = new DispatcherTimer
+			{
+				Interval = _mouseRestoreInterval
+			};
+			_mouseRestoreTimer.Tick += (s, e) => OnMouseRestoreTimerTick(node);
+			_mouseRestoreStartTime = DateTime.Now;
+			_mouseRestoreTimer.Start();
+			
+			if (VerboseNavigationDebug)
+			{
+				Debug.WriteLine($"[Navigator] Started mouse restore timer for '{node.SimpleName}' (3s duration, 500ms interval)");
+			}
+		}
+		
+		private static void StopMouseRestoreTimer()
+		{
+			if (_mouseRestoreTimer != null)
+			{
+				_mouseRestoreTimer.Stop();
+				_mouseRestoreTimer = null;
+				_expectedMousePosition = null;
+				
+				if (VerboseNavigationDebug)
+				{
+					Debug.WriteLine($"[Navigator] Stopped mouse restore timer");
+				}
+			}
+		}
+		
+		private static void OnMouseRestoreTimerTick(NavNode node)
+		{
+			// Check if we've exceeded the max duration
+			if (DateTime.Now - _mouseRestoreStartTime > _mouseRestoreMaxDuration)
+			{
+				if (VerboseNavigationDebug)
+				{
+					Debug.WriteLine($"[Navigator] Mouse restore timer expired (3s elapsed)");
+				}
+				StopMouseRestoreTimer();
+				return;
+			}
+			
+			// Check if focus has changed
+			if (CurrentContext?.FocusedNode != node)
+			{
+				if (VerboseNavigationDebug)
+				{
+					Debug.WriteLine($"[Navigator] Mouse restore timer stopped (focus changed)");
+				}
+				StopMouseRestoreTimer();
+				return;
+			}
+			
+			// Get current mouse position
+			var currentMousePos = GetCurrentMousePosition();
+			if (!currentMousePos.HasValue)
+			{
+				return; // Can't get current position, skip this check
+			}
+			
+			// Check if mouse was moved away from expected position
+			if (_expectedMousePosition.HasValue)
+			{
+				var distance = Math.Sqrt(
+					Math.Pow(currentMousePos.Value.X - _expectedMousePosition.Value.X, 2) +
+					Math.Pow(currentMousePos.Value.Y - _expectedMousePosition.Value.Y, 2)
+				);
+				
+				// Allow small tolerance (5 pixels) for rounding/DPI differences
+				if (distance > 5.0)
+				{
+					if (VerboseNavigationDebug)
+					{
+						Debug.WriteLine($"[Navigator] Mouse moved away (distance: {distance:F1}px), restoring to '{node.SimpleName}'");
+					}
+					
+					// Mouse was moved externally, restore it
+					MoveMouseToFocusedNode(node);
+				}
+			}
+		}
+		
+		/// <summary>
+		/// Gets the current mouse position in device pixels.
+		/// Returns null if the position cannot be determined.
+		/// </summary>
+		private static Point? GetCurrentMousePosition()
+		{
+			try
+			{
+				var mousePos = System.Windows.Forms.Control.MousePosition;
+				return new Point(mousePos.X, mousePos.Y);
+			}
+			catch
+			{
+				return null;
+			}
+		}
+		
+		#endregion
+
 		#region Focus Management
 
 		/// <summary>
@@ -36,6 +156,9 @@ namespace AcManager.UiObserver
 
 			var oldNode = CurrentContext.FocusedNode;
 			
+			// ? Stop mouse restore timer when focus changes
+			StopMouseRestoreTimer();
+			
 			if (oldNode != null) {
 				oldNode.HasFocus = false;
 			}
@@ -45,19 +168,6 @@ namespace AcManager.UiObserver
 				CurrentContext.FocusedNode = newNode;
 				
 				SetFocusVisuals(newNode);
-				
-				// ? NEW: Check if this element has a custom page mapping
-				if (_navConfig != null && _streamDeckClient != null)
-				{
-					var elementPath = GetPathWithoutHwnd(newNode);
-					var pageName = _navConfig.FindPageForElement(elementPath);
-					
-					if (!string.IsNullOrEmpty(pageName))
-					{
-						Debug.WriteLine($"[Navigator] Switching to custom page '{pageName}' for focused element '{newNode.SimpleName}'");
-						_streamDeckClient.SwitchPage(pageName);
-					}
-				}
 				
 				// ? NEW: Ensure the item is scrolled into view if in a virtualized container
 				EnsureScrolledIntoView(newNode);
@@ -74,12 +184,15 @@ namespace AcManager.UiObserver
 								// Re-check that focus hasn't changed while waiting
 								if (CurrentContext?.FocusedNode == newNode) {
 									MoveMouseToFocusedNode(newNode);
+									// ? NEW: Start mouse restore timer after initial positioning
+									StartMouseRestoreTimer(newNode);
 								}
 							})
 						);
 					} else {
 						// Fallback if visual reference is dead (shouldn't happen for newly focused node)
 						MoveMouseToFocusedNode(newNode);
+						StartMouseRestoreTimer(newNode);
 					}
 				}
 				
@@ -238,11 +351,15 @@ namespace AcManager.UiObserver
 		private static void SetFocusVisuals(NavNode node)
 		{
 			if (node == null) {
+#if DEBUG
 				_overlay?.HideFocusRect();
+#endif
 				return;
 			}
 
+#if DEBUG
 			UpdateFocusRect(node);
+#endif
 
 			// ? NEW: Only set WPF keyboard focus for interactive controls, not list items
 			// ListBoxItems should not receive keyboard focus during navigation because
@@ -340,10 +457,12 @@ namespace AcManager.UiObserver
 		/// <summary>
 		/// Updates the visual overlay rectangle to highlight the focused node.
 		/// Called on layout changes and focus changes.
+		/// DEBUG-only since HighlightOverlay is DEBUG-only.
 		/// </summary>
 		/// <param name="node">The node to highlight</param>
 		private static void UpdateFocusRect(NavNode node)
 		{
+#if DEBUG
 			if (_overlay == null || node == null) {
 				if (VerboseNavigationDebug && _overlay == null) {
 					Debug.WriteLine($"[Navigator] UpdateFocusRect: overlay is null");
@@ -422,6 +541,7 @@ namespace AcManager.UiObserver
 				Debug.WriteLine($"[Navigator] UpdateFocusRect EXCEPTION for {node.SimpleName}: {ex.Message}");
 				_overlay.HideFocusRect();
 			}
+#endif
 		}
 
 		/// <summary>
@@ -430,6 +550,8 @@ namespace AcManager.UiObserver
 		/// the mouse position for potential click-based activation.
 		/// 
 		/// Tooltips are already disabled globally, so no popup interference.
+		/// 
+		/// ? NEW: Updates expected mouse position for restoration timer.
 		/// </summary>
 		private static void MoveMouseToFocusedNode(NavNode node)
 		{
@@ -460,6 +582,9 @@ namespace AcManager.UiObserver
 				// Move mouse to focused element
 				var mouse = new AcTools.Windows.Input.MouseSimulator();
 				mouse.MoveMouseTo(absoluteX, absoluteY);
+				
+				// ? NEW: Save expected position for restoration timer
+				_expectedMousePosition = new Point(centerDevice.X, centerDevice.Y);
 
 				if (VerboseNavigationDebug) {
 					Debug.WriteLine($"[Navigator] Mouse moved to '{node.SimpleName}' @ DIP({centerDip.Value.X:F0},{centerDip.Value.Y:F0}) Device({centerDevice.X:F0},{centerDevice.Y:F0})");

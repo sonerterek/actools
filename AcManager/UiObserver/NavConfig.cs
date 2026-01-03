@@ -218,7 +218,17 @@ namespace AcManager.UiObserver
 						line += " " + nextLine;
 					}
 
-					if (line.StartsWith("CLASSIFY:", StringComparison.OrdinalIgnoreCase))
+					if (line.StartsWith("EXCLUDE:", StringComparison.OrdinalIgnoreCase))
+					{
+						// Parse exclusion rule
+						var pattern = line.Substring("EXCLUDE:".Length).Trim();
+						if (!string.IsNullOrEmpty(pattern))
+						{
+							config.AddExclusionPattern(pattern);
+							Debug.WriteLine($"[NavConfig] Loaded exclusion pattern: {pattern}");
+						}
+					}
+					else if (line.StartsWith("CLASSIFY:", StringComparison.OrdinalIgnoreCase))
 					{
 						var classification = ParseClassifyRule(line);
 						if (classification != null)
@@ -579,6 +589,9 @@ namespace AcManager.UiObserver
 	/// </summary>
 	public class NavConfiguration
 	{
+		/// <summary>Exclusion patterns for filtering out elements from navigation</summary>
+		private readonly List<string> _exclusionPatterns = new List<string>();
+		
 		/// <summary>Classifications defined in configuration (includes shortcuts, modals, page mappings)</summary>
 		public List<NavShortcutKey> ShortcutKeys { get; set; }
 
@@ -589,6 +602,36 @@ namespace AcManager.UiObserver
 		{
 			ShortcutKeys = new List<NavShortcutKey>();
 			Pages = new List<NavPageDef>();
+		}
+		
+		/// <summary>
+		/// Adds an exclusion pattern to the configuration.
+		/// Used during initialization to add built-in exclusion rules.
+		/// </summary>
+		public void AddExclusionPattern(string pattern)
+		{
+			if (string.IsNullOrWhiteSpace(pattern)) return;
+			_exclusionPatterns.Add(pattern);
+		}
+		
+		/// <summary>
+		/// Checks if a hierarchical path should be excluded from navigation.
+		/// Uses NavPathFilter for pattern matching against all exclusion patterns.
+		/// </summary>
+		public bool IsExcluded(string hierarchicalPath)
+		{
+			if (string.IsNullOrWhiteSpace(hierarchicalPath)) return false;
+			
+			// Check against all exclusion patterns
+			foreach (var pattern in _exclusionPatterns)
+			{
+				if (NavPathFilter.Matches(hierarchicalPath, pattern))
+				{
+					return true;
+				}
+			}
+			
+			return false;
 		}
 
 		/// <summary>
@@ -606,6 +649,70 @@ namespace AcManager.UiObserver
 		public List<NavShortcutKey> FindClassificationsForPath(string elementPath)
 		{
 			return ShortcutKeys.Where(k => k.Matches(elementPath)).ToList();
+		}
+		
+		/// <summary>
+		/// Gets classification override for a given hierarchical path.
+		/// Returns null if no matching classification found.
+		/// If multiple rules match, merges them (later rules override earlier).
+		/// Uses NavPathFilter for pure pattern matching.
+		/// </summary>
+		public NavNodeClassification GetClassification(string elementPath)
+		{
+			if (string.IsNullOrWhiteSpace(elementPath))
+				return null;
+			
+			// Find all matching shortcuts (they're already classifications!)
+			var matches = ShortcutKeys
+				.Where(sk => NavPathFilter.Matches(elementPath, sk.PathFilter))
+				.ToList();
+			
+			if (matches.Count == 0) return null;
+			
+			if (matches.Count == 1)
+			{
+				// Single match - convert directly
+				return ConvertToClassification(matches[0]);
+			}
+			
+			// Multiple matches - merge (later rules override earlier)
+			var result = new NavNodeClassification();
+			foreach (var match in matches)
+			{
+				result.MergeFrom(ConvertToClassification(match));
+			}
+			return result;
+		}
+		
+		/// <summary>
+		/// Converts NavShortcutKey to NavNodeClassification.
+		/// </summary>
+		private static NavNodeClassification ConvertToClassification(NavShortcutKey shortcut)
+		{
+			return new NavNodeClassification
+			{
+				Role = ParseRole(shortcut.Role),
+				IsModal = shortcut.IsModal ? (bool?)true : null,
+				PageName = shortcut.PageName,
+				KeyName = shortcut.KeyName,
+				KeyTitle = shortcut.KeyTitle,
+				KeyIcon = shortcut.KeyIcon,
+				NoAutoClick = shortcut.NoAutoClick,
+				TargetType = shortcut.TargetType,
+				RequireConfirmation = shortcut.RequireConfirmation,
+				ConfirmationMessage = shortcut.ConfirmationMessage
+			};
+		}
+		
+		/// <summary>
+		/// Parses role string to NavRole enum.
+		/// </summary>
+		private static NavRole ParseRole(string roleString)
+		{
+			if (string.IsNullOrEmpty(roleString)) return NavRole.Undefined;
+			if (roleString.Equals("leaf", StringComparison.OrdinalIgnoreCase)) return NavRole.Leaf;
+			if (roleString.Equals("group", StringComparison.OrdinalIgnoreCase)) return NavRole.Group;
+			return NavRole.Undefined;
 		}
 		
 		/// <summary>
@@ -633,6 +740,50 @@ namespace AcManager.UiObserver
 		{
 			return Pages.FirstOrDefault(p => 
 				string.Equals(p.PageName, pageName, StringComparison.OrdinalIgnoreCase));
+		}
+		
+		/// <summary>
+		/// Exports all classifications as CLASSIFY rule strings for unified parsing.
+		/// This allows NavPathFilter to handle both built-in and config rules uniformly.
+		/// </summary>
+		public IEnumerable<string> ExportClassificationRules()
+		{
+			foreach (var shortcut in ShortcutKeys)
+			{
+				// Build properties list
+				var props = new List<string>();
+				
+				// Navigation properties
+				if (!string.IsNullOrEmpty(shortcut.Role))
+					props.Add($"role={shortcut.Role}");
+				if (shortcut.IsModal)
+					props.Add("modal=true");
+				
+				// StreamDeck properties
+				if (!string.IsNullOrEmpty(shortcut.PageName))
+					props.Add($"PageName=\"{shortcut.PageName}\"");
+				if (!string.IsNullOrEmpty(shortcut.KeyName))
+					props.Add($"KeyName=\"{shortcut.KeyName}\"");
+				if (!string.IsNullOrEmpty(shortcut.KeyTitle))
+					props.Add($"KeyTitle=\"{shortcut.KeyTitle}\"");
+				if (!string.IsNullOrEmpty(shortcut.KeyIcon))
+					props.Add($"KeyIcon=\"{shortcut.KeyIcon}\"");
+				
+				// Interaction properties
+				if (shortcut.NoAutoClick)
+					props.Add("NoAutoClick=true");
+				if (shortcut.TargetType == ShortcutTargetType.Group)
+					props.Add("TargetType=Group");
+				if (shortcut.RequireConfirmation)
+					props.Add("RequireConfirmation=true");
+				if (!string.IsNullOrEmpty(shortcut.ConfirmationMessage))
+					props.Add($"ConfirmationMessage=\"{shortcut.ConfirmationMessage}\"");
+				
+				if (props.Count > 0)
+				{
+					yield return $"CLASSIFY: {shortcut.PathFilter} => {string.Join("; ", props)}";
+				}
+			}
 		}
 	}
 

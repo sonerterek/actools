@@ -1,14 +1,13 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Text.RegularExpressions;
 
 namespace AcManager.UiObserver
 {
     /// <summary>
     /// Navigation node roles - determines how a node is treated during navigation.
     /// </summary>
-    internal enum NavRole
+    public enum NavRole
     {
         Undefined,      // Use type-based detection (fallback)
         Leaf,           // Force as navigation leaf (selectable target)
@@ -18,26 +17,81 @@ namespace AcManager.UiObserver
     /// <summary>
     /// Classification override for a navigation node.
     /// Applied when hierarchical path matches a classification rule.
+    /// This is the SINGLE source of truth for all node metadata - no special cases.
     /// </summary>
-    internal class NavNodeClassification
+    public class NavNodeClassification
     {
+        // ========== Navigation Properties =========
+        
         /// <summary>Override the role for THIS element.</summary>
         public NavRole Role { get; set; } = NavRole.Undefined;
         
         /// <summary>Override modal behavior for THIS element.</summary>
         public bool? IsModal { get; set; }
         
-        /// <summary>Priority for rule application (higher = applied first).</summary>
-        public int Priority { get; set; }
+        // ========== StreamDeck Properties =========
         
-        // Factory methods for common cases
+        /// <summary>StreamDeck page to switch to when this node appears or opens (non-modal) or as modal.</summary>
+        public string PageName { get; set; }
+        
+        /// <summary>Shortcut key name for StreamDeck button mapping (e.g., "QuickChangeCar").</summary>
+        public string KeyName { get; set; }
+        
+        /// <summary>Display title for StreamDeck button (e.g., "Change Car").</summary>
+        public string KeyTitle { get; set; }
+        
+        /// <summary>Icon specification for StreamDeck button (file path or icon name).</summary>
+        public string KeyIcon { get; set; }
+        
+        // ========== Interaction Properties =========
+        
+        /// <summary>Whether to skip auto-click when shortcut is activated (default: false).</summary>
+        public bool NoAutoClick { get; set; }
+        
+        /// <summary>What this shortcut targets (Element or Group). Type defined in NavConfig.cs.</summary>
+        public ShortcutTargetType TargetType { get; set; }
+        
+        /// <summary>Whether to require confirmation before executing (default: false).</summary>
+        public bool RequireConfirmation { get; set; }
+        
+        /// <summary>Custom confirmation message (optional).</summary>
+        public string ConfirmationMessage { get; set; }
+        
+        // Factory methods for common cases (backward compatibility)
         public static NavNodeClassification AsLeaf() => new NavNodeClassification { Role = NavRole.Leaf };
         public static NavNodeClassification AsGroup(bool? modal = null) => new NavNodeClassification { Role = NavRole.Group, IsModal = modal };
         public static NavNodeClassification WithModality(bool isModal) => new NavNodeClassification { IsModal = isModal };
+        
+        /// <summary>
+        /// Merges properties from another classification into this one.
+        /// Only overwrites properties that are set in the source.
+        /// Used when multiple rules match the same path (later rules override earlier).
+        /// </summary>
+        public void MergeFrom(NavNodeClassification source)
+        {
+            if (source == null) return;
+            
+            // Navigation properties
+            if (source.Role != NavRole.Undefined) Role = source.Role;
+            if (source.IsModal.HasValue) IsModal = source.IsModal;
+            
+            // StreamDeck properties
+            if (!string.IsNullOrEmpty(source.PageName)) PageName = source.PageName;
+            if (!string.IsNullOrEmpty(source.KeyName)) KeyName = source.KeyName;
+            if (!string.IsNullOrEmpty(source.KeyTitle)) KeyTitle = source.KeyTitle;
+            if (!string.IsNullOrEmpty(source.KeyIcon)) KeyIcon = source.KeyIcon;
+            
+            // Interaction properties
+            if (source.NoAutoClick) NoAutoClick = source.NoAutoClick;
+            if (source.TargetType != default(ShortcutTargetType)) TargetType = source.TargetType;
+            if (source.RequireConfirmation) RequireConfirmation = source.RequireConfirmation;
+            if (!string.IsNullOrEmpty(source.ConfirmationMessage)) ConfirmationMessage = source.ConfirmationMessage;
+        }
     }
-
+    
     /// <summary>
-    /// Filters and classifies navigation nodes based on hierarchical path patterns.
+    /// Pure pattern matching utility for navigation paths.
+    /// Stateless - contains no rule storage, only matching algorithms.
     /// 
     /// Pattern syntax:
     /// - Name:Type         - Match specific name and type
@@ -46,271 +100,40 @@ namespace AcManager.UiObserver
     /// - ***               - Match 1+ elements (at least one ancestor away)
     /// - > separator       - Parent-child relationship
     /// 
-    /// Rule types:
-    /// EXCLUDE: pattern              - Skip this element from navigation
-    /// CLASSIFY: pattern => props    - Override element classification
-    /// 
-    /// Classification properties (semicolon-separated):
-    /// - role=leaf|group|dual
-    /// - modal=true|false
-    /// - priority=number
-    /// 
     /// Examples:
-    /// EXCLUDE: Window:MainWindow > ** > PART_Menu:ModernMenu
-    /// CLASSIFY: ** > SettingsPanel:Border => role=group; modal=false
-    /// CLASSIFY: *** > QuickFilter:ComboBox => modal=false
+    /// Window:MainWindow > ** > PART_Menu:ModernMenu
+    /// ** > SettingsPanel:Border
+    /// *** > QuickFilter:ComboBox
     /// </summary>
-    internal class NavPathFilter
+    internal static class NavPathFilter
     {
-        private readonly List<ExcludeRule> _excludeRules = new List<ExcludeRule>();
-        private readonly List<ClassificationRule> _classificationRules = new List<ClassificationRule>();
-        
         /// <summary>
-        /// Parse and register multiple rules from string array.
-        /// Each line is one rule. Comments start with #.
+        /// Checks if a hierarchical path matches a pattern string.
         /// </summary>
-        public void ParseRules(string[] rules)
+        /// <param name="hierarchicalPath">Full hierarchical path (e.g., "Window:MainWindow > Content:Border > Button:Button")</param>
+        /// <param name="pattern">Pattern with wildcards (e.g., "** > Button:Button")</param>
+        /// <returns>True if pattern matches path</returns>
+        public static bool Matches(string hierarchicalPath, string pattern)
         {
-            if (rules == null) return;
-            
-            int lineNumber = 0;
-            foreach (var line in rules)
-            {
-                lineNumber++;
-                try
-                {
-                    ParseSingleRule(line);
-                }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Debug.WriteLine($"[NavPathFilter] Error parsing rule at line {lineNumber}: {ex.Message}");
-                    System.Diagnostics.Debug.WriteLine($"[NavPathFilter]   Rule: {line}");
-                }
-            }
-        }
-        
-        /// <summary>
-        /// Parse a single rule line.
-        /// </summary>
-        private void ParseSingleRule(string line)
-        {
-            if (string.IsNullOrWhiteSpace(line)) return;
-            
-            var trimmed = line.Trim();
-            
-            // Skip comments
-            if (trimmed.StartsWith("#")) return;
-            
-            if (trimmed.StartsWith("EXCLUDE:", StringComparison.OrdinalIgnoreCase))
-            {
-                var pattern = trimmed.Substring(8).Trim();
-                if (!string.IsNullOrEmpty(pattern))
-                {
-                    AddExcludeRule(pattern);
-                }
-            }
-            else if (trimmed.StartsWith("CLASSIFY:", StringComparison.OrdinalIgnoreCase))
-            {
-                var remainder = trimmed.Substring(9).Trim();
-                var parts = remainder.Split(new[] { "=>" }, 2, StringSplitOptions.None);
-                
-                if (parts.Length == 2)
-                {
-                    var pattern = parts[0].Trim();
-                    var classificationStr = parts[1].Trim();
-                    
-                    if (!string.IsNullOrEmpty(pattern) && !string.IsNullOrEmpty(classificationStr))
-                    {
-                        var classification = ParseClassification(classificationStr);
-                        AddClassificationRule(pattern, classification);
-                    }
-                }
-            }
-        }
-        
-        /// <summary>
-        /// Parse classification properties string.
-        /// Format: "role=group; modal=false; priority=10"
-        /// </summary>
-        private NavNodeClassification ParseClassification(string classificationStr)
-        {
-            var result = new NavNodeClassification();
-            
-            // Split by semicolon
-            var properties = classificationStr.Split(';');
-            foreach (var prop in properties)
-            {
-                var trimmed = prop.Trim();
-                if (string.IsNullOrEmpty(trimmed)) continue;
-                
-                var kvp = trimmed.Split('=');
-                if (kvp.Length != 2) continue;
-                
-                var key = kvp[0].Trim().ToLowerInvariant();
-                var value = kvp[1].Trim();
-                
-                switch (key)
-                {
-                    case "role":
-                        if (Enum.TryParse<NavRole>(value, true, out var role))
-                        {
-                            result.Role = role;
-                        }
-                        break;
-                    
-                    case "modal":
-                        if (bool.TryParse(value, out var modal))
-                        {
-                            result.IsModal = modal;
-                        }
-                        break;
-                    
-                    case "priority":
-                        if (int.TryParse(value, out var priority))
-                        {
-                            result.Priority = priority;
-                        }
-                        break;
-                }
-            }
-            
-            return result;
-        }
-        
-        /// <summary>
-        /// Add a path pattern to exclude from navigation.
-        /// </summary>
-        public void AddExcludeRule(string pattern)
-        {
-            if (string.IsNullOrWhiteSpace(pattern)) return;
+            if (string.IsNullOrWhiteSpace(hierarchicalPath) || string.IsNullOrWhiteSpace(pattern))
+                return false;
             
             try
             {
-                var rule = ExcludeRule.Parse(pattern);
-                _excludeRules.Add(rule);
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"[NavPathFilter] Failed to parse exclude pattern '{pattern}': {ex.Message}");
-            }
-        }
-        
-        /// <summary>
-        /// Add a classification rule for path overrides.
-        /// </summary>
-        public void AddClassificationRule(string pattern, NavNodeClassification classification)
-        {
-            if (string.IsNullOrWhiteSpace(pattern) || classification == null) return;
-            
-            try
-            {
-                var rule = ClassificationRule.Parse(pattern, classification);
+                var segments = ParsePattern(pattern);
+                var pathNodes = hierarchicalPath.Split(new[] { " > " }, StringSplitOptions.RemoveEmptyEntries);
                 
-                // Insert sorted by priority (higher priority first)
-                int insertIndex = _classificationRules.FindIndex(r => r.Classification.Priority < classification.Priority);
-                if (insertIndex < 0)
-                {
-                    _classificationRules.Add(rule);
-                }
-                else
-                {
-                    _classificationRules.Insert(insertIndex, rule);
-                }
+                return MatchesRecursive(pathNodes, 0, segments, 0);
             }
-            catch (Exception ex)
+            catch
             {
-                System.Diagnostics.Debug.WriteLine($"[NavPathFilter] Failed to parse classification pattern '{pattern}': {ex.Message}");
-            }
-        }
-        
-        /// <summary>
-        /// Checks if a given hierarchical path should be excluded from navigation.
-        /// </summary>
-        public bool IsExcluded(string hierarchicalPath)
-        {
-            if (string.IsNullOrWhiteSpace(hierarchicalPath)) return false;
-            
-            foreach (var rule in _excludeRules)
-            {
-                if (rule.Matches(hierarchicalPath))
-                    return true;
-            }
-            
-            return false;
-        }
-        
-        /// <summary>
-        /// Get classification override for a given hierarchical path.
-        /// Returns null if no matching classification rule found.
-        /// Returns the highest-priority matching rule if multiple match.
-        /// </summary>
-        public NavNodeClassification GetClassification(string hierarchicalPath)
-        {
-            if (string.IsNullOrWhiteSpace(hierarchicalPath)) return null;
-            
-            // Rules are already sorted by priority
-            foreach (var rule in _classificationRules)
-            {
-                if (rule.Matches(hierarchicalPath))
-                    return rule.Classification;
-            }
-            
-            return null;
-        }
-        
-        /// <summary>
-        /// Represents an exclusion rule with pattern matching.
-        /// </summary>
-        private class ExcludeRule
-        {
-            private readonly List<Segment> _segments;
-            
-            private ExcludeRule(List<Segment> segments)
-            {
-                _segments = segments;
-            }
-            
-            public static ExcludeRule Parse(string pattern)
-            {
-                var segments = ParsePattern(pattern);
-                return new ExcludeRule(segments);
-            }
-            
-            public bool Matches(string hierarchicalPath)
-            {
-                return MatchesPath(hierarchicalPath, _segments);
-            }
-        }
-        
-        /// <summary>
-        /// Represents a classification rule with pattern matching and classification override.
-        /// </summary>
-        private class ClassificationRule
-        {
-            private readonly List<Segment> _segments;
-            public NavNodeClassification Classification { get; }
-            
-            private ClassificationRule(List<Segment> segments, NavNodeClassification classification)
-            {
-                _segments = segments;
-                Classification = classification;
-            }
-            
-            public static ClassificationRule Parse(string pattern, NavNodeClassification classification)
-            {
-                var segments = ParsePattern(pattern);
-                return new ClassificationRule(segments, classification);
-            }
-            
-            public bool Matches(string hierarchicalPath)
-            {
-                return MatchesPath(hierarchicalPath, _segments);
+                return false;
             }
         }
         
         /// <summary>
         /// Parse a pattern string into segments.
-        /// Handles *, **, ***, and Name:Type syntax.
+        /// Handles *, **, *** and Name:Type syntax.
         /// </summary>
         private static List<Segment> ParsePattern(string pattern)
         {
@@ -372,19 +195,6 @@ namespace AcManager.UiObserver
                 throw new ArgumentException("Pattern must contain at least one segment");
             
             return segments;
-        }
-        
-        /// <summary>
-        /// Match a hierarchical path against a list of pattern segments.
-        /// </summary>
-        private static bool MatchesPath(string hierarchicalPath, List<Segment> segments)
-        {
-            if (string.IsNullOrWhiteSpace(hierarchicalPath)) return false;
-            
-            // Split path into nodes
-            var pathNodes = hierarchicalPath.Split(new[] { " > " }, StringSplitOptions.RemoveEmptyEntries);
-            
-            return MatchesRecursive(pathNodes, 0, segments, 0);
         }
         
         /// <summary>

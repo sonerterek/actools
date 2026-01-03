@@ -115,95 +115,110 @@ namespace AcManager.UiObserver
 
         #endregion
 
-        #region Filtering
-
-        /// <summary>
-        /// Global filter for excluding specific navigation paths.
-        /// Populate this with patterns to exclude certain controls from navigation.
-        /// </summary>
-        public static readonly NavPathFilter PathFilter = new NavPathFilter();
-
-        #endregion
-
         #region Factory Method
 
         /// <summary>
-        /// Creates a NavNode for the given FrameworkElement, determining its type (leaf/group)
-        /// based on the element's runtime type. Returns null if the element should not be tracked.
+        /// Force-creates a NavNode for ANY element, bypassing all type and exclusion checks.
+        /// Used when element matches a CLASSIFY rule (classification overrides everything).
+        /// 
+        /// This method:
+        /// - Does NOT check if type is in sanctioned lists
+        /// - Does NOT check exclusion rules
+        /// - Always creates a node (unless fe is null)
+        /// - Determines IsGroup/IsModal based on type
         /// </summary>
         /// <param name="fe">The FrameworkElement to wrap</param>
+        /// <param name="hierarchicalPath">Pre-computed hierarchical path</param>
         /// <param name="computeId">Optional function to compute the ID. If null, uses default ID generation.</param>
-        /// <returns>A new NavNode, or null if the element type should be ignored</returns>
-        public static NavNode CreateNavNode(FrameworkElement fe, Func<FrameworkElement, string> computeId = null)
+        /// <returns>A new NavNode (never null if fe is not null)</returns>
+        public static NavNode ForceCreateNavNode(FrameworkElement fe, string hierarchicalPath, Func<FrameworkElement, string> computeId = null)
         {
-            if (fe == null) return null;
+            if (fe == null) throw new ArgumentNullException(nameof(fe));
 
             var feType = fe.GetType();
 
             if (VerboseDebug) {
-                Debug.WriteLine($"[NavNode] Evaluating: {feType.Name} '{(string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name)}'");
+                Debug.WriteLine($"[NavNode] ForceCreateNavNode: {feType.Name} '{(string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name)}'");
             }
 
-            // Step 1: Perform type-based detection (baseline detection)
+            // Determine type characteristics
             bool isGroup = IsGroupType(feType);
-            bool isLeaf = IsLeafType(feType);
-
-            // ? NEW: PopupRoot is a modal group (WPF's internal container for Menu/ContextMenu dropdowns)
-            // PopupRoot IS the Popup's child - it's what actually blocks input to background elements
-            // We detect it by type name since it's an internal WPF type
+            bool isModal = IsModalType(feType);
+            
+            // PopupRoot special case
             if (feType.Name == "PopupRoot") {
                 isGroup = true;
-                isLeaf = false;
+                isModal = true;
                 
                 if (VerboseDebug) {
                     Debug.WriteLine($"[NavNode]   -> PopupRoot detected - treating as modal group");
                 }
             }
 
+            // Compute ID
+            string id = computeId != null ? computeId(fe) : ComputeDefaultId(fe);
+
             if (VerboseDebug) {
-                Debug.WriteLine($"[NavNode]   -> Type-based: IsGroup={isGroup}, IsLeaf={isLeaf}");
+                Debug.WriteLine($"[NavNode]   -> FORCE-CREATED: {feType.Name} Id={id}");
+                Debug.WriteLine($"[NavNode]   -> IsGroup={isGroup}, IsModal={isModal}");
+                Debug.WriteLine($"[NavNode]   -> Path: {hierarchicalPath}");
             }
 
-            // Step 2: Compute hierarchical path early (needed for both exclusion and classification)
-            string hierarchicalPath = GetHierarchicalPath(fe);
+            // Create node with determined characteristics
+            return new NavNode(fe, id, hierarchicalPath, isGroup, isModal);
+        }
 
-            // Step 3: Check for classification overrides BEFORE whitelist check
-            // This allows CLASSIFY rules to bring non-whitelisted types into the system
-            var classification = PathFilter.GetClassification(hierarchicalPath);
-            if (classification != null) {
-                if (VerboseDebug) {
-                    Debug.WriteLine($"[NavNode]   -> Classification rule matched: Role={classification.Role}, Modal={classification.IsModal}");
-                }
+        /// <summary>
+        /// Attempts to create a NavNode using standard type-based rules.
+        /// 
+        /// Checks:
+        /// 1. Element type must be in sanctioned lists (leaf or group)
+        /// 2. Exclusion rules must not apply
+        /// 3. No nested leaf constraint
+        /// 
+        /// If all checks pass, delegates to ForceCreateNavNode for actual creation.
+        /// 
+        /// Returns null if element shouldn't be tracked.
+        /// </summary>
+        /// <param name="fe">The FrameworkElement to wrap</param>
+        /// <param name="hierarchicalPath">Pre-computed hierarchical path</param>
+        /// <param name="navConfig">Configuration for exclusion checking (can be null)</param>
+        /// <param name="computeId">Optional function to compute the ID. If null, uses default ID generation.</param>
+        /// <returns>A new NavNode, or null if the element should not be tracked</returns>
+        public static NavNode TryCreateNavNode(
+            FrameworkElement fe, 
+            string hierarchicalPath, 
+            NavConfiguration navConfig,
+            Func<FrameworkElement, string> computeId = null)
+        {
+            if (fe == null) return null;
 
-                // Apply role overrides
-                if (classification.Role != NavRole.Undefined) {
-                    switch (classification.Role) {
-                        case NavRole.Leaf:
-                            isGroup = false;
-                            isLeaf = true;
-                            break;
+            var feType = fe.GetType();
 
-                        case NavRole.Group:
-                            isGroup = true;
-                            isLeaf = false;
-                            break;
-                    }
-
-                    if (VerboseDebug) {
-                        Debug.WriteLine($"[NavNode]   -> After classification: IsGroup={isGroup}, IsLeaf={isLeaf}");
-                    }
-                }
+            if (VerboseDebug) {
+                Debug.WriteLine($"[NavNode] TryCreateNavNode: {feType.Name} '{(string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name)}'");
             }
 
-            // Step 4: Whitelist check
+            // STEP 1: Check if type is sanctioned
+            bool isGroup = IsGroupType(feType);
+            bool isLeaf = IsLeafType(feType);
+            
             if (!isGroup && !isLeaf) {
                 if (VerboseDebug) {
-                    Debug.WriteLine($"[NavNode]   -> Not in whitelist (and no classification override), rejected");
+                    Debug.WriteLine($"[NavNode]   -> Not in whitelist, rejected");
                 }
                 return null;
             }
 
-            // Step 5: Check for nested leaf constraint
+            // STEP 2: Check exclusions (only if config provided)
+            if (navConfig != null && navConfig.IsExcluded(hierarchicalPath)) {
+                if (VerboseDebug) {
+                    Debug.WriteLine($"[NavNode]   -> Excluded by rule, rejected");
+                }
+                return null;
+            }
+
+            // STEP 3: Check for nested leaf constraint (only for non-groups)
             if (!isGroup && HasLeafAncestor(fe, out var leafAncestor)) {
                 if (VerboseDebug) {
                     try {
@@ -219,58 +234,48 @@ namespace AcManager.UiObserver
                 return null;
             }
 
-            // Step 6: Compute ID
-            string id = computeId != null ? computeId(fe) : ComputeDefaultId(fe);
-
-            // Step 7: Check exclusion rules (uses hierarchicalPath computed earlier)
-            if (PathFilter.IsExcluded(hierarchicalPath)) {
-                Debug.WriteLine($"[NavNode]   -> FILTERED: Path matches exclusion rule [{hierarchicalPath}]");
-                return null;
-            }
-
-            // Step 8: Determine modal behavior (type-based baseline)
-            bool isModal = IsModalType(feType);
+            // STEP 4: Validation - Check for non-modal group nesting (only for non-modal groups)
+            bool isModal = IsModalType(feType) || feType.Name == "PopupRoot";
             
-            // ? NEW: PopupRoot is always modal (it blocks background input)
-            if (feType.Name == "PopupRoot") {
-                isModal = true;
-                
-                if (VerboseDebug) {
-                    Debug.WriteLine($"[NavNode]   -> PopupRoot is MODAL (blocks background navigation)");
-                }
-            }
-
-            // Step 9: Apply modal override from classification (if specified)
-            if (classification?.IsModal.HasValue == true) {
-                isModal = classification.IsModal.Value;
-
-                if (VerboseDebug) {
-                    Debug.WriteLine($"[NavNode]   -> Modal overridden by classification: {isModal}");
-                }
-            }
-
-            if (VerboseDebug && isModal) {
-                Debug.WriteLine($"[NavNode]   -> MODAL TYPE (blocks background navigation)");
-            }
-
-            // Step 10: Validation - Check for non-modal group nesting
             if (isGroup && !isModal) {
                 var nonModalParent = FindNonModalGroupAncestorNode(fe, out var modalBlocker);
 
                 if (nonModalParent != null) {
+                    // Compute ID for error reporting
+                    string id = computeId != null ? computeId(fe) : ComputeDefaultId(fe);
                     ReportNonModalNesting(fe, feType, id, hierarchicalPath, nonModalParent, modalBlocker);
                 }
             }
 
+            // STEP 5: All checks passed - delegate to ForceCreateNavNode for actual creation
+            // This ensures we reuse the same node construction logic
             if (VerboseDebug) {
-                Debug.WriteLine($"[NavNode]   -> CREATED: {feType.Name} Id={id}");
-                Debug.WriteLine($"[NavNode]   -> Final: IsGroup={isGroup}, IsModal={isModal}");
-                Debug.WriteLine($"[NavNode]   -> Path: {hierarchicalPath}");
+                Debug.WriteLine($"[NavNode]   -> Type rules passed, delegating to ForceCreateNavNode");
             }
+            
+            return ForceCreateNavNode(fe, hierarchicalPath, computeId);
+        }
 
-            // Step 11: Create the node with final values
-            // ? Pass hierarchicalPath to constructor so it's stored immediately
-            return new NavNode(fe, id, hierarchicalPath, isGroup, isModal);
+        /// <summary>
+        /// Creates a NavNode for the given FrameworkElement, determining its type (leaf/group)
+        /// based on the element's runtime type. Returns null if the element should not be tracked.
+        /// 
+        /// THIS IS THE LEGACY METHOD - kept for backward compatibility.
+        /// New code should use TryCreateNavNode() for type-based creation or
+        /// ForceCreateNavNode() for classification-based creation.
+        /// </summary>
+        /// <param name="fe">The FrameworkElement to wrap</param>
+        /// <param name="computeId">Optional function to compute the ID. If null, uses default ID generation.</param>
+        /// <returns>A new NavNode, or null if the element type should be ignored</returns>
+        public static NavNode CreateNavNode(FrameworkElement fe, Func<FrameworkElement, string> computeId = null)
+        {
+            if (fe == null) return null;
+
+            // Compute hierarchical path
+            string hierarchicalPath = GetHierarchicalPath(fe);
+            
+            // Delegate to TryCreateNavNode (no config = no exclusion checking)
+            return TryCreateNavNode(fe, hierarchicalPath, null, computeId);
         }
 
         private static bool IsLeafType(Type type)
@@ -812,15 +817,62 @@ namespace AcManager.UiObserver
         public bool IsGroup { get; }
 
         /// <summary>
-        /// Whether this node creates a modal navigation context.
-        /// Modal nodes (Window, Popup, PopupRoot) block access to background elements during navigation.
-        /// 
-        /// In our "observe and react" model:
-        /// - Popup and PopupRoot are modals (they block input to background)
-        /// - We don't predict behavior, we observe what blocks input
-        /// - Menu and ComboBox are just leaves that trigger popups when activated
+        /// True if this node is a modal container that creates a new navigation scope.
+        /// Modal nodes get their own context in the navigation stack.
         /// </summary>
-        public bool IsModal { get; }
+        public bool IsModal { get; private set; }
+
+        /// <summary>
+        /// True if this node is a PageSelector (non-modal with PageName).
+        /// PageSelector nodes trigger StreamDeck page switches when they become visible.
+        /// </summary>
+        public bool IsPageSelector => !IsModal && !string.IsNullOrEmpty(PageName);
+
+        // ========== StreamDeck Properties (from NavNodeClassification) =========="
+
+        /// <summary>
+        /// The StreamDeck page name to switch to when this node becomes active.
+        /// - For modals: Used by SwitchStreamDeckPageForModal()
+        /// - For PageSelectors: Used by OnPageSelectorActivated()
+        /// </summary>
+        public string PageName { get; internal set; }
+        
+        /// <summary>
+        /// Shortcut key name for StreamDeck button mapping (e.g., "QuickChangeCar").
+        /// </summary>
+        public string KeyName { get; internal set; }
+        
+        /// <summary>
+        /// Display title for StreamDeck button (e.g., "Change Car").
+        /// </summary>
+        public string KeyTitle { get; internal set; }
+        
+        /// <summary>
+        /// Icon specification for StreamDeck button (file path or icon name).
+        /// </summary>
+        public string KeyIcon { get; internal set; }
+        
+        // ========== Interaction Properties (from NavNodeClassification) =========="
+        
+        /// <summary>
+        /// Whether to skip auto-click when shortcut is activated (default: false).
+        /// </summary>
+        public bool NoAutoClick { get; internal set; }
+        
+        /// <summary>
+        /// What this shortcut targets (Element or Group).
+        /// </summary>
+        public ShortcutTargetType TargetType { get; internal set; }
+        
+        /// <summary>
+        /// Whether to require confirmation before executing (default: false).
+        /// </summary>
+        public bool RequireConfirmation { get; internal set; }
+        
+        /// <summary>
+        /// Custom confirmation message (optional).
+        /// </summary>
+        public string ConfirmationMessage { get; internal set; }
 
         /// <summary>
         /// Whether this node currently has focus in the navigation system.

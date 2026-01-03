@@ -24,7 +24,7 @@ namespace AcManager.UiObserver
 		private static SDPClient _streamDeckClient;
 		private static bool _streamDeckHasConnectedAtLeastOnce;
 		private static bool _discoverySessionHeaderWritten;
-		private static NavConfiguration _navConfig;
+		internal static NavConfiguration _navConfig;
 		private static Dictionary<string, NavShortcutKey> _shortcutsByKey = new Dictionary<string, NavShortcutKey>();
 		
 		private static int _lastReconnectAttemptNotified;
@@ -152,10 +152,12 @@ namespace AcManager.UiObserver
 
 						// Exit key (including Interaction mode)
 						case "Back":
-							// ✅ Check if we're at root window (MainWindow) - exit requires confirmation
-							if (CurrentContext?.ContextType == NavContextType.RootWindow)
+							// ✅ Check if we would be exiting the application - we need confirmation
+							if (CurrentContext?.ScopeNode?.TryGetVisual(out var scopeElement) == true
+								&& scopeElement is Window window
+								&& window.GetType().Name == "MainWindow")
 							{
-								RequestConfirmation(
+									RequestConfirmation(
 									description: "Exit Application",
 									onConfirm: () =>
 									{
@@ -611,8 +613,9 @@ namespace AcManager.UiObserver
 		#region StreamDeck Page Switching
 
 		/// <summary>
-		/// Switches StreamDeck to the appropriate page for the given scope node.
-		/// Uses built-in page selection based on scope node type, or custom page from configuration.
+		/// Switches StreamDeck to the appropriate page for the given context.
+		/// Uses the scope node's PageName property (set by Observer during classification).
+		/// Falls back to built-in page selection if no PageName is set.
 		/// </summary>
 		private static void SwitchStreamDeckPageForModal(NavNode scopeNode)
 		{
@@ -621,32 +624,24 @@ namespace AcManager.UiObserver
 			try {
 				string pageName = null;
 				
-				// ✅ NEW: Check configuration for custom page mapping first
-				if (_navConfig != null && scopeNode != null)
+				// Check if scope node has PageName (from classification)
+				if (!string.IsNullOrEmpty(scopeNode?.PageName))
 				{
-					var scopePath = GetPathWithoutHwnd(scopeNode);
-					pageName = _navConfig.FindPageForElement(scopePath);
-					
-					if (!string.IsNullOrEmpty(pageName))
-					{
-						Debug.WriteLine($"[Navigator] Using custom page from config: '{pageName}' for scope '{scopeNode.SimpleName}'");
-					}
+					pageName = scopeNode.PageName;
+					Debug.WriteLine($"[Navigator] Using scope node's PageName: '{pageName}' for '{scopeNode.SimpleName}'");
 				}
-				
-				// Fallback to built-in page selection if no custom mapping
-				if (string.IsNullOrEmpty(pageName))
+				else
 				{
+					// Fallback to built-in page selection
 					pageName = SelectBuiltInPageForModal(scopeNode);
 				}
 				
-				// Default to Navigation if no specific page selected
+				// Default to Navigation if no specific page
 				if (string.IsNullOrEmpty(pageName)) {
 					pageName = PageNavigation;
 				}
 				
-				// ✅ NOTE: pageName here is just the PageName (not FullPageName)
-				// This is correct - we switch to pages by their PageName only
-				Debug.WriteLine($"[Navigator] Switching StreamDeck to '{pageName}' page for scope '{scopeNode.SimpleName}'");
+				Debug.WriteLine($"[Navigator] Switching StreamDeck to '{pageName}' page for scope '{scopeNode?.SimpleName ?? "null"}'");
 				_streamDeckClient.SwitchPage(pageName);
 			} catch (Exception ex)
 			{

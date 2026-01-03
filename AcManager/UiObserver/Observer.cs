@@ -30,7 +30,7 @@ namespace AcManager.UiObserver
 	{
 		#region Debug Configuration
 
-		private static bool _verboseDebug = true;
+		private static bool _verboseDebug = false;  
 
 		public static bool VerboseDebug {
 			get => _verboseDebug;
@@ -62,6 +62,12 @@ namespace AcManager.UiObserver
 
 		#endregion
 
+		#region Configuration
+		
+		private static NavConfiguration _navConfig;
+		
+		#endregion
+
 		#region Events
 
 		public static event Action<NavNode> ModalGroupOpened;
@@ -74,22 +80,14 @@ namespace AcManager.UiObserver
 
 		#region Initialize
 
-		internal static void Initialize()
+		internal static void Initialize(NavConfiguration navConfig)
 		{
+			_navConfig = navConfig ?? throw new ArgumentNullException(nameof(navConfig));
+			
 			try {
 				// Register handler for Window.Loaded ONLY (not all FrameworkElements)
 				EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent,
 						new RoutedEventHandler(OnWindowLoaded), true);
-
-				// Listen for popup open events (discovers new PresentationSources)
-				try {
-					EventManager.RegisterClassHandler(typeof(ContextMenu), ContextMenu.OpenedEvent,
-							new RoutedEventHandler(OnAnyPopupOpened), true);
-				} catch { }
-				try {
-					EventManager.RegisterClassHandler(typeof(MenuItem), MenuItem.SubmenuOpenedEvent,
-							new RoutedEventHandler(OnAnyPopupOpened), true);
-				} catch { }
 
 				// Hook all existing windows
 				if (Application.Current != null) {
@@ -536,14 +534,80 @@ namespace AcManager.UiObserver
 						}
 					} catch { continue; }
 
-					var navNode = NavNode.CreateNavNode(fe);
+					// ✅ STEP 1: Build hierarchical path (always needed for checking)
+					var hierarchicalPath = NavNode.GetHierarchicalPath(fe);
+					var pathWithoutHwnd = StripHwndFromPath(hierarchicalPath);
+					
+					if (_verboseDebug)
+					{
+						Debug.WriteLine($"[Observer] Evaluating: {pathWithoutHwnd}");
+					}
+					
+					// ✅ STEP 2: Check classification FIRST (highest priority)
+					var classification = _navConfig?.GetClassification(pathWithoutHwnd);
+				
+					// ✅ STEP 3: Create node based on priority
+					NavNode navNode = null;
+					
+					if (classification != null) {
+						// PRIORITY 1: Classification exists → force create (ignore type/exclusions)
+						navNode = NavNode.ForceCreateNavNode(fe, hierarchicalPath);
+						
+						Debug.WriteLine($"[Observer] ✅ Created via CLASSIFY rule: {navNode.SimpleName}");
+					} else {
+						// PRIORITY 2: No classification → use type-based rules
+						navNode = NavNode.TryCreateNavNode(fe, hierarchicalPath, _navConfig);
+						
+						if (navNode != null) {
+							Debug.WriteLine($"[Observer] ✅ Created via type rules: {navNode.SimpleName}");
+						} else if (_verboseDebug) {
+							Debug.WriteLine($"[Observer] ⊘ Skipped (type/exclusion)");
+						}
+					}
+					
+					// ✅ STEP 4: If node was created, apply classification properties & link
 					if (navNode != null) {
 						_nodesByElement.AddOrUpdate(fe, navNode, (k, old) => navNode);
 						discoveredElements.Add(fe);
+						
+						// Apply classification properties (if found)
+						if (classification != null) {
+							if (!string.IsNullOrEmpty(classification.PageName)) {
+								navNode.PageName = classification.PageName;
+								if (_verboseDebug) {
+									Debug.WriteLine($"[Observer]   → PageName: '{classification.PageName}'");
+								}
+							}
+							if (!string.IsNullOrEmpty(classification.KeyName)) {
+								navNode.KeyName = classification.KeyName;
+								if (_verboseDebug) {
+									Debug.WriteLine($"[Observer]   → KeyName: '{classification.KeyName}'");
+								}
+							}
+							if (!string.IsNullOrEmpty(classification.KeyTitle)) {
+								navNode.KeyTitle = classification.KeyTitle;
+							}
+							if (!string.IsNullOrEmpty(classification.KeyIcon)) {
+								navNode.KeyIcon = classification.KeyIcon;
+							}
+							if (classification.NoAutoClick) {
+								navNode.NoAutoClick = classification.NoAutoClick;
+							}
+							if (classification.TargetType != default(ShortcutTargetType)) {
+								navNode.TargetType = classification.TargetType;
+							}
+							if (classification.RequireConfirmation) {
+								navNode.RequireConfirmation = classification.RequireConfirmation;
+							}
+							if (!string.IsNullOrEmpty(classification.ConfirmationMessage)) {
+								navNode.ConfirmationMessage = classification.ConfirmationMessage;
+							}
+						}
 
-						// Use parent from stack instead of walking tree
+						// Link to parent
 						LinkToParentOptimized(navNode, fe, parentNavNode);
 
+						// Debug logging
 						if (fe is Popup popupElement) {
 							var placementTargetInfo = popupElement.PlacementTarget != null
 								? $"{popupElement.PlacementTarget.GetType().Name} '{(string.IsNullOrEmpty((popupElement.PlacementTarget as FrameworkElement)?.Name) ? "(unnamed)" : (popupElement.PlacementTarget as FrameworkElement)?.Name)}'"
@@ -553,7 +617,7 @@ namespace AcManager.UiObserver
 							Debug.WriteLine($"[Observer] NavNode discovered: {fe.GetType().Name} '{navNode.SimpleName}'");
 						}
 
-						// Track this as a newly added node
+						// Track as newly added
 						addedNodes.Add(navNode);
 
 						if (navNode.IsModal && navNode.IsGroup) {
@@ -591,36 +655,59 @@ namespace AcManager.UiObserver
 			}
 		}
 
-		private static void OnAnyPopupOpened(object sender, RoutedEventArgs e)
+		/// <summary>
+		/// Strips :HWND components from hierarchical path for pattern matching.
+		/// 
+		/// Example:
+		///   Input: "(unnamed):PopupRoot:3F4A21B > (unnamed):MenuItem"
+		///   Output: "(unnamed):PopupRoot > (unnamed):MenuItem"
+		/// 
+		/// This is needed because classification rules don't include HWND values,
+		/// but node paths include them for uniqueness.
+		/// </summary>
+		private static string StripHwndFromPath(string path)
 		{
-			try {
-				if (sender == null) return;
-				var dispatcher = (sender as DispatcherObject)?.Dispatcher ?? Application.Current?.Dispatcher;
-				if (dispatcher != null) {
-					dispatcher.BeginInvoke(new Action(() => {
-						try { RegisterNewPresentationSourceRoots(); } catch { }
-					}), DispatcherPriority.ApplicationIdle);
-				} else {
-					RegisterNewPresentationSourceRoots();
+			if (string.IsNullOrEmpty(path)) return path;
+
+			// Split path into segments
+			var segments = path.Split(new[] { " > " }, StringSplitOptions.None);
+			
+			// Strip HWND from each segment (format: Name:Type:HWND → Name:Type)
+			for (int i = 0; i < segments.Length; i++) {
+				var parts = segments[i].Split(':');
+				if (parts.Length >= 3 && !segments[i].Contains("[")) {
+					// Has HWND component (and no content) - keep only Name:Type
+					segments[i] = $"{parts[0]}:{parts[1]}";
 				}
-			} catch { }
+			}
+
+			return string.Join(" > ", segments);
 		}
 
-		private static void RegisterNewPresentationSourceRoots()
+		/// <summary>
+		/// Gets the hierarchical path without HWND components.
+		/// DEPRECATED: Use StripHwndFromPath() instead.
+		/// </summary>
+		private static string GetPathWithoutHwnd(NavNode node)
 		{
-			try {
-				var sources = PresentationSource.CurrentSources;
-				foreach (PresentationSource ps in sources) {
-					try {
-						if (!_presentationSourceRoots.ContainsKey(ps)) {
-							var root = ps?.RootVisual as FrameworkElement;
-							if (root != null) {
-								RegisterRoot(root);
-							}
-						}
-					} catch { }
+			if (node == null) return null;
+
+			var path = node.HierarchicalPath;
+			if (string.IsNullOrEmpty(path)) return path;
+
+			// Split path into segments
+			var segments = path.Split(new[] { " > " }, StringSplitOptions.None);
+			
+			// Strip HWND from each segment (format: Name:Type:HWND → Name:Type)
+			for (int i = 0; i < segments.Length; i++) {
+				var parts = segments[i].Split(':');
+				if (parts.Length >= 3) {
+					// Has HWND component - keep only Name:Type
+					segments[i] = $"{parts[0]}:{parts[1]}";
 				}
-			} catch { }
+			}
+
+			return string.Join(" > ", segments);
 		}
 
 		#endregion

@@ -53,7 +53,15 @@ namespace AcManager.UiObserver
 		/// Lifecycle: Managed by Navigator (EnterInteractionMode/ExitInteractionMode).
 		/// Future: Could be extended for ComboBox dropdowns, menu submenus, etc
 		/// </summary>
-		InteractiveControl
+		InteractiveControl,
+		
+		/// <summary>
+		/// PageSelector context (tab content, Frame navigation, etc.).
+		/// Scope: Reuses parent context's scope (typically MainWindow or modal dialog).
+		/// Lifecycle: Managed by Observer (PageSelector node added/removed events).
+		/// Purpose: Switches StreamDeck page when content changes, doesn't create new navigation scope.
+		/// </summary>
+		PageSelector
 	}
 
 	/// <summary>
@@ -67,6 +75,7 @@ namespace AcManager.UiObserver
 		/// The scope node that defines this context's boundaries.
 		/// For modal contexts, this is the Window/Popup/PopupRoot.
 		/// For interaction mode contexts, this is a single control (Slider, etc.).
+		/// For page selector contexts, this reuses the parent context's scope.
 		/// Never null.
 		/// </summary>
 		public NavNode ScopeNode { get; }
@@ -88,6 +97,20 @@ namespace AcManager.UiObserver
 		/// Only populated for InteractiveControl contexts.
 		/// </summary>
 		public object OriginalValue { get; set; }
+		
+		/// <summary>
+		/// The PageSelector node that triggered this context (WHAT content is being displayed).
+		/// Only populated for PageSelector contexts.
+		/// Example: QuickDrive:UserControl, KunosCareer:Frame
+		/// </summary>
+		public NavNode PageSelectorNode { get; set; }
+		
+		/// <summary>
+		/// The StreamDeck page name associated with this context.
+		/// Only populated for PageSelector contexts.
+		/// Example: "QuickDrive", "KunosCareer"
+		/// </summary>
+		public string PageName { get; set; }
 		
 		public NavContext(NavNode scopeNode, NavContextType contextType, NavNode focusedNode = null)
 		{
@@ -175,75 +198,121 @@ namespace AcManager.UiObserver
 			if (_initialized) return;
 			_initialized = true;
 
-			// Initialize StreamDeck early, since it is expensive but async
+			// Step 1: Load NavConfig from file FIRST
+			_navConfig = NavConfigParser.Load();
+			
+			// Step 2: Add built-in rules to NavConfig
+			AddBuiltInRules();
+
+			// Step 3: Initialize StreamDeck (uses _navConfig)
 			InitializeStreamDeck();
 
-			// Initialize navigation rules
-			InitializeNavigationRules();
-
-			// Disable tooltips globally during navigation
+			// Step 4: Disable tooltips globally during navigation
 			DisableTooltips();
 
-			// Subscribe to Observer events
+			// Step 5: Create overlay BEFORE starting Observer to avoid race condition
+			EnsureOverlay();
+
+			// Step 6: Pass NavConfig to Observer during initialization
+			Observer.Initialize(_navConfig);
+
+			// Step 7: Subscribe to Observer events
 			Observer.ModalGroupOpened += OnModalGroupOpened;
 			Observer.ModalGroupClosed += OnModalGroupClosed;
 			Observer.WindowLayoutChanged += OnWindowLayoutChanged;
 			Observer.NodesUpdated += Observer_NodesUpdated;
-
-			// ✅ FIX: Create overlay BEFORE starting Observer to avoid race condition
-			// When Observer discovers MainWindow and fires ModalGroupOpened, the overlay
-			// must already exist so focus initialization can show the blue rectangle
-			EnsureOverlay();
 			
-			// Startup Observer (it will hook windows itself and fire ModalGroupOpened)
-			Observer.Initialize();
-
-			// ✅ NEW: Install focus guard to prevent WPF from stealing focus to non-navigable elements
+			// Step 8: Install focus guard to prevent WPF from stealing focus to non-navigable elements
 			InstallFocusGuard();
 
-			// Register keyboard handler
+			// Step 9: Register keyboard handler
 			try {
 				EventManager.RegisterClassHandler(typeof(Window), UIElement.PreviewKeyDownEvent, 
 					new KeyEventHandler(OnPreviewKeyDown), true);
 			} catch { }
 		}
 		
-		private static void InitializeNavigationRules()
+		/// <summary>
+		/// Adds built-in navigation rules to NavConfig.
+		/// These rules are added AFTER loading the config file, so config file rules can override them.
+		/// </summary>
+		private static void AddBuiltInRules()
 		{
-			var rules = new[] {
+			// Built-in exclusion rules
+			var exclusions = new[] {
 				// Exclude scrollbars in popups/menus
-				"EXCLUDE: *:PopupRoot > ** > *:ScrollBar",
-				"EXCLUDE: *:PopupRoot > ** > *:BetterScrollBar",
+				"*:PopupRoot > ** > *:ScrollBar",
+				"*:PopupRoot > ** > *:BetterScrollBar",
 
 				// Exclude text or fancy menu items
-				"EXCLUDE: ** > *:HistoricalTextBox > **",
-				"EXCLUDE: ** > *:LazyMenuItem > **",
-				"EXCLUDE: ** > *:ModernTabSplitter",
-				"EXCLUDE: *:PopupRoot > ** > *:MenuItem",
+				"** > *:HistoricalTextBox > **",
+				"** > *:LazyMenuItem > **",
+				"** > *:ModernTabSplitter",
+				"*:PopupRoot > ** > *:MenuItem",
 
 				// CRITICAL: Exclude debug overlay from navigation tracking to prevent feedback loop
-				"EXCLUDE: *:HighlightOverlay > **",
+				"*:HighlightOverlay > **",
 
 				// Exclude main menu and content frame from navigation
-				"EXCLUDE: Window:MainWindow > WindowBorder:Border > (unnamed):AdornerDecorator > (unnamed):Cell > (unnamed):Cell > (unnamed):AdornerDecorator > LayoutRoot:DockPanel > (unnamed):DockPanel > PART_Menu:ModernMenu",
-				"EXCLUDE: Window:MainWindow > WindowBorder:Border > (unnamed):AdornerDecorator > (unnamed):Cell > (unnamed):Cell > (unnamed):AdornerDecorator > LayoutRoot:DockPanel > ContentFrame:ModernFrame",
-				"EXCLUDE: Window:MainWindow > WindowBorder:Border > (unnamed):AdornerDecorator > (unnamed):Cell > (unnamed):Cell > (unnamed):AdornerDecorator > LayoutRoot:DockPanel > ContentFrame:ModernFrame > (unnamed):Border > (unnamed):Cell > (unnamed):TransitioningContentControl > (unnamed):Cell > CurrentWrapper:Border > CurrentContentPresentationSite:ContentPresenter > This:QuickDrive > (unnamed):Border > (unnamed):ContentPresenter > MainGrid:Grid > (unnamed):Grid > ModeTab:ModernTab > (unnamed):DockPanel > PART_Frame:ModernFrame",
-				"EXCLUDE: (unnamed):SelectTrackDialog > (unnamed):Border > (unnamed):Cell > (unnamed):AdornerDecorator > PART_Border:Border > (unnamed):Cell > (unnamed):DockPanel > (unnamed):Border > PART_Content:TransitioningContentControl > (unnamed):Cell > CurrentWrapper:Border > CurrentContentPresentationSite:ContentPresenter > (unnamed):Grid > (unnamed):DockPanel > (unnamed):AdornerDecorator > Tabs:ModernTab",
-				"EXCLUDE: (unnamed):SelectTrackDialog > (unnamed):Border > (unnamed):Cell > (unnamed):AdornerDecorator > PART_Border:Border > (unnamed):Cell > (unnamed):DockPanel > (unnamed):Border > PART_Content:TransitioningContentControl > (unnamed):Cell > CurrentWrapper:Border > CurrentContentPresentationSite:ContentPresenter > (unnamed):Grid > (unnamed):DockPanel > (unnamed):AdornerDecorator > Tabs:ModernTab > (unnamed):DockPanel > PART_Frame:ModernFrame",
-
-				"CLASSIFY: ** > *:SelectCarDialog => role=group; modal=true",
-				"CLASSIFY: ** > *:SelectTrackDialog => role=group; modal=true",
-				"CLASSIFY: ** > PART_SystemButtonsPanel:StackPanel => role=group; modal=false",
-				"CLASSIFY: ** > PART_TitleBar:DockPanel > *:ItemsControl => role=group; modal=false",
+				"Window:MainWindow > WindowBorder:Border > (unnamed):AdornerDecorator > (unnamed):Cell > (unnamed):Cell > (unnamed):AdornerDecorator > LayoutRoot:DockPanel > (unnamed):DockPanel > PART_Menu:ModernMenu",
+				"Window:MainWindow > WindowBorder:Border > (unnamed):AdornerDecorator > (unnamed):Cell > (unnamed):Cell > (unnamed):AdornerDecorator > LayoutRoot:DockPanel > ContentFrame:ModernFrame",
+				"Window:MainWindow > WindowBorder:Border > (unnamed):AdornerDecorator > (unnamed):Cell > (unnamed):Cell > (unnamed):AdornerDecorator > LayoutRoot:DockPanel > ContentFrame:ModernFrame > (unnamed):Border > (unnamed):Cell > (unnamed):TransitioningContentControl > (unnamed):Cell > CurrentWrapper:Border > CurrentContentPresentationSite:ContentPresenter > This:QuickDrive > (unnamed):Border > (unnamed):ContentPresenter > MainGrid:Grid > (unnamed):Grid > ModeTab:ModernTab > (unnamed):DockPanel > PART_Frame:ModernFrame",
+				"(unnamed):SelectTrackDialog > (unnamed):Border > (unnamed):Cell > (unnamed):AdornerDecorator > PART_Border:Border > (unnamed):Cell > (unnamed):DockPanel > (unnamed):Border > PART_Content:TransitioningContentControl > (unnamed):Cell > CurrentWrapper:Border > CurrentContentPresentationSite:ContentPresenter > (unnamed):Grid > (unnamed):DockPanel > (unnamed):AdornerDecorator > Tabs:ModernTab",
+				"(unnamed):SelectTrackDialog > (unnamed):Border > (unnamed):Cell > (unnamed):AdornerDecorator > PART_Border:Border > (unnamed):Cell > (unnamed):DockPanel > (unnamed):Border > PART_Content:TransitioningContentControl > (unnamed):Cell > CurrentWrapper:Border > CurrentContentPresentationSite:ContentPresenter > (unnamed):Grid > (unnamed):DockPanel > (unnamed):AdornerDecorator > Tabs:ModernTab > (unnamed):DockPanel > PART_Frame:ModernFrame",
 			};
 
-			try {
-				NavNode.PathFilter.ParseRules(rules);
-			} catch (Exception ex) {
-				Debug.WriteLine($"[Navigator] Failed to initialize navigation rules: {ex}");
+			foreach (var pattern in exclusions)
+			{
+				_navConfig.AddExclusionPattern(pattern);
 			}
+			
+			Debug.WriteLine($"[Navigator] Added {exclusions.Length} built-in exclusion rules");
+			
+			// Built-in classification rules (as NavShortcutKey objects)
+			var classifications = new[] {
+				new NavShortcutKey {
+					PathFilter = "** > *:SelectCarDialog",
+					Role = "group",
+					IsModal = true
+				},
+				new NavShortcutKey {
+					PathFilter = "** > *:SelectTrackDialog",
+					Role = "group",
+					IsModal = true
+				},
+				new NavShortcutKey {
+					PathFilter = "** > PART_SystemButtonsPanel:StackPanel",
+					Role = "group",
+					IsModal = false
+				},
+				new NavShortcutKey {
+					PathFilter = "** > PART_TitleBar:DockPanel > *:ItemsControl",
+					Role = "group",
+					IsModal = false
+				},
+			};
+			
+			foreach (var classification in classifications)
+			{
+				_navConfig.ShortcutKeys.Add(classification);
+			}
+			
+			Debug.WriteLine($"[Navigator] Added {classifications.Length} built-in classification rules");
 		}
 
+		internal static void EnsureOverlay()
+		{
+#if DEBUG
+			if (_overlay == null) {
+				try {
+					_overlay = new HighlightOverlay();
+				} catch (Exception ex) {
+					Debug.WriteLine($"[Navigator] Failed to create overlay: {ex.Message}");
+				}
+			}
+#endif
+		}
+		
 		/// <summary>
 		/// Disables tooltips globally by setting an extremely high InitialShowDelay.
 		/// Saves the original delay for potential restoration.
@@ -294,46 +363,62 @@ namespace AcManager.UiObserver
 			}
 		}
 
-		internal static void EnsureOverlay()
-		{
-			if (_overlay == null) {
-				try {
-					_overlay = new HighlightOverlay();
-				} catch (Exception ex) {
-					Debug.WriteLine($"[Navigator] Failed to create overlay: {ex.Message}");
-				}
-			}
-		}
-
 		#endregion
 
 		#region Event Handlers
 
 		/// <summary>
 		/// Called by Observer when nodes are added or removed during a sync.
-		/// Handles focus re-initialization when focused node is removed and new navigable nodes appear.
+		/// Handles:
+		/// - PageSelector context management (removal BEFORE addition for clean transitions)
+		/// - Focus re-initialization when focused node is removed
 		/// </summary>
 		private static void Observer_NodesUpdated(NavNode[] addedNodes, NavNode[] removedNodes)
 		{
 			if (CurrentContext == null) return;
 			
-			// Check if our currently focused node was removed
-			if (CurrentContext.FocusedNode != null && removedNodes != null)
+			// ✅ STEP 1: Process REMOVALS FIRST (pop old PageSelector contexts)
+			// This ensures old context is gone before new one is pushed (clean transitions)
+			if (removedNodes != null && removedNodes.Length > 0)
 			{
 				foreach (var removedNode in removedNodes)
 				{
-					if (ReferenceEquals(CurrentContext.FocusedNode, removedNode))
+					// Check if this was a PageSelector that had a context
+					if (removedNode.IsPageSelector)
+					{
+						OnPageSelectorDeactivated(removedNode);
+					}
+					
+					// Check if our currently focused node was removed
+					if (CurrentContext.FocusedNode != null && ReferenceEquals(CurrentContext.FocusedNode, removedNode))
 					{
 						Debug.WriteLine($"[Navigator] ⚠ Focused node was removed: {removedNode.SimpleName}");
 						removedNode.HasFocus = false;
 						CurrentContext.FocusedNode = null;
 						_needsFocusReinit = true;
+					}
+				}
+			}
+			
+			// ✅ STEP 2: Process ADDITIONS SECOND (push new PageSelector contexts)
+			// At this point, old PageSelector contexts have been popped (if any)
+			if (addedNodes != null && addedNodes.Length > 0)
+			{
+				// Find the first PageSelector that's in our active scope
+				// We only switch for the FIRST one found (most specific wins if multiple)
+				foreach (var addedNode in addedNodes)
+				{
+					if (addedNode.IsPageSelector && IsInActiveModalScope(addedNode))
+					{
+						OnPageSelectorActivated(addedNode);
+						// Only process the FIRST PageSelector found
 						break;
 					}
 				}
 			}
 			
-			// If we need focus re-init and new navigable nodes were added in our scope, try to focus one
+			// ✅ STEP 3: Handle focus re-initialization if needed
+			// If focused node was removed and new navigable nodes were added in our scope, try to focus one
 			if (_needsFocusReinit && addedNodes != null && addedNodes.Length > 0)
 			{
 				// Find first added node that's navigable and in our scope
@@ -500,8 +585,10 @@ namespace AcManager.UiObserver
 			Debug.WriteLine($"[Navigator] Context stack depth: {_contextStack.Count}");
 			
 			// ✅ STEP 1: Clear old focus visuals immediately (the closing modal's overlay)
+#if DEBUG
 			_overlay?.HideFocusRect();
-			
+#endif
+
 			// ✅ STEP 2: Defer parent focus restoration until AFTER WPF completes unload
 			// This gives WPF time to finish dismantling the closing modal's visual tree.
 			// During unload, elements exist but have invalid bounds (GetCenterDip returns null),
@@ -588,9 +675,11 @@ namespace AcManager.UiObserver
 
 		private static void OnWindowLayoutChanged(object sender, EventArgs e)
 		{
+#if DEBUG
 			if (CurrentContext?.FocusedNode != null) {
 				UpdateFocusRect(CurrentContext.FocusedNode);
 			}
+#endif
 		}
 
 		#endregion
@@ -683,6 +772,10 @@ namespace AcManager.UiObserver
 				
 				case NavContextType.ModalDialog:
 					// Modal dialog - descendants are in scope
+					return IsDescendantOf(node, CurrentContext.ScopeNode);
+				
+				case NavContextType.PageSelector:
+					// PageSelector - reuses parent's scope, descendants are in scope
 					return IsDescendantOf(node, CurrentContext.ScopeNode);
 				
 				case NavContextType.InteractiveControl:
@@ -823,6 +916,145 @@ namespace AcManager.UiObserver
 				{
 					SwitchStreamDeckPageForModal(CurrentContext.ScopeNode);
 				}
+			}
+		}
+
+		/// <summary>
+		/// Called when a PageSelector node becomes active (visible in the current context).
+		/// Creates a new PageSelector context and switches StreamDeck to the appropriate page.
+		/// 
+		/// PageSelectors are non-modal elements (like tab content, Frame content) that have a PageName property.
+		/// They reuse the parent context's navigation scope but switch the StreamDeck page.
+		/// </summary>
+		private static void OnPageSelectorActivated(NavNode pageSelectorNode)
+		{
+			if (pageSelectorNode == null || string.IsNullOrEmpty(pageSelectorNode.PageName)) 
+				return;
+			
+			Debug.WriteLine($"[Navigator] PageSelector activated: {pageSelectorNode.SimpleName} → page '{pageSelectorNode.PageName}'");
+			
+			// Find the actual navigation scope by walking up the context stack
+			var scopeNode = FindNavigationScope();
+			if (scopeNode == null)
+			{
+				Debug.WriteLine($"[Navigator] WARNING: Could not find navigation scope for PageSelector (context stack might be empty)");
+				return;
+			}
+			
+			// Create PageSelector context (reuses parent's scope, but different page)
+			var context = new NavContext(scopeNode, NavContextType.PageSelector)
+			{
+				PageSelectorNode = pageSelectorNode,
+				PageName = pageSelectorNode.PageName,
+				FocusedNode = CurrentContext?.FocusedNode  // Inherit focus from parent
+			};
+			
+			_contextStack.Add(context);
+			Debug.WriteLine($"[Navigator] Pushed PageSelector context: page='{context.PageName}', scope={scopeNode.SimpleName}, stack depth={_contextStack.Count}");
+			
+			// Switch StreamDeck page
+			_streamDeckClient?.SwitchPage(pageSelectorNode.PageName);
+		}
+
+		/// <summary>
+		/// Called when a PageSelector node is removed from the visual tree.
+		/// Pops the associated PageSelector context and restores the previous context's page.
+		/// </summary>
+		private static void OnPageSelectorDeactivated(NavNode pageSelectorNode)
+		{
+			if (pageSelectorNode == null) return;
+			
+			Debug.WriteLine($"[Navigator] PageSelector deactivated: {pageSelectorNode.SimpleName}");
+			
+			// Find the context for this PageSelector in the stack (walk backwards to find most recent)
+			for (int i = _contextStack.Count - 1; i >= 0; i--)
+			{
+				var context = _contextStack[i];
+				if (context.ContextType == NavContextType.PageSelector &&
+					ReferenceEquals(context.PageSelectorNode, pageSelectorNode))
+				{
+					_contextStack.RemoveAt(i);
+					Debug.WriteLine($"[Navigator] Popped PageSelector context from position {i}, stack depth now: {_contextStack.Count}");
+					
+					// Restore previous context's page
+					if (CurrentContext != null)
+					{
+						SwitchToContextPage(CurrentContext);
+					}
+					
+					return;
+				}
+			}
+			
+			Debug.WriteLine($"[Navigator] WARNING: No context found for deactivated PageSelector '{pageSelectorNode.SimpleName}'");
+		}
+
+		/// <summary>
+		/// Finds the navigation scope for a new PageSelector context by walking up the context stack.
+		/// Returns the scope of the first non-PageSelector context found (RootWindow or ModalDialog).
+		/// PageSelector contexts reuse their parent's navigation scope - they don't create new navigation boundaries.
+		/// </summary>
+		private static NavNode FindNavigationScope()
+		{
+			// Walk backwards through context stack to find the first actual navigation scope
+			// Skip PageSelector contexts (they don't have their own scope)
+			for (int i = _contextStack.Count - 1; i >= 0; i--)
+			{
+				var context = _contextStack[i];
+				
+				// Found a context that defines a navigation scope
+				if (context.ContextType == NavContextType.RootWindow ||
+					context.ContextType == NavContextType.ModalDialog)
+				{
+					return context.ScopeNode;
+				}
+				
+				// InteractiveControl has a scope but it's too narrow for PageSelectors
+				// Keep walking up to find the actual navigation context
+				// PageSelector contexts are transparent - keep walking
+			}
+			
+			// Should never reach here if stack is properly initialized with RootWindow
+			Debug.WriteLine($"[Navigator] WARNING: FindNavigationScope reached end of stack without finding RootWindow or ModalDialog");
+			return null;
+		}
+
+		/// <summary>
+		/// Switches StreamDeck to the appropriate page for the given context.
+		/// Used when contexts are activated/deactivated.
+		/// </summary>
+		private static void SwitchToContextPage(NavContext context)
+		{
+			if (context == null) return;
+			
+			string pageName = null;
+			
+			switch (context.ContextType)
+			{
+				case NavContextType.PageSelector:
+					// PageSelector has explicit page name
+					pageName = context.PageName;
+					break;
+				
+				case NavContextType.ModalDialog:
+					// Modal dialog uses built-in page selection logic
+					pageName = SelectBuiltInPageForModal(context.ScopeNode);
+					break;
+				
+				case NavContextType.RootWindow:
+					// Root window defaults to Navigation page
+					pageName = "Navigation";
+					break;
+				
+				case NavContextType.InteractiveControl:
+					// Keep current page (interaction mode doesn't change pages)
+					return;
+			}
+			
+			if (!string.IsNullOrEmpty(pageName))
+			{
+				Debug.WriteLine($"[Navigator] Switching to page: {pageName} (context type: {context.ContextType})");
+				_streamDeckClient?.SwitchPage(pageName);
 			}
 		}
 	}
