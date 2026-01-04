@@ -1067,17 +1067,66 @@ namespace AcManager.UiObserver
             }
         }
 
-        private void ProcessEvent(String message)
+        private void ProcessEvent(string message)
         {
             if (string.IsNullOrWhiteSpace(message)) return;
 
+            // Remove BOM if present
             if (message.Length > 0 && message[0] == '\uFEFF')
             {
                 message = message.Substring(1);
             }
 
-            if (SDPVerboseDebug) Debug.WriteLine($"[SDPClient] Received: {message}");
+            if (SDPVerboseDebug) Debug.WriteLine($"[SDPClient] ? Received: {message}");
 
+            // Try to parse as JSON first (for structured messages like KeyDefined, PageDefined)
+            try
+            {
+                if (message.TrimStart().StartsWith("{"))
+                {
+                    var jsonMessage = JsonConvert.DeserializeObject<dynamic>(message);
+                    string type = jsonMessage.Type;
+                    
+                    if (SDPVerboseDebug) Debug.WriteLine($"[SDPClient] Message type: {type}");
+                    
+                    switch (type)
+                    {
+                        case "KeyPressed":
+                            {
+                                string keyName = jsonMessage.KeyName;
+                                OnKeyPressed(keyName);
+                            }
+                            break;
+                            
+                        case "KeyDefined":
+                            {
+                                // Route to Navigator for result tracking
+                                Navigator.OnKeyDefinedResult(jsonMessage);
+                            }
+                            break;
+                            
+                        case "PageDefined":
+                            {
+                                // Route to Navigator for result tracking
+                                Navigator.OnPageDefinedResult(jsonMessage);
+                            }
+                            break;
+                            
+                        default:
+                            Debug.WriteLine($"[SDPClient] ? Unknown message type: {type}");
+                            Debug.WriteLine($"[SDPClient]    JSON: {message}");
+                            break;
+                    }
+                    
+                    return;
+                }
+            }
+            catch (JsonException)
+            {
+                // Not JSON, fall through to legacy parsing
+            }
+
+            // Legacy parsing for simple space-delimited messages
             var parts = message.Split(new[] { ' ' }, 2);
             if (parts.Length < 1) return;
 

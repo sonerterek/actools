@@ -3,10 +3,13 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Input;
 using System.Windows.Threading;
 using FirstFloor.ModernUI;
+using FirstFloor.ModernUI.Helpers;
 
 namespace AcManager.UiObserver
 {
@@ -76,18 +79,41 @@ namespace AcManager.UiObserver
 		/// </summary>
 		private static void DefineStreamDeckPages()
 		{
-			// Define built-in pages
-			DefineBuiltInPages();
-			
-			// ✅ NEW: Define custom pages from configuration
-			foreach (var page in _navConfig.Pages)
+			if (_streamDeckClient == null || _navConfig == null)
+				return;
+
+			try
 			{
-				// ✅ Use GetFullPageName() to send full name with inheritance to plugin
-				_streamDeckClient.DefinePage(page.GetFullPageName(), page.KeyGrid);
-				Debug.WriteLine($"[Navigator] Defined custom page: {page.GetFullPageName()}");
+				// ═══════════════════════════════════════════════════════════
+				// STEP 1: Define built-in pages
+				// ═══════════════════════════════════════════════════════════
+				
+				DefineBuiltInPages();
+
+				// ═══════════════════════════════════════════════════════════
+				// STEP 2: Define all custom pages from configuration
+				// ═══════════════════════════════════════════════════════════
+				
+				Debug.WriteLine($"[Navigator] Defining {_navConfig.Pages.Count} custom pages...");
+				
+				foreach (var page in _navConfig.Pages)
+				{
+					var pageName = page.GetFullPageName(); // e.g., "QuickDrive:Navigation"
+					
+					Debug.WriteLine($"[Navigator] → DefinePage: {pageName}");
+					
+					_streamDeckClient.DefinePage(pageName, page.KeyGrid);
+				}
+				
+				Debug.WriteLine($"[Navigator] ✅ All pages defined (will be sent when plugin connects)");
+			}
+			catch (Exception ex)
+			{
+				Debug.WriteLine($"[Navigator] ❌ DefineStreamDeckPages error: {ex.Message}");
+				Logging.Write($"[Navigator] DefineStreamDeckPages error: {ex}");
 			}
 		}
-
+		
 		/// <summary>
 		/// Selects the appropriate built-in page for a modal based on its type.
 		/// Returns page name, or null to use default Navigation page.
@@ -125,7 +151,28 @@ namespace AcManager.UiObserver
 			Application.Current?.Dispatcher.BeginInvoke(new Action(() => {
 				try {
 					Debug.WriteLine($"[Navigator] Executing command for '{e.KeyName}' on UI thread");
-					
+
+					// ✅ Check if Ctrl+Shift are held down
+					var modifiers = Keyboard.Modifiers;
+					bool ctrlShiftHeld = modifiers.HasFlag(ModifierKeys.Control) &&
+										 modifiers.HasFlag(ModifierKeys.Shift);
+
+					if (ctrlShiftHeld) {
+						Debug.WriteLine($"[Navigator] Ctrl+Shift detected with '{e.KeyName}'");
+
+						// Handle discovery commands
+						switch (e.KeyName) {
+							case "Left":  // Or "Select"
+								WriteElementFilterToDiscovery();
+								break;
+							case "Right":
+								WriteModalFilterToDiscovery();
+								break; 
+							// Add other keys as needed
+						}
+						return; // Do not process the key further (Ctrl-Shift is held down)
+					}
+
 					// ✅ Check if this is a shortcut key first
 					if (_shortcutsByKey.ContainsKey(e.KeyName))
 					{
@@ -157,7 +204,7 @@ namespace AcManager.UiObserver
 								&& scopeElement is Window window
 								&& window.GetType().Name == "MainWindow")
 							{
-									RequestConfirmation(
+								RequestConfirmation(
 									description: "Exit Application",
 									onConfirm: () =>
 									{
@@ -220,14 +267,6 @@ namespace AcManager.UiObserver
 							CancelAction();
 							break;
 
-						// Discovery keys
-						case "WriteModalFilter":
-							WriteModalFilterToDiscovery();
-							break;
-						case "WriteElementFilter":
-							WriteElementFilterToDiscovery();
-							break;
-						
 						default:
 							Debug.WriteLine($"[Navigator] Unknown key: {e.KeyName}");
 							break;
@@ -483,7 +522,7 @@ namespace AcManager.UiObserver
 
 				var scopeNode = CurrentContext.ScopeNode;
 				var filter = GenerateFilterRule(scopeNode, isModal: true);
-				
+					
 				AppendToDiscoveryFile($"# Modal: {scopeNode.SimpleName}", filter);
 				
 				Debug.WriteLine($"[Navigator] ✅ Written modal filter to discovery file: {scopeNode.SimpleName}");
@@ -681,6 +720,11 @@ namespace AcManager.UiObserver
 				// First connection - no Toast (expected behavior at startup)
 				Debug.WriteLine("[Navigator] First connection established (no Toast)");
 				_streamDeckHasConnectedAtLeastOnce = true;
+				
+				// ✅ REMOVED: Async validation is not needed
+				// The plugin's successful replication IS the validation
+				// Individual KeyDefined/PageDefined events are only sent when
+				// keys/pages are defined AFTER initial connection, not during replication
 			}
 		}
 
@@ -879,6 +923,82 @@ namespace AcManager.UiObserver
 				} catch {
 					// If error logging fails, just give up silently
 				}
+			}
+		}
+
+		#endregion
+		
+		#region StreamDeck Definition Error Tracking
+
+		// NOTE: Individual KeyDefined/PageDefined result events are only sent
+		// when keys/pages are defined AFTER the initial connection.
+		// During initial connection, the plugin replicates all state in bulk
+		// and reports success/failure for the entire replication, not per-item.
+		//
+		// Therefore, we rely on the replication success as validation.
+		// If you need per-item validation, you would need to:
+		// 1. Wait for replication to complete
+		// 2. Send individual DefineKey/DefinePage commands
+		// 3. Wait for individual result events
+		//
+		// For now, we trust that replication success means all definitions worked.
+		
+		/// <summary>
+		/// Callback for KeyDefined result events from StreamDeck plugin.
+		/// Called by SDPClient when it receives a KeyDefined message.
+		/// NOTE: These are only sent for keys defined AFTER initial connection.
+		/// </summary>
+		internal static void OnKeyDefinedResult(dynamic message)
+		{
+			try
+			{
+				string keyName = message.KeyName;
+				bool success = message.Success;
+				string error = message.Error;
+				
+				if (success)
+				{
+					Debug.WriteLine($"[Navigator] ✅ KeyDefined: {keyName}");
+				}
+				else
+				{
+					Debug.WriteLine($"[Navigator] ❌ KeyDefined FAILED: {keyName}");
+					Debug.WriteLine($"[Navigator]    Error: {error}");
+				}
+			}
+			catch (Exception ex)
+			{
+				Debug.WriteLine($"[Navigator] OnKeyDefinedResult error: {ex.Message}");
+			}
+		}
+		
+		/// <summary>
+		/// Callback for PageDefined result events from StreamDeck plugin.
+		/// Called by SDPClient when it receives a PageDefined message.
+		/// NOTE: These are only sent for pages defined AFTER initial connection.
+		/// </summary>
+		internal static void OnPageDefinedResult(dynamic message)
+		{
+			try
+			{
+				string pageName = message.PageName;
+				bool success = message.Success;
+				string error = message.Error;
+				
+				if (success)
+				{
+					Debug.WriteLine($"[Navigator] ✅ PageDefined: {pageName}");
+				}
+				else
+				{
+					Debug.WriteLine($"[Navigator] ❌ PageDefined FAILED: {pageName}");
+					Debug.WriteLine($"[Navigator]    Error: {error}");
+					Debug.WriteLine($"[Navigator]    This usually means the page references undefined keys");
+				}
+			}
+			catch (Exception ex)
+			{
+				Debug.WriteLine($"[Navigator] OnPageDefinedResult error: {ex.Message}");
 			}
 		}
 

@@ -256,6 +256,8 @@ namespace AcManager.UiObserver
 							config.Pages.Add(page);
 							Debug.WriteLine($"[NavConfig] Loaded page: {page}");
 						}
+					} else {
+						throw new FormatException($"Unknown config statement: {line}. Did you forget a \\ at the end of line above?");
 					}
 				}
 				catch (Exception ex)

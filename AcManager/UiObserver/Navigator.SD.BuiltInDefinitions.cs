@@ -58,10 +58,6 @@ namespace AcManager.UiObserver
 			_streamDeckClient.DefineKey("Yes", "YES", GetIconPath(icons, "confirm_yes"));
 			_streamDeckClient.DefineKey("No", "NO", GetIconPath(icons, "confirm_no"));
 
-			// Define built-in discovery keys
-			_streamDeckClient.DefineKey("WriteModalFilter", "Modal", null);
-			_streamDeckClient.DefineKey("WriteElementFilter", "Element", null);
-			
 			// ✅ Define configured shortcut keys
 			foreach (var shortcut in _navConfig.ShortcutKeys)
 			{
@@ -112,7 +108,7 @@ namespace AcManager.UiObserver
 			// Navigation page (full 6-direction navigation)
 			Debug.WriteLine($"[Navigator] Defining page: {PageNavigation}");
 			_streamDeckClient.DefinePage(PageNavigation, new[] {
-				new[] { "Back", "WriteModalFilter", "WriteElementFilter" },
+				new[] { "Back", "", "" },
 				new[] { "","",""},
 				new[] { "", "Up", "" },
 				new[] { "Left", "MouseLeft", "Right" },
