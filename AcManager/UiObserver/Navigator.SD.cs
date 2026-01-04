@@ -28,7 +28,13 @@ namespace AcManager.UiObserver
 		private static bool _streamDeckHasConnectedAtLeastOnce;
 		private static bool _discoverySessionHeaderWritten;
 		internal static NavConfiguration _navConfig;
-		private static Dictionary<string, NavShortcutKey> _shortcutsByKey = new Dictionary<string, NavShortcutKey>();
+		
+		/// <summary>
+		/// Runtime shortcut keys indexed by KeyName.
+		/// Built from Classifications during initialization.
+		/// Bound to NavNodes during NodesUpdated processing.
+		/// </summary>
+		private static Dictionary<string, NavShortcutKey> _shortcutKeysByKeyName = new Dictionary<string, NavShortcutKey>();
 		
 		private static int _lastReconnectAttemptNotified;
 
@@ -42,7 +48,10 @@ namespace AcManager.UiObserver
 			
 			// Load configuration
 			_navConfig = NavConfigParser.Load();
-			Debug.WriteLine($"[Navigator] Loaded config: {_navConfig?.ShortcutKeys?.Count ?? 0} classifications, {_navConfig?.Pages?.Count ?? 0} custom pages");
+			Debug.WriteLine($"[Navigator] Loaded config: {_navConfig?.Classifications?.Count ?? 0} classifications, {_navConfig?.Pages?.Count ?? 0} custom pages");
+			
+			// Build runtime shortcut keys from classifications
+			BuildShortcutKeys();
 			
 			// Discover icons
 			var icons = SDPIconHelper.DiscoverIcons();
@@ -69,6 +78,44 @@ namespace AcManager.UiObserver
 			
 			// Connect to StreamDeck plugin
 			Task.Run(async () => await _streamDeckClient.ConnectAsync());
+		}
+
+		/// <summary>
+		/// Builds runtime shortcut key dictionary from classification rules.
+		/// Only includes classifications that have KeyName property set.
+		/// Called during StreamDeck initialization.
+		/// </summary>
+		private static void BuildShortcutKeys()
+		{
+			_shortcutKeysByKeyName.Clear();
+			
+			if (_navConfig == null) return;
+			
+			foreach (var rule in _navConfig.Classifications)
+			{
+				// Skip rules without KeyName (they're not shortcuts)
+				if (string.IsNullOrEmpty(rule.KeyName))
+					continue;
+				
+				// Create runtime shortcut from classification rule
+				var shortcut = new NavShortcutKey
+				{
+					KeyName = rule.KeyName,
+					KeyTitle = rule.KeyTitle,
+					KeyIcon = rule.KeyIcon,
+					NoAutoClick = rule.NoAutoClick,
+					TargetType = rule.TargetType,
+					RequireConfirmation = rule.RequireConfirmation,
+					ConfirmationMessage = rule.ConfirmationMessage,
+					BoundNode = null  // Not bound yet
+				};
+				
+				_shortcutKeysByKeyName[rule.KeyName] = shortcut;
+				
+				Debug.WriteLine($"[Navigator] Defined shortcut key: {rule.KeyName} (Title: {rule.KeyTitle})");
+			}
+			
+			Debug.WriteLine($"[Navigator] Built {_shortcutKeysByKeyName.Count} runtime shortcut keys");
 		}
 
 		#region StreamDeck Key and Page Definition
@@ -174,7 +221,7 @@ namespace AcManager.UiObserver
 					}
 
 					// ✅ Check if this is a shortcut key first
-					if (_shortcutsByKey.ContainsKey(e.KeyName))
+					if (_shortcutKeysByKeyName.ContainsKey(e.KeyName))
 					{
 						Debug.WriteLine($"[Navigator] Executing shortcut key: {e.KeyName}");
 						ExecuteShortcutKey(e.KeyName);
@@ -281,227 +328,78 @@ namespace AcManager.UiObserver
 		}
 
 		/// <summary>
-		/// Executes a shortcut key by finding and focusing the matching element.
-		/// ✅ Supports both Element and Group targeting via TargetType property.
-		/// - Element: Targets specific element (existing behavior)
-		/// - Group: Targets first navigable child of group container
-		/// ✅ Supports confirmation for critical operations via RequireConfirmation property.
+		/// Executes a shortcut key using its bound node.
+		/// Handles confirmation, TargetType (Element vs Group), and NoAutoClick.
 		/// </summary>
 		private static void ExecuteShortcutKey(string keyName)
 		{
-			if (!_shortcutsByKey.TryGetValue(keyName, out var shortcut))
+			if (!_shortcutKeysByKeyName.TryGetValue(keyName, out var shortcut))
 			{
 				Debug.WriteLine($"[Navigator] Shortcut not found: {keyName}");
 				return;
 			}
 
+			// Check if shortcut is bound to a node
+			if (shortcut.BoundNode == null)
+			{
+				Debug.WriteLine($"[Navigator] ❌ Shortcut '{keyName}' not bound (element not in scope)");
+				return;
+			}
+
 			Debug.WriteLine($"[Navigator] Executing shortcut: {shortcut}");
 
-			// ✅ Generic confirmation handling
+			// Handle confirmation
 			if (shortcut.RequireConfirmation)
 			{
-				// Use custom message or generate default
 				var confirmMessage = string.IsNullOrEmpty(shortcut.ConfirmationMessage)
 					? $"Execute {keyName}"
 					: shortcut.ConfirmationMessage;
 				
 				RequestConfirmation(
 					description: confirmMessage,
-					onConfirm: () =>
-					{
-						Debug.WriteLine($"[Navigator] ✅ Executing '{keyName}' (user confirmed)");
-						ExecuteShortcutKeyInternal(keyName, shortcut);
-					},
-					onCancel: () =>
-					{
-						Debug.WriteLine($"[Navigator] User cancelled '{keyName}'");
-					}
+					onConfirm: () => ExecuteShortcutOnNode(shortcut.BoundNode, shortcut),
+					onCancel: () => Debug.WriteLine($"[Navigator] User cancelled '{keyName}'")
 				);
 				return;
 			}
 
-			// Regular execution (no confirmation needed)
-			ExecuteShortcutKeyInternal(keyName, shortcut);
+			// Direct execution
+			ExecuteShortcutOnNode(shortcut.BoundNode, shortcut);
 		}
 
 		/// <summary>
-		/// Internal implementation of shortcut execution (separated for confirmation support)
+		/// Executes a shortcut on a bound node.
+		/// Handles TargetType (Element vs Group) and NoAutoClick.
 		/// </summary>
-		private static void ExecuteShortcutKeyInternal(string keyName, NavShortcutKey shortcut)
+		private static void ExecuteShortcutOnNode(NavNode node, NavShortcutKey shortcut)
 		{
-			var candidates = GetCandidatesInScope();
-			
-			NavNode targetNode = null;
-			
-			// ✅ NEW: Handle Group vs Element targeting
+			// Handle TargetType=Group
 			if (shortcut.TargetType == ShortcutTargetType.Group)
 			{
-				Debug.WriteLine($"[Navigator] Group targeting mode - finding group container");
-				
-				// Find the group container
-				NavNode groupNode = FindGroupNode(candidates, shortcut);
-				
-				if (groupNode != null)
+				// Node is the group container - find first navigable child
+				var firstChild = FindFirstNavigableChild(node);
+				if (firstChild != null)
 				{
-					Debug.WriteLine($"[Navigator] Found group: {groupNode.SimpleName} @ {GetPathWithoutHwnd(groupNode)}");
-					
-					// Find first navigable child of the group
-					targetNode = FindFirstNavigableChild(groupNode);
-					
-					if (targetNode != null)
+					if (SetFocus(firstChild))
 					{
-						Debug.WriteLine($"[Navigator] ✅ Found first child: '{targetNode.SimpleName}' in group '{groupNode.SimpleName}'");
-					}
-					else
-					{
-						Debug.WriteLine($"[Navigator] ❌ Group '{groupNode.SimpleName}' has no navigable children");
+						Debug.WriteLine($"[Navigator] ✅ Focused first child in group: {firstChild.SimpleName}");
 					}
 				}
 				else
 				{
-					Debug.WriteLine($"[Navigator] ❌ No matching group found for shortcut: {keyName}");
+					Debug.WriteLine($"[Navigator] ❌ Group '{node.SimpleName}' has no navigable children");
 				}
+				return;
 			}
-			else // Element targeting (existing behavior)
+			
+			// Handle TargetType=Element (default)
+			if (SetFocus(node))
 			{
-				Debug.WriteLine($"[Navigator] Element targeting mode - finding specific element");
-				Debug.WriteLine($"[Navigator] Searching {candidates.Count} candidates for path: {shortcut.PathFilter}");
-				
-				foreach (var node in candidates)
+				if (!shortcut.NoAutoClick)
 				{
-					var nodePath = GetPathWithoutHwnd(node);
-					
-					if (shortcut.Matches(nodePath))
-					{
-						targetNode = node;
-						Debug.WriteLine($"[Navigator] ✅ Found matching element: {node.SimpleName}");
-						break;
-					}
-				}
-				
-				if (targetNode == null)
-				{
-					Debug.WriteLine($"[Navigator] ❌ No matching element found for shortcut: {keyName}");
+					node.Activate();
 				}
 			}
-
-			// Focus and optionally click the target
-			if (targetNode != null)
-			{
-				if (SetFocus(targetNode))
-				{
-					Debug.WriteLine($"[Navigator] ✅ Focused target: {targetNode.SimpleName}");
-					
-					// ✅ Auto-click unless NoAutoClick is set
-					if (!shortcut.NoAutoClick)
-					{
-						Debug.WriteLine($"[Navigator] Auto-clicking target: {targetNode.SimpleName}");
-						
-						if (Application.Current != null)
-						{
-							Application.Current.Dispatcher.BeginInvoke(
-								new Action(() => {
-									if (CurrentContext?.FocusedNode == targetNode)
-									{
-										targetNode.Activate();
-									}
-									else
-									{
-										Debug.WriteLine($"[Navigator] Skipped auto-click - focus changed before activation");
-									}
-								}),
-								DispatcherPriority.Input
-							);
-						}
-						else
-						{
-							targetNode.Activate();
-						}
-					}
-					else
-					{
-						Debug.WriteLine($"[Navigator] Skipped auto-click (NoAutoClick=true): {targetNode.SimpleName}");
-					}
-				}
-				else
-				{
-					Debug.WriteLine($"[Navigator] ❌ Failed to focus target: {targetNode.SimpleName}");
-				}
-			}
-		}
-
-		/// <summary>
-		/// Finds a group node that matches the shortcut's path filter.
-		/// Groups can match even if they're not in the candidates list (they might be filtered out).
-		/// </summary>
-		private static NavNode FindGroupNode(List<NavNode> candidates, NavShortcutKey shortcut)
-		{
-			// Get ALL nodes (including groups) from Observer
-			var allNodes = Observer.GetAllNavNodes();
-			
-			// Filter to only nodes in active modal scope
-			var scopedNodes = allNodes.Where(n => IsInActiveModalScope(n)).ToList();
-			
-			Debug.WriteLine($"[Navigator] Searching {scopedNodes.Count} scoped nodes for group");
-			
-			// Find matching group
-			foreach (var node in scopedNodes)
-			{
-				if (!node.IsGroup) continue; // Only consider groups
-				
-				var nodePath = GetPathWithoutHwnd(node);
-				
-				if (shortcut.Matches(nodePath))
-				{
-					Debug.WriteLine($"[Navigator] Found group node: {node.SimpleName} @ {nodePath}");
-					return node;
-				}
-			}
-			
-			Debug.WriteLine($"[Navigator] No matching group found");
-			return null;
-		}
-
-		/// <summary>
-		/// Finds the first navigable child of a group node.
-		/// Uses top-to-bottom, left-to-right ordering based on screen position.
-		/// </summary>
-		private static NavNode FindFirstNavigableChild(NavNode groupNode)
-		{
-			if (groupNode == null) return null;
-			
-			// Get all nodes
-			var allNodes = Observer.GetAllNavNodes();
-			
-			// Find children of this group that are navigable
-			var children = allNodes
-				.Where(n => IsNavigableForSelection(n) && IsDescendantOf(n, groupNode))
-				.ToList();
-			
-			if (children.Count == 0)
-			{
-				Debug.WriteLine($"[Navigator] No navigable children found in group '{groupNode.SimpleName}'");
-				return null;
-			}
-			
-			Debug.WriteLine($"[Navigator] Found {children.Count} navigable children in group '{groupNode.SimpleName}'");
-			
-			// Sort by position (top-to-bottom, left-to-right)
-			// Same algorithm as TryInitializeFocusIfNeeded
-			var sorted = children
-				.Select(n => {
-					var center = n.GetCenterDip();
-					// Y * 10000 + X ensures top-to-bottom primary sort, left-to-right secondary
-					var score = center.HasValue ? center.Value.X + center.Value.Y * 10000.0 : double.MaxValue;
-					return new { Node = n, Score = score };
-				})
-				.OrderBy(x => x.Score)
-				.ToList();
-			
-			var firstChild = sorted.First().Node;
-			Debug.WriteLine($"[Navigator] First child: {firstChild.SimpleName} (score: {sorted.First().Score:F1})");
-			
-			return firstChild;
 		}
 
 		#endregion
@@ -645,6 +543,90 @@ namespace AcManager.UiObserver
 			}
 			
 			return null;
+		}
+
+		/// <summary>
+		/// Finds the first navigable child of a group node.
+		/// Uses top-to-bottom, left-to-right ordering based on screen position.
+		/// Called when executing a shortcut with TargetType=Group.
+		/// </summary>
+		private static NavNode FindFirstNavigableChild(NavNode groupNode)
+		{
+			if (groupNode == null) return null;
+			
+			// Get all nodes
+			var allNodes = Observer.GetAllNavNodes();
+			
+			// Find children of this group that are navigable
+			var children = allNodes
+				.Where(n => IsNavigableForSelection(n) && IsDescendantOf(n, groupNode))
+				.ToList();
+			
+			if (children.Count == 0)
+			{
+				Debug.WriteLine($"[Navigator] No navigable children found in group '{groupNode.SimpleName}'");
+				return null;
+			}
+			
+			Debug.WriteLine($"[Navigator] Found {children.Count} navigable children in group '{groupNode.SimpleName}'");
+			
+			// Sort by position (top-to-bottom, left-to-right)
+			// Same algorithm as TryInitializeFocusIfNeeded
+			var sorted = children
+				.Select(n => {
+					var center = n.GetCenterDip();
+					// Y * 10000 + X ensures top-to-bottom primary sort, left-to-right secondary
+					var score = center.HasValue ? center.Value.X + center.Value.Y * 10000.0 : double.MaxValue;
+					return new { Node = n, Score = score };
+				})
+				.OrderBy(x => x.Score)
+				.ToList();
+			
+			var firstChild = sorted.First().Node;
+			Debug.WriteLine($"[Navigator] First child: {firstChild.SimpleName} (score: {sorted.First().Score:F1})");
+			
+			return firstChild;
+		}
+		
+		/// <summary>
+		/// Binds shortcut keys to their matching NavNodes based on KeyName property.
+		/// Called during Observer.NodesUpdated event to update bindings as nodes are added/removed.
+		/// </summary>
+		private static void BindShortcutsToNodes()
+		{
+			if (_shortcutKeysByKeyName.Count == 0) return;
+			
+			// Clear all existing bindings
+			foreach (var shortcut in _shortcutKeysByKeyName.Values)
+			{
+				shortcut.BoundNode = null;
+			}
+			
+			// Get all discovered nodes
+			var allNodes = Observer.GetAllNavNodes();
+			
+			// Bind shortcuts to nodes with matching KeyName
+			int boundCount = 0;
+			foreach (var node in allNodes)
+			{
+				if (string.IsNullOrEmpty(node.KeyName)) continue;
+				
+				if (_shortcutKeysByKeyName.TryGetValue(node.KeyName, out var shortcut))
+				{
+					shortcut.BoundNode = node;
+					boundCount++;
+					
+					if (VerboseNavigationDebug)
+					{
+						Debug.WriteLine($"[Navigator] Bound shortcut '{node.KeyName}' → '{node.SimpleName}'");
+					}
+				}
+			}
+			
+			if (boundCount > 0 || VerboseNavigationDebug)
+			{
+				Debug.WriteLine($"[Navigator] Bound {boundCount}/{_shortcutKeysByKeyName.Count} shortcuts to nodes");
+			}
 		}
 
 		#endregion

@@ -268,24 +268,24 @@ namespace AcManager.UiObserver
 			
 			Debug.WriteLine($"[Navigator] Added {exclusions.Length} built-in exclusion rules");
 			
-			// Built-in classification rules (as NavShortcutKey objects)
+			// Built-in classification rules (as NavClassifier objects)
 			var classifications = new[] {
-				new NavShortcutKey {
+				new NavClassifier {
 					PathFilter = "** > *:SelectCarDialog",
 					Role = "group",
 					IsModal = true
 				},
-				new NavShortcutKey {
+				new NavClassifier {
 					PathFilter = "** > *:SelectTrackDialog",
 					Role = "group",
 					IsModal = true
 				},
-				new NavShortcutKey {
+				new NavClassifier {
 					PathFilter = "** > PART_SystemButtonsPanel:StackPanel",
 					Role = "group",
 					IsModal = false
 				},
-				new NavShortcutKey {
+				new NavClassifier {
 					PathFilter = "** > PART_TitleBar:DockPanel > *:ItemsControl",
 					Role = "group",
 					IsModal = false
@@ -294,7 +294,7 @@ namespace AcManager.UiObserver
 			
 			foreach (var classification in classifications)
 			{
-				_navConfig.ShortcutKeys.Add(classification);
+				_navConfig.Classifications.Add(classification);
 			}
 			
 			Debug.WriteLine($"[Navigator] Added {classifications.Length} built-in classification rules");
@@ -372,6 +372,7 @@ namespace AcManager.UiObserver
 		/// Handles:
 		/// - PageSelector context management (removal BEFORE addition for clean transitions)
 		/// - Focus re-initialization when focused node is removed
+		/// - Shortcut binding updates (Phase 4)
 		/// </summary>
 		private static void Observer_NodesUpdated(NavNode[] addedNodes, NavNode[] removedNodes)
 		{
@@ -435,6 +436,10 @@ namespace AcManager.UiObserver
 				
 				Debug.WriteLine($"[Navigator] ⏳ No navigable nodes in added batch, will wait for next sync");
 			}
+			
+			// ✅ STEP 4 (Phase 4): Update shortcut bindings
+			// This rebinds ALL shortcuts to current nodes (handles additions AND removals)
+			BindShortcutsToNodes();
 		}
 
 		/// <summary>
@@ -644,7 +649,7 @@ namespace AcManager.UiObserver
 					if (PresentationSource.FromVisual(fe) != null) {
 						// Check if element is in the parent context's scope (not the closed modal's scope)
 						if (IsDescendantOf(focusToRestore, CurrentContext.ScopeNode)) {
-							isValid = true;
+						 isValid = true;
 						} else {
 							Debug.WriteLine($"[Navigator] Focused node '{focusToRestore.SimpleName}' is outside parent scope (was in closed modal) - clearing focus");
 						}
@@ -849,6 +854,7 @@ namespace AcManager.UiObserver
 #if DEBUG
 			// Keyboard navigation only available in DEBUG builds for development/testing
 			// StreamDeck is the primary input method in release builds
+			
 			
 			// ✅ FIX: Check debug hotkeys FIRST (they use Ctrl+Shift modifiers)
 			if (Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift))

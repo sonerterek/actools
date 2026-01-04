@@ -59,7 +59,7 @@ namespace AcManager.UiObserver
 			_streamDeckClient.DefineKey("No", "NO", GetIconPath(icons, "confirm_no"));
 
 			// ✅ Define configured shortcut keys
-			foreach (var shortcut in _navConfig.ShortcutKeys)
+			foreach (var shortcut in _navConfig.Classifications)
 			{
 				// Skip classifications without KeyName (modals, page mappings)
 				if (string.IsNullOrEmpty(shortcut.KeyName))
@@ -90,10 +90,7 @@ namespace AcManager.UiObserver
 				
 				_streamDeckClient.DefineKey(shortcut.KeyName, shortcut.KeyTitle, iconSpec);
 				
-				// Store shortcut for later lookup
-				_shortcutsByKey[shortcut.KeyName] = shortcut;
-				
-				Debug.WriteLine($"[Navigator] Defined shortcut key: {shortcut.KeyName} → {shortcut.PathFilter}");
+				Debug.WriteLine($"[Navigator] Defined StreamDeck key: {shortcut.KeyName} → {shortcut.PathFilter}");
 			}
 		}
 
