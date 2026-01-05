@@ -231,7 +231,7 @@ namespace AcManager.UiObserver
 					new KeyEventHandler(OnPreviewKeyDown), true);
 			} catch { }
 		}
-		
+
 		/// <summary>
 		/// Adds built-in navigation rules to NavConfig.
 		/// These rules are added AFTER loading the config file, so config file rules can override them.
@@ -440,6 +440,13 @@ namespace AcManager.UiObserver
 			// ✅ STEP 4 (Phase 4): Update shortcut bindings
 			// This rebinds ALL shortcuts to current nodes (handles additions AND removals)
 			BindShortcutsToNodes();
+			
+			// ✅ STEP 5 (Phase 3): Switch to current context's page after all updates
+			// This ensures the StreamDeck page reflects the final context state after:
+			// - PageSelector contexts have been pushed/popped
+			// - Focus has been re-initialized (if needed)
+			// This is a batched update - happens once after all node changes are processed
+			SwitchToCurrentContextPage();
 		}
 
 		/// <summary>
@@ -475,14 +482,23 @@ namespace AcManager.UiObserver
 			// ✅ NEW: Determine context type based on scope node
 			var contextType = DetermineModalContextType(scopeNode);
 			
-			// Create context FIRST (so GetCandidatesInScope works correctly)
-			_contextStack.Add(new NavContext(scopeNode, contextType, focusedNode: null));
+			// ✅ Determine page name at creation time
+			var pageName = DeterminePageForNode(scopeNode, contextType);
+			
+			// ✅ Create context with PageName assigned
+			var context = new NavContext(scopeNode, contextType, focusedNode: null)
+			{
+				PageName = pageName  // ← Store page in context
+			};
+			_contextStack.Add(context);
+			
 			var contextDepth = _contextStack.Count;
 			Debug.WriteLine($"[Navigator] Context stack depth: {contextDepth}");
 			Debug.WriteLine($"[Navigator] Context type: {contextType}");
+			Debug.WriteLine($"[Navigator] Context page: {pageName ?? "(none)"}");
 
-			// ✓ NEW: Switch StreamDeck page based on modal type
-			SwitchStreamDeckPageForModal(scopeNode);
+			// ✅ (Phase 3): Switch to current context's page immediately after creation
+			SwitchToCurrentContextPage();
 
 			// ✓ FIX: Use different dispatcher priorities based on modal type
 			// MainWindow (depth 1): Loaded priority - window is already positioned at startup
@@ -610,9 +626,9 @@ namespace AcManager.UiObserver
 							// Parent context's elements have valid bounds for navigation
 							ValidateAndRestoreParentFocus();
 							
-							// ✅ STEP 4: Switch StreamDeck page for the now-current context
-							// When a modal closes, we need to switch back to the parent context's page
-							SwitchStreamDeckPageForModal(CurrentContext.ScopeNode);
+							// ✅ STEP 4 (Phase 3): Switch to current context's page after focus restoration
+							// This is deferred until after WPF completes unload to ensure clean page transition
+							SwitchToCurrentContextPage();
 						} catch (Exception ex) {
 							Debug.WriteLine($"[Navigator] Error restoring parent focus: {ex.Message}");
 						}
@@ -834,6 +850,13 @@ namespace AcManager.UiObserver
 			return null;
 		}
 
+		static void OnPreviewKeyDown(object sender, KeyEventArgs e)
+		{
+			if (Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift)) {
+				OnDebugHotkey(e);
+			}
+		}
+
 		private static bool HaveSameImmediateParent(NavNode a, NavNode b)
 		{
 			if (a == null || b == null) return false;
@@ -845,66 +868,108 @@ namespace AcManager.UiObserver
 			return ReferenceEquals(aParent, bParent);
 		}
 
-		#endregion
-
-		#region Keyboard Input
-
-		private static void OnPreviewKeyDown(object sender, KeyEventArgs e)
-		{
-#if DEBUG
-			// Keyboard navigation only available in DEBUG builds for development/testing
-			// StreamDeck is the primary input method in release builds
-			
-			
-			// ✅ FIX: Check debug hotkeys FIRST (they use Ctrl+Shift modifiers)
-			if (Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift))
-			{
-				OnDebugHotkey(e);  // Call debug hotkey handler
-				if (e.Handled) return;  // If debug handled it, we're done
-			}
-			
-			// ✅ NOW check for navigation keys (which should have NO modifiers)
-			if (Keyboard.Modifiers != ModifierKeys.None) return;
-
-			switch (e.Key)
-			{
-				case Key.Up:
-					MoveInDirection(NavDirection.Up);
-					e.Handled = true;
-					break;
-				case Key.Down:
-					MoveInDirection(NavDirection.Down);
-					e.Handled = true;
-					break;
-				case Key.Left:
-					MoveInDirection(NavDirection.Left);
-				 e.Handled = true;
-					break;
-				case Key.Right:
-					MoveInDirection(NavDirection.Right);
-					e.Handled = true;
-					break;
-				case Key.Enter:
-				case Key.Space:
-					ActivateFocusedNode();
-					e.Handled = true;
-					break;
-				case Key.Escape:
-					ExitGroup();
-					e.Handled = true;
-					break;
-			}
-#endif
-		}
-
-		// Partial method declaration - implemented in Navigator.Debug.cs
-		static partial void OnDebugHotkey(KeyEventArgs e);
-
-		#endregion
-
 		// ✅ Focus Guard moved to Navigator.FocusGuard.cs (experimental, currently disabled)
 		
 		// ✅ Interaction Mode (Slider logic) moved to Navigator.InteractionMode.cs
+
+		/// <summary>
+		/// Determines the StreamDeck page name for a given node.
+		/// Used when creating contexts to assign the appropriate page.
+		/// 
+		/// Priority:
+		/// 1. Node's PageName property (from classification rules)
+		/// 2. Type-based fallback for interactive controls (Slider, DoubleSlider, etc.)
+		/// 3. Context-type-based default
+		/// </summary>
+		/// <param name="node">The node to determine the page for</param>
+		/// <param name="contextType">The type of context being created</param>
+		/// <returns>The page name, or null if no page should be assigned</returns>
+		private static string DeterminePageForNode(NavNode node, NavContextType contextType)
+		{
+			if (node == null) return null;
+			
+			// Priority 1: Check if node has explicit PageName (from classification)
+			if (!string.IsNullOrEmpty(node.PageName))
+			{
+				Debug.WriteLine($"[Navigator] Using node's PageName: '{node.PageName}' for {node.SimpleName}");
+				return node.PageName;
+			}
+			
+			// Priority 2: Type-based assignment
+			if (node.TryGetVisual(out var element))
+			{
+				var typeName = element.GetType().Name;
+				
+				// Interactive controls get type-specific pages
+				if (typeName == "Slider" || typeName == "FormattedSlider")
+					return "Slider";
+				else if (typeName == "DoubleSlider")
+					return "DoubleSlider";
+				else if (typeName == "RoundSlider")
+					return "RoundSlider";
+				// PopupRoot gets UpDown page (vertical navigation for menus)
+				else if (typeName == "PopupRoot")
+					return "UpDown";
+				
+				if (VerboseNavigationDebug)
+				{
+					Debug.WriteLine($"[Navigator] Type-based page check for {typeName}: no specific page");
+				}
+			}
+			
+			// Priority 3: Context-type-based defaults
+			switch (contextType)
+			{
+				case NavContextType.RootWindow:
+					return "Navigation";  // Root always gets Navigation page
+				
+				case NavContextType.ModalDialog:
+				case NavContextType.PageSelector:
+				case NavContextType.InteractiveControl:
+					return "Navigation";  // Default fallback
+				
+				default:
+					Debug.WriteLine($"[Navigator] WARNING: Unknown context type: {contextType}");
+					return "Navigation";
+			}
+		}
+
+		/// <summary>
+		/// Switches StreamDeck to the page associated with the current context.
+		/// This is the ONLY method that should perform page switches based on context stack state.
+		/// 
+		/// Called after:
+		/// - Context push/pop operations in NodesUpdated (batched)
+		/// - Modal close + focus restoration (deferred)
+		/// - Interactive mode exit (immediate)
+		/// 
+		/// Does nothing if:
+		/// - No current context exists
+		/// - Current context has no PageName assigned
+		/// - StreamDeck client is not connected
+		/// </summary>
+		private static void SwitchToCurrentContextPage()
+		{
+			if (CurrentContext == null)
+			{
+				Debug.WriteLine("[Navigator] No current context - cannot switch page");
+				return;
+			}
+			
+			if (string.IsNullOrEmpty(CurrentContext.PageName))
+			{
+				Debug.WriteLine($"[Navigator] Current context ({CurrentContext.ContextType}) has no PageName - skipping page switch");
+				return;
+			}
+			
+			if (_streamDeckClient == null)
+			{
+				return;  // Silent fail if StreamDeck not connected
+			}
+			
+			Debug.WriteLine($"[Navigator] Switching to page: '{CurrentContext.PageName}' (context: {CurrentContext.ContextType}, scope: {CurrentContext.ScopeNode.SimpleName})");
+			_streamDeckClient.SwitchPage(CurrentContext.PageName);
+		}
 
 		/// <summary>
 		/// Restores the previous StreamDeck page before confirmation was requested.
@@ -918,10 +983,7 @@ namespace AcManager.UiObserver
 			if (!_streamDeckClient.RestorePreviousPage())
 			{
 				// Fallback: If history is empty, restore to current context's page
-				if (CurrentContext != null)
-				{
-					SwitchStreamDeckPageForModal(CurrentContext.ScopeNode);
-				}
+				SwitchToCurrentContextPage();
 			}
 		}
 
@@ -1033,35 +1095,19 @@ namespace AcManager.UiObserver
 		{
 			if (context == null) return;
 			
-			string pageName = null;
-			
-			switch (context.ContextType)
+			// ✅ Use context's PageName directly (assigned at creation time)
+			if (!string.IsNullOrEmpty(context.PageName))
 			{
-				case NavContextType.PageSelector:
-					// PageSelector has explicit page name
-					pageName = context.PageName;
-					break;
-				
-				case NavContextType.ModalDialog:
-					// Modal dialog uses built-in page selection logic
-					pageName = SelectBuiltInPageForModal(context.ScopeNode);
-					break;
-				
-				case NavContextType.RootWindow:
-					// Root window defaults to Navigation page
-					pageName = "Navigation";
-					break;
-				
-				case NavContextType.InteractiveControl:
-					// Keep current page (interaction mode doesn't change pages)
-					return;
+				Debug.WriteLine($"[Navigator] Switching to page: {context.PageName} (context type: {context.ContextType})");
+				_streamDeckClient?.SwitchPage(context.PageName);
 			}
-			
-			if (!string.IsNullOrEmpty(pageName))
+			else
 			{
-				Debug.WriteLine($"[Navigator] Switching to page: {pageName} (context type: {context.ContextType})");
-				_streamDeckClient?.SwitchPage(pageName);
+				// Fallback: Context has no PageName, skip page switch
+				Debug.WriteLine($"[Navigator] Context {context.ContextType} has no PageName - skipping page switch");
 			}
 		}
+
+		#endregion
 	}
 }

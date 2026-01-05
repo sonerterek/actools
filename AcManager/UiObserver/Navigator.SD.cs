@@ -156,27 +156,6 @@ namespace AcManager.UiObserver
 				Logging.Write($"[Navigator] DefineStreamDeckPages error: {ex}");
 			}
 		}
-		
-		/// <summary>
-		/// Selects the appropriate built-in page for a modal based on its type.
-		/// Returns page name, or null to use default Navigation page.
-		/// </summary>
-		private static string SelectBuiltInPageForModal(NavNode scopeNode)
-		{
-			if (scopeNode == null) return null;
-			if (!scopeNode.TryGetVisual(out var element)) return null;
-			
-			var typeName = element.GetType().Name;
-			
-			// PopupRoot indicates menu/dropdown (vertical navigation)
-			if (typeName == "PopupRoot")
-			{
-				return "UpDown";
-			}
-			
-			// Other modal types use default Navigation page
-			return null;
-		}
 
 		#endregion
 
@@ -622,47 +601,6 @@ namespace AcManager.UiObserver
 			if (boundCount > 0 || VerboseNavigationDebug)
 			{
 				Debug.WriteLine($"[Navigator] Bound {boundCount}/{_shortcutKeysByKeyName.Count} shortcuts to nodes");
-			}
-		}
-
-		#endregion
-		
-		#region StreamDeck Page Switching
-
-		/// <summary>
-		/// Switches StreamDeck to the appropriate page for the given context.
-		/// Uses the scope node's PageName property (set by Observer during classification).
-		/// Falls back to built-in page selection if no PageName is set.
-		/// </summary>
-		private static void SwitchStreamDeckPageForModal(NavNode scopeNode)
-		{
-			if (_streamDeckClient == null) return;
-			
-			try {
-				string pageName = null;
-				
-				// Check if scope node has PageName (from classification)
-				if (!string.IsNullOrEmpty(scopeNode?.PageName))
-				{
-					pageName = scopeNode.PageName;
-					Debug.WriteLine($"[Navigator] Using scope node's PageName: '{pageName}' for '{scopeNode.SimpleName}'");
-				}
-				else
-				{
-					// Fallback to built-in page selection
-					pageName = SelectBuiltInPageForModal(scopeNode);
-				}
-				
-				// Default to Navigation if no specific page
-				if (string.IsNullOrEmpty(pageName)) {
-					pageName = PageNavigation;
-				}
-				
-				Debug.WriteLine($"[Navigator] Switching StreamDeck to '{pageName}' page for scope '{scopeNode?.SimpleName ?? "null"}'");
-				_streamDeckClient.SwitchPage(pageName);
-			} catch (Exception ex)
-			{
-				Debug.WriteLine($"[Navigator] Failed to switch StreamDeck page: {ex.Message}");
 			}
 		}
 
