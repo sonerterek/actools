@@ -27,7 +27,7 @@ namespace AcManager.UiObserver
 		private static SDPClient _streamDeckClient;
 		private static bool _streamDeckHasConnectedAtLeastOnce;
 		private static bool _discoverySessionHeaderWritten;
-		internal static NavConfiguration _navConfig;
+		private static NavConfiguration _navConfig;
 		
 		/// <summary>
 		/// Runtime shortcut keys indexed by KeyName.
@@ -45,10 +45,6 @@ namespace AcManager.UiObserver
 		private static void InitializeStreamDeck()
 		{
 			Debug.WriteLine("[Navigator] Initializing StreamDeck integration...");
-			
-			// Load configuration
-			_navConfig = NavConfigParser.Load();
-			Debug.WriteLine($"[Navigator] Loaded config: {_navConfig?.Classifications?.Count ?? 0} classifications, {_navConfig?.Pages?.Count ?? 0} custom pages");
 			
 			// Build runtime shortcut keys from classifications
 			BuildShortcutKeys();

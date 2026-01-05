@@ -240,9 +240,9 @@ namespace AcManager.UiObserver
 		{
 			// Built-in exclusion rules
 			var exclusions = new[] {
-				// Exclude scrollbars in popups/menus
-				"*:PopupRoot > ** > *:ScrollBar",
-				"*:PopupRoot > ** > *:BetterScrollBar",
+				// Exclude scrollbars
+				"** > *:ScrollBar",
+				"** > *:BetterScrollBar",
 
 				// Exclude text or fancy menu items
 				"** > *:HistoricalTextBox > **",
