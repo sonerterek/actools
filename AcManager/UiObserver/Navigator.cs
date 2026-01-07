@@ -217,8 +217,6 @@ namespace AcManager.UiObserver
 			Observer.Initialize(_navConfig);
 
 			// Step 7: Subscribe to Observer events
-			Observer.ModalGroupOpened += OnModalGroupOpened;
-			Observer.ModalGroupClosed += OnModalGroupClosed;
 			Observer.WindowLayoutChanged += OnWindowLayoutChanged;
 			Observer.NodesUpdated += Observer_NodesUpdated;
 			
@@ -248,6 +246,7 @@ namespace AcManager.UiObserver
 				"** > *:HistoricalTextBox > **",
 				"** > *:LazyMenuItem > **",
 				"** > *:ModernTabSplitter",
+				"** > *:ItemsControl",
 				"*:PopupRoot > ** > *:MenuItem",
 
 				// CRITICAL: Exclude debug overlay from navigation tracking to prevent feedback loop
@@ -369,29 +368,38 @@ namespace AcManager.UiObserver
 
 		/// <summary>
 		/// Called by Observer when nodes are added or removed during a sync.
-		/// Handles:
-		/// - PageSelector context management (removal BEFORE addition for clean transitions)
+		/// Handles ALL node lifecycle changes in a single unified handler:
+		/// - Modal context management (open/close)
+		/// - PageSelector context management (activation/deactivation)
 		/// - Focus re-initialization when focused node is removed
-		/// - Shortcut binding updates (Phase 4)
+		/// - Shortcut binding updates
+		/// - StreamDeck page switching (once at end)
+		/// 
+		/// This handler works even when CurrentContext is NULL (initial MainWindow discovery).
 		/// </summary>
 		private static void Observer_NodesUpdated(NavNode[] addedNodes, NavNode[] removedNodes)
 		{
-			if (CurrentContext == null) return;
-			
-			// ✅ STEP 1: Process REMOVALS FIRST (pop old PageSelector contexts)
-			// This ensures old context is gone before new one is pushed (clean transitions)
+			// ═══════════════════════════════════════════════════════════
+			// STEP 1: Process REMOVALS FIRST (modals, PageSelectors, focused node)
+			// ═══════════════════════════════════════════════════════════
 			if (removedNodes != null && removedNodes.Length > 0)
 			{
 				foreach (var removedNode in removedNodes)
 				{
-					// Check if this was a PageSelector that had a context
-					if (removedNode.IsPageSelector)
+					// ✅ Handle modal closure (detect by IsModal && IsGroup)
+					if (removedNode.IsModal && removedNode.IsGroup)
+					{
+						OnModalScopeRemoved(removedNode);
+					}
+					
+					// Handle PageSelector deactivation (safe with null CurrentContext)
+					else if (removedNode.IsPageSelector)
 					{
 						OnPageSelectorDeactivated(removedNode);
 					}
 					
-					// Check if our currently focused node was removed
-					if (CurrentContext.FocusedNode != null && ReferenceEquals(CurrentContext.FocusedNode, removedNode))
+					// Check if our currently focused node was removed (safe with ?. operator)
+					if (CurrentContext?.FocusedNode != null && ReferenceEquals(CurrentContext.FocusedNode, removedNode))
 					{
 						Debug.WriteLine($"[Navigator] ⚠ Focused node was removed: {removedNode.SimpleName}");
 						removedNode.HasFocus = false;
@@ -401,15 +409,23 @@ namespace AcManager.UiObserver
 				}
 			}
 			
-			// ✅ STEP 2: Process ADDITIONS SECOND (push new PageSelector contexts)
-			// At this point, old PageSelector contexts have been popped (if any)
+			// ═══════════════════════════════════════════════════════════
+			// STEP 2: Process ADDITIONS SECOND (modals, PageSelectors)
+			// ═══════════════════════════════════════════════════════════
 			if (addedNodes != null && addedNodes.Length > 0)
 			{
-				// Find the first PageSelector that's in our active scope
-				// We only switch for the FIRST one found (most specific wins if multiple)
 				foreach (var addedNode in addedNodes)
 				{
-					if (addedNode.IsPageSelector && IsInActiveModalScope(addedNode))
+					// ✅ Handle modal opening (detect by IsModal && IsGroup)
+					// This works even if CurrentContext is NULL (initial MainWindow discovery)
+					if (addedNode.IsModal && addedNode.IsGroup)
+					{
+						OnModalScopeAdded(addedNode);
+					}
+					
+					// ✅ Handle PageSelector activation (safe with null CurrentContext)
+					// OnPageSelectorActivated has its own null check and will skip if no context exists
+					else if (addedNode.IsPageSelector && IsInActiveModalScope(addedNode))
 					{
 						OnPageSelectorActivated(addedNode);
 						// Only process the FIRST PageSelector found
@@ -418,9 +434,10 @@ namespace AcManager.UiObserver
 				}
 			}
 			
-			// ✅ STEP 3: Handle focus re-initialization if needed
-			// If focused node was removed and new navigable nodes were added in our scope, try to focus one
-			if (_needsFocusReinit && addedNodes != null && addedNodes.Length > 0)
+			// ═══════════════════════════════════════════════════════════
+			// STEP 3: Re-initialize focus (if needed and we have a context now)
+			// ═══════════════════════════════════════════════════════════
+			if (CurrentContext != null && _needsFocusReinit && addedNodes != null && addedNodes.Length > 0)
 			{
 				// Find first added node that's navigable and in our scope
 				foreach (var addedNode in addedNodes)
@@ -430,65 +447,81 @@ namespace AcManager.UiObserver
 						Debug.WriteLine($"[Navigator] ✅ Re-initializing focus to newly added node: {addedNode.SimpleName}");
 						SetFocus(addedNode);
 						_needsFocusReinit = false;
-						return;
+						break;
 					}
 				}
 				
-				Debug.WriteLine($"[Navigator] ⏳ No navigable nodes in added batch, will wait for next sync");
+				if (_needsFocusReinit)
+				{
+					Debug.WriteLine($"[Navigator] ⏳ No navigable nodes in added batch, will wait for next sync");
+				}
 			}
 			
-			// ✅ STEP 4 (Phase 4): Update shortcut bindings
-			// This rebinds ALL shortcuts to current nodes (handles additions AND removals)
-			BindShortcutsToNodes();
+			// ═══════════════════════════════════════════════════════════
+			// STEP 4: Update shortcut bindings (only if we have a context)
+			// ═══════════════════════════════════════════════════════════
+			if (CurrentContext != null)
+			{
+				BindShortcutsToNodes();
+			}
 			
-			// ✅ STEP 5 (Phase 3): Switch to current context's page after all updates
-			// This ensures the StreamDeck page reflects the final context state after:
-			// - PageSelector contexts have been pushed/popped
-			// - Focus has been re-initialized (if needed)
-			// This is a batched update - happens once after all node changes are processed
-			SwitchToCurrentContextPage();
+			// ═══════════════════════════════════════════════════════════
+			// STEP 5: Switch page (ONCE, after all changes processed)
+			// ═══════════════════════════════════════════════════════════
+			if (CurrentContext != null)
+			{
+				SwitchToCurrentContextPage();
+			}
 		}
 
 		/// <summary>
-		/// Called when a modal group (popup) opens.
-		/// Creates a new navigation context and initializes focus to the first navigable element.
-		/// 
-		/// ✓ CHANGED: Uses DispatcherPriority.ApplicationIdle + 50ms delay for nested modals (popups)
-		/// to ensure WPF has completed layout AND positioning before calculating coordinates.
-		/// MainWindow uses DispatcherPriority.Loaded since it's positioned at startup.
-		/// 
-		/// This fixes the bug where initial mouse position was wrong in popup menus because
-		/// PointToScreen() was called before the popup reached its final screen position.
-		/// 
-		/// ✓ NEW: Selects appropriate StreamDeck page based on modal type.
+		/// Called when a modal scope node is added to the visual tree.
+		/// Creates a new navigation context for the modal.
+		/// Extracted from OnModalGroupOpened for use in unified NodesUpdated handler.
+		/// ✅ PHASE 5: Uses efficient GetNodesUnderPath() instead of GetAllNavNodes().
+		/// ✅ PHASE 8: Removed redundant IsDescendantOf() check - nodes are already scoped.
 		/// </summary>
-		private static void OnModalGroupOpened(NavNode scopeNode)
+		private static void OnModalScopeAdded(NavNode scopeNode)
 		{
-			Debug.WriteLine($"[Navigator] Context opened: {scopeNode.SimpleName} @ {scopeNode.HierarchicalPath}");
+			Debug.WriteLine($"[Navigator] Modal scope added: {scopeNode.SimpleName} @ {scopeNode.HierarchicalPath}");
 
-			// Check if this modal should be ignored (e.g., empty tooltip popups)
-			var children = Observer.GetAllNavNodes()
-				.Where(n => n.IsNavigable && !n.IsGroup && IsDescendantOf(n, scopeNode))
-				.ToList();
-
-			if (children.Count == 0) {
-				Debug.WriteLine($"[Navigator] Context '{scopeNode.SimpleName}' has no navigable children - treating as non-modal overlay (ignoring)");
-				_ignoredModals.Add(scopeNode);
-				return;
+			// ✅ CRITICAL: NEVER ignore MainWindow - it's always the root context
+			bool isMainWindow = false;
+			if (scopeNode.TryGetVisual(out var element) && element is Window window) {
+				isMainWindow = window == Application.Current.MainWindow;
 			}
 
-			Debug.WriteLine($"[Navigator] Context has {children.Count} navigable children - creating navigation context");
+			if (!isMainWindow) {
+				// ✅ Use efficient scoped query to check for navigable children
+				var scopePath = scopeNode.HierarchicalPath;
+				var allNodesInScope = Observer.GetNodesUnderPath(scopePath);
+				
+				// Only check for navigable children for non-MainWindow modals
+				// This check prevents empty tooltip popups from creating contexts
+				// ✅ PHASE 8: Removed redundant IsDescendantOf check - GetNodesUnderPath already filters by scope
+				var children = allNodesInScope
+					.Where(n => n.IsNavigable && !n.IsGroup)
+					.ToList();
 
-			// ✅ NEW: Determine context type based on scope node
+				if (children.Count == 0) {
+					Debug.WriteLine($"[Navigator] Modal '{scopeNode.SimpleName}' has no navigable children - treating as non-modal overlay (ignoring)");
+					_ignoredModals.Add(scopeNode);
+					return;
+				}
+
+				Debug.WriteLine($"[Navigator] Modal has {children.Count} navigable children - creating navigation context");
+			} else {
+				Debug.WriteLine($"[Navigator] MainWindow detected - creating root context (skipping navigable children check)");
+			}
+
+			// Determine context type and page name
 			var contextType = DetermineModalContextType(scopeNode);
-			
-			// ✅ Determine page name at creation time
 			var pageName = DeterminePageForNode(scopeNode, contextType);
 			
-			// ✅ Create context with PageName assigned
+			// Create and push context
 			var context = new NavContext(scopeNode, contextType, focusedNode: null)
 			{
-				PageName = pageName  // ← Store page in context
+				PageName = pageName
 			};
 			_contextStack.Add(context);
 			
@@ -496,86 +529,25 @@ namespace AcManager.UiObserver
 			Debug.WriteLine($"[Navigator] Context stack depth: {contextDepth}");
 			Debug.WriteLine($"[Navigator] Context type: {contextType}");
 			Debug.WriteLine($"[Navigator] Context page: {pageName ?? "(none)"}");
-
-			// ✅ (Phase 3): Switch to current context's page immediately after creation
-			SwitchToCurrentContextPage();
-
-			// ✓ FIX: Use different dispatcher priorities based on modal type
-			// MainWindow (depth 1): Loaded priority - window is already positioned at startup
-			// Nested modals (depth 2+): ApplicationIdle + 50ms delay - wait for popup positioning to complete
-			if (scopeNode.TryGetVisual(out var fe)) {
-				var isNestedModal = contextDepth > 1;
-				var priority = isNestedModal
-					? DispatcherPriority.ApplicationIdle  // After ALL layout & positioning
-					: DispatcherPriority.Loaded;          // After layout only
-
-				var delayMs = isNestedModal ? 50 : 0;
-
-				Debug.WriteLine($"[Navigator] Deferring focus init with priority: {priority} (depth={contextDepth}, delay={delayMs}ms)");
-
-				fe.Dispatcher.BeginInvoke(
-					priority,
-					new Action(() => {
-						if (delayMs > 0) {
-							// For popups, add delay to ensure positioning completes
-							var timer = new DispatcherTimer
-							{
-								Interval = TimeSpan.FromMilliseconds(delayMs)
-							};
-							timer.Tick += (s, e) => {
-								timer.Stop();
-								if (CurrentContext?.ScopeNode == scopeNode) {
-									TryInitializeFocusIfNeeded();
-								} else {
-									Debug.WriteLine($"[Navigator] Skipped deferred focus init - context no longer current");
-								}
-							};
-							timer.Start();
-						} else {
-							// MainWindow: initialize immediately after layout
-							if (CurrentContext?.ScopeNode == scopeNode) {
-								TryInitializeFocusIfNeeded();
-							} else {
-								Debug.WriteLine($"[Navigator] Skipped deferred focus init - context no longer current");
-							}
-						}
-					})
-				);
-			} else {
-				// Fallback if visual reference is dead (shouldn't happen for newly opened modals)
-				Debug.WriteLine($"[Navigator] WARNING: Visual reference dead for newly opened context, initializing immediately");
-				TryInitializeFocusIfNeeded();
-			}
+			
+			// Schedule focus initialization (deferred for proper layout)
+			ScheduleFocusInitialization(scopeNode, contextDepth);
 		}
 
 		/// <summary>
-		/// Determines the context type for an Observer-discovered modal.
-		/// MainWindow is special - it's the root context.
-		/// All other Observer-discovered modals are dialogs/popups.
+		/// Called when a modal scope node is removed from the visual tree.
+		/// Pops the modal context and schedules parent focus validation.
+		/// Extracted from OnModalGroupClosed for use in unified NodesUpdated handler.
 		/// </summary>
-		private static NavContextType DetermineModalContextType(NavNode scopeNode)
-		{
-			if (!scopeNode.TryGetVisual(out var element))
-				return NavContextType.ModalDialog; // Safe default
-		
-			// MainWindow is special - it's the root context
-			if (element is Window window && window == Application.Current.MainWindow)
-				return NavContextType.RootWindow;
-		
-			// All other Observer-discovered modals are dialogs/popups
-			return NavContextType.ModalDialog;
-		}
-
-		private static void OnModalGroupClosed(NavNode scopeNode)
+		private static void OnModalScopeRemoved(NavNode scopeNode)
 		{
 			if (scopeNode == null) return;
 			
-			Debug.WriteLine($"[Navigator] Context closed: {scopeNode.SimpleName} @ {scopeNode.HierarchicalPath}");
+			Debug.WriteLine($"[Navigator] Modal scope removed: {scopeNode.SimpleName} @ {scopeNode.HierarchicalPath}");
 			
-			// ✓ NEW: Check if this was an ignored modal (empty popup like tooltip)
-			// These were never pushed to the stack, so we shouldn't try to pop them
+			// Check if this was an ignored modal
 			if (_ignoredModals.Remove(scopeNode)) {
-				Debug.WriteLine($"[Navigator] Ignored context closed (no action needed): {scopeNode.SimpleName}");
+				Debug.WriteLine($"[Navigator] Ignored modal closed (no action needed): {scopeNode.SimpleName}");
 				return;
 			}
 			
@@ -585,7 +557,7 @@ namespace AcManager.UiObserver
 				return;
 			}
 			
-			// ✅ FIX: Compare by path instead of reference (Observer may create new NavNode instances)
+			// Pop context by path (Observer may create new NavNode instances)
 			var currentTop = CurrentContext;
 			if (currentTop.ScopeNode.HierarchicalPath != scopeNode.HierarchicalPath) {
 				Debug.WriteLine($"[Navigator] WARNING: Closed context not at top (expected: {currentTop.ScopeNode.SimpleName}, got: {scopeNode.SimpleName})");
@@ -605,38 +577,103 @@ namespace AcManager.UiObserver
 			
 			Debug.WriteLine($"[Navigator] Context stack depth: {_contextStack.Count}");
 			
-			// ✅ STEP 1: Clear old focus visuals immediately (the closing modal's overlay)
+			// Clear old focus visuals immediately
 #if DEBUG
 			_overlay?.HideFocusRect();
 #endif
 
-			// ✅ STEP 2: Defer parent focus restoration until AFTER WPF completes unload
-			// This gives WPF time to finish dismantling the closing modal's visual tree.
-			// During unload, elements exist but have invalid bounds (GetCenterDip returns null),
-			// which causes all candidates to score Double.MaxValue and focus initialization to fail.
-			if (CurrentContext != null && CurrentContext.ScopeNode.TryGetVisual(out var parentScopeElement)) {
-				parentScopeElement.Dispatcher.BeginInvoke(
-					DispatcherPriority.Loaded,  // After unload completes
-					new Action(() => {
-						try {
-							Debug.WriteLine($"[Navigator] Restoring parent focus after context closure");
-							Debug.WriteLine($"[Navigator] Current context scope: {CurrentContext.ScopeNode.SimpleName} @ {CurrentContext.ScopeNode.HierarchicalPath}");
-							
-							// ✅ STEP 3: Now the closing modal is fully removed from visual tree
-							// Parent context's elements have valid bounds for navigation
-							ValidateAndRestoreParentFocus();
-							
-							// ✅ STEP 4 (Phase 3): Switch to current context's page after focus restoration
-							// This is deferred until after WPF completes unload to ensure clean page transition
-							SwitchToCurrentContextPage();
-						} catch (Exception ex) {
-							Debug.WriteLine($"[Navigator] Error restoring parent focus: {ex.Message}");
-						}
-					})
-				);
-			} else {
-				Debug.WriteLine($"[Navigator] No parent context to restore");
+			// Schedule parent focus validation (deferred for proper cleanup)
+			ScheduleParentFocusValidation();
+		}
+
+		/// <summary>
+		/// Schedules focus initialization after WPF layout completes.
+		/// Uses different priorities for MainWindow vs nested modals.
+		/// </summary>
+		private static void ScheduleFocusInitialization(NavNode scopeNode, int contextDepth)
+		{
+			if (!scopeNode.TryGetVisual(out var fe)) {
+				Debug.WriteLine($"[Navigator] WARNING: Visual reference dead for newly opened context, cannot schedule focus init");
+				return;
 			}
+			
+			var isNestedModal = contextDepth > 1;
+			var priority = isNestedModal
+				? DispatcherPriority.ApplicationIdle  // Nested modals need positioning
+				: DispatcherPriority.Loaded;          // MainWindow already positioned
+			
+			var delayMs = isNestedModal ? 50 : 0;
+			
+			Debug.WriteLine($"[Navigator] Scheduling focus init with priority: {priority} (depth={contextDepth}, delay={delayMs}ms)");
+			
+			fe.Dispatcher.BeginInvoke(priority, new Action(() => {
+				if (delayMs > 0) {
+					// For popups, add delay to ensure positioning completes
+					var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(delayMs) };
+					timer.Tick += (s, e) => {
+						timer.Stop();
+						if (CurrentContext?.ScopeNode == scopeNode) {
+							TryInitializeFocusIfNeeded();
+						} else {
+							Debug.WriteLine($"[Navigator] Skipped deferred focus init - context no longer current");
+						}
+					};
+					timer.Start();
+				} else {
+					// MainWindow: initialize immediately after layout
+					if (CurrentContext?.ScopeNode == scopeNode) {
+						TryInitializeFocusIfNeeded();
+					} else {
+						Debug.WriteLine($"[Navigator] Skipped deferred focus init - context no longer current");
+					}
+				}
+			}));
+		}
+
+		/// <summary>
+		/// Schedules parent focus validation after WPF unload completes.
+		/// Ensures closed modal's elements are fully dismantled before validation.
+		/// </summary>
+		private static void ScheduleParentFocusValidation()
+		{
+			if (CurrentContext == null || !CurrentContext.ScopeNode.TryGetVisual(out var parentElement)) {
+				Debug.WriteLine($"[Navigator] No parent context to restore");
+				return;
+			}
+			
+			Debug.WriteLine($"[Navigator] Scheduling parent focus validation after unload completes");
+			
+			parentElement.Dispatcher.BeginInvoke(
+				DispatcherPriority.Loaded,  // After unload completes
+				new Action(() => {
+					try {
+						Debug.WriteLine($"[Navigator] Restoring parent focus after context closure");
+						Debug.WriteLine($"[Navigator] Current context scope: {CurrentContext.ScopeNode.SimpleName} @ {CurrentContext.ScopeNode.HierarchicalPath}");
+						
+						ValidateAndRestoreParentFocus();
+					} catch (Exception ex) {
+						Debug.WriteLine($"[Navigator] Error restoring parent focus: {ex.Message}");
+					}
+				})
+			);
+		}
+
+		/// <summary>
+		/// Determines the context type for an Observer-discovered modal.
+		/// MainWindow is special - it's the root context.
+		/// All other Observer-discovered modals are dialogs/popups.
+		/// </summary>
+		private static NavContextType DetermineModalContextType(NavNode scopeNode)
+		{
+			if (!scopeNode.TryGetVisual(out var element))
+				return NavContextType.ModalDialog; // Safe default
+		
+			// MainWindow is special - it's the root context
+			if (element is Window window && window == Application.Current.MainWindow)
+				return NavContextType.RootWindow;
+		
+			// All other Observer-discovered modals are dialogs/popups
+			return NavContextType.ModalDialog;
 		}
 
 		/// <summary>
@@ -811,10 +848,26 @@ namespace AcManager.UiObserver
 			}
 		}
 
+		/// <summary>
+		/// Gets navigable candidates in the current scope.
+		/// ✅ PHASE 5: Uses efficient GetNodesUnderPath() instead of GetAllNavNodes().
+		/// ✅ PHASE 8: Removed redundant IsInActiveModalScope() check - nodes are already scoped.
+		/// </summary>
 		internal static List<NavNode> GetCandidatesInScope()
 		{
-			return Observer.GetAllNavNodes()
-				.Where(n => IsNavigableForSelection(n) && IsInActiveModalScope(n))
+			if (CurrentContext == null)
+			{
+				// No context yet - return empty list
+				return new List<NavNode>();
+			}
+			
+			// ✅ Use efficient scoped query
+			var scopePath = CurrentContext.ScopeNode.HierarchicalPath;
+			var allNodesInScope = Observer.GetNodesUnderPath(scopePath);
+			
+			// ✅ PHASE 8: Only filter by navigability - scope filtering already done by GetNodesUnderPath
+			return allNodesInScope
+				.Where(n => IsNavigableForSelection(n))
 				.ToList();
 		}
 

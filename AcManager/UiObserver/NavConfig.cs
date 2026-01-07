@@ -704,7 +704,6 @@ namespace AcManager.UiObserver
 		/// <summary>
 		/// Gets classification override for a given hierarchical path.
 		/// Returns null if no matching classification found.
-		/// If multiple rules match, merges them (later rules override earlier).
 		/// Uses NavPathFilter for pure pattern matching.
 		/// </summary>
 		public NavNodeClassification GetClassification(string elementPath)
@@ -712,26 +711,13 @@ namespace AcManager.UiObserver
 			if (string.IsNullOrWhiteSpace(elementPath))
 				return null;
 			
-			// Find all matching classifications
-			var matches = Classifications
-				.Where(sk => NavPathFilter.Matches(elementPath, sk.PathFilter))
-				.ToList();
+			// Find FIRST matching classification (no merging!)
+			var match = Classifications
+				.FirstOrDefault(sk => NavPathFilter.Matches(elementPath, sk.PathFilter));
 			
-			if (matches.Count == 0) return null;
+			if (match == null) return null;
 			
-			if (matches.Count == 1)
-			{
-				// Single match - convert directly
-				return ConvertToClassification(matches[0]);
-			}
-			
-			// Multiple matches - merge (later rules override earlier)
-			var result = new NavNodeClassification();
-			foreach (var match in matches)
-			{
-				result.MergeFrom(ConvertToClassification(match));
-			}
-			return result;
+			return ConvertToClassification(match);
 		}
 		
 		/// <summary>
@@ -742,7 +728,7 @@ namespace AcManager.UiObserver
 			return new NavNodeClassification
 			{
 				Role = ParseRole(rule.Role),
-				IsModal = rule.IsModal ? (bool?)true : null,
+				IsModal = rule.IsModal,
 				PageName = rule.PageName,
 				KeyName = rule.KeyName,
 				KeyTitle = rule.KeyTitle,

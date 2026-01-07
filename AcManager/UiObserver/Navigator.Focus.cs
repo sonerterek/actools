@@ -236,11 +236,12 @@ namespace AcManager.UiObserver
 			}
 			Debug.WriteLine($"[Navigator] ScopeNode path: {CurrentContext.ScopeNode.HierarchicalPath}");
 			
-			// Get all candidates and log details
-			var allNodes = Observer.GetAllNavNodes().ToList();
-			Debug.WriteLine($"[Navigator] Total nodes from Observer: {allNodes.Count}");
-			
-			var navigableNodes = allNodes.Where(n => IsNavigableForSelection(n)).ToList();
+			// ? NEW (Phase 5): Use efficient scoped query instead of get-all-then-filter
+			var scopePath = CurrentContext.ScopeNode.HierarchicalPath;
+			var allNodesInScope = Observer.GetNodesUnderPath(scopePath);
+			Debug.WriteLine($"[Navigator] GetNodesUnderPath returned {allNodesInScope.Count} nodes for path: {scopePath}");
+
+			var navigableNodes = allNodesInScope.Where(n => IsNavigableForSelection(n)).ToList();
 			Debug.WriteLine($"[Navigator] Navigable nodes (IsGroup=false, IsNavigable=true): {navigableNodes.Count}");
 			
 			var allCandidates = GetCandidatesInScope();

@@ -15,16 +15,17 @@ namespace AcManager.UiObserver
 	/// <summary>
 	/// Observer discovers and tracks NavNodes across multiple PresentationSources.
 	/// 
-	/// SIMPLIFIED ARCHITECTURE (LayoutUpdated-based discovery):
-	/// - All discovery happens through ScanVisualTree bulk scanning triggered by:
-	///   * Popup open events (new presentation sources)
-	///   * RegisterRoot → SyncRoot (debounced)
-	///   * Layout changes in windows → RegisterRoot (debounced)
+	/// REFACTORED ARCHITECTURE (NavRoot-based):
+	/// - Each PresentationSource has its own NavRoot instance
+	/// - NavRoot encapsulates: scanning, rate-limiting, lifecycle, state
+	/// - Observer acts as coordinator: creates/disposes NavRoots, forwards events
+	/// - Rate-limited scanning: Max 1 scan per 100ms with guaranteed final scan
 	/// 
-	/// Events (modal lifecycle only):
-	/// - ModalGroupOpened: Modal scope opened (Window, PopupRoot)
-	/// - ModalGroupClosed: Modal scope closed
-	/// - NodesUpdated: Batch notification of added/removed nodes
+	/// Benefits:
+	/// - No static state management complexity
+	/// - Testable (NavRoot is injectable)
+	/// - Thread-safe (instance-level isolation)
+	/// - Automatic cleanup (IDisposable)
 	/// </summary>
 	internal static class Observer
 	{
@@ -50,19 +51,19 @@ namespace AcManager.UiObserver
 
 		#endregion
 
-		#region Indexes
+		#region State (SIMPLIFIED)
 
-		private static readonly ConcurrentDictionary<FrameworkElement, NavNode> _nodesByElement = new ConcurrentDictionary<FrameworkElement, NavNode>();
-		private static readonly ConcurrentDictionary<PresentationSource, FrameworkElement> _presentationSourceRoots =
-			new ConcurrentDictionary<PresentationSource, FrameworkElement>();
-		private static readonly ConcurrentDictionary<FrameworkElement, HashSet<FrameworkElement>> _rootIndex =
-			new ConcurrentDictionary<FrameworkElement, HashSet<FrameworkElement>>();
-		private static readonly ConcurrentDictionary<FrameworkElement, DispatcherOperation> _pendingSyncs =
-			new ConcurrentDictionary<FrameworkElement, DispatcherOperation>();
+		// ✅ Primary index by SimpleName (e.g., "Window:MainWindow", "PopupRoot:(unnamed):3E0A44")
+		private static readonly ConcurrentDictionary<string, NavRoot> _rootsBySimpleName 
+			= new ConcurrentDictionary<string, NavRoot>();
 
-		#endregion
+		// ✅ Reverse index for cleanup (PresentationSource → SimpleName)
+		private static readonly ConcurrentDictionary<PresentationSource, string> _simpleNameByPresentationSource 
+			= new ConcurrentDictionary<PresentationSource, string>();
 
-		#region Configuration
+		// ✅ Track hooked Popups to avoid double-hooking
+		private static readonly HashSet<Popup> _hookedPopups = new HashSet<Popup>();
+		private static readonly object _popupHookLock = new object();
 		
 		private static NavConfiguration _navConfig;
 		
@@ -70,11 +71,12 @@ namespace AcManager.UiObserver
 
 		#region Events
 
-		public static event Action<NavNode> ModalGroupOpened;
-		public static event Action<NavNode> ModalGroupClosed;
-		public static event EventHandler WindowLayoutChanged;
-		// Batch update event fired once at end of SyncRoot
+		// ✅ UNIFIED: Single event for all node lifecycle changes (including modals)
+		// Modal scope nodes (IsModal && IsGroup) are included in addedNodes/removedNodes arrays
 		internal static event Action<NavNode[], NavNode[]> NodesUpdated;
+		
+		// Layout change notification (for overlay position updates)
+		public static event EventHandler WindowLayoutChanged;
 
 		#endregion
 
@@ -85,16 +87,20 @@ namespace AcManager.UiObserver
 			_navConfig = navConfig ?? throw new ArgumentNullException(nameof(navConfig));
 			
 			try {
-				// Register handler for Window.Loaded ONLY (not all FrameworkElements)
+				// ✅ Hook Window.Loaded globally (catches new Windows)
 				EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent,
 						new RoutedEventHandler(OnWindowLoaded), true);
 
-				// Hook all existing windows
+				// ✅ Fallback: Catch PresentationSource roots if Popup.Opened missed them
+				EventManager.RegisterClassHandler(typeof(FrameworkElement), FrameworkElement.LoadedEvent,
+						new RoutedEventHandler(OnFrameworkElementLoaded), true);
+
+				// ✅ Hook all existing windows
 				if (Application.Current != null) {
 					Application.Current.Dispatcher.BeginInvoke(new Action(() => {
 						try {
 							foreach (Window w in Application.Current.Windows) {
-								HookExistingWindow(w);
+								OnWindowDiscovered(w);
 							}
 						} catch { }
 					}), DispatcherPriority.Background);
@@ -102,113 +108,175 @@ namespace AcManager.UiObserver
 			} catch { }
 		}
 
+		#endregion
+
+		#region Window Discovery
+
+		/// <summary>
+		/// Called when a Window is loaded (existing or new).
+		/// </summary>
 		private static void OnWindowLoaded(object sender, RoutedEventArgs e)
 		{
-			if (sender is Window w) {
-				if (_verboseDebug) {
-					Debug.WriteLine($"[Observer] Window loaded: {w.GetType().Name}");
-				}
-
-				HookExistingWindow(w);
+			if (sender is Window window) {
+				OnWindowDiscovered(window);
 			}
 		}
 
-		private static void HookExistingWindow(Window w)
+		/// <summary>
+		/// Handles Window discovery: registers as root + hooks layout events.
+		/// </summary>
+		private static void OnWindowDiscovered(Window window)
 		{
-			if (w == null) return;
+			if (window == null) return;
 
 			try {
-				// Register the Window itself as the root (not Content)
-				RegisterRoot(w);
+				// Skip HighlightOverlay
+				if (ReferenceEquals(window, Navigator._overlay)) {
+					Debug.WriteLine("[Observer] Skipping HighlightOverlay");
+					return;
+				}
 
-				// Hook layout events
-				w.Loaded += OnWindowLayoutChanged;
-				w.LayoutUpdated += OnWindowLayoutChanged;
-				w.LocationChanged += OnWindowLayoutChanged;
-				w.SizeChanged += OnWindowLayoutChanged;
+				Debug.WriteLine($"[Observer] Window discovered: {window.GetType().Name}");
+
+				// Register as PresentationSource root
+				RegisterRoot(window);
+
+				// Hook layout events for overlay positioning
+				window.LocationChanged -= OnWindowLayoutChanged;
+				window.LocationChanged += OnWindowLayoutChanged;
+				window.SizeChanged -= OnWindowLayoutChanged;
+				window.SizeChanged += OnWindowLayoutChanged;
 			} catch { }
-
-			// Periodically rescan to catch dynamic content changes (tab switches, etc.)
-			var timer = new DispatcherTimer(
-				TimeSpan.FromSeconds(1),
-				DispatcherPriority.Background,
-				(s, e) => {
-					try {
-						RegisterRoot(w);
-					} catch { }
-				},
-				w.Dispatcher
-			);
-			timer.Start();
-
-			w.Closed += (s, e) => {
-				try {
-					timer.Stop();
-				} catch { }
-			};
 		}
 
 		private static void OnWindowLayoutChanged(object sender, EventArgs e)
 		{
 			try {
-				// Re-register the Window itself (not Content)
-				if (sender is Window w) {
-					RegisterRoot(w);
-				}
-
-				// Notify subscribers (Navigator's overlay)
+				// Notify subscribers (Navigator's overlay) for position updates
 				WindowLayoutChanged?.Invoke(sender, e);
 			} catch { }
 		}
 
 		#endregion
 
-		#region Parent/Child Linking
+		#region Popup Discovery
 
-		private static void LinkToParentOptimized(NavNode childNode, FrameworkElement childFe, NavNode parentNavNode)
+		/// <summary>
+		/// Called by NavRoot when it discovers a Popup during visual tree scanning.
+		/// This is the KEY method that enables Popup discovery!
+		/// </summary>
+		public static void OnPopupDiscovered(Popup popup)
 		{
-			if (childNode == null || childFe == null) return;
+			if (popup == null) return;
 
-			try {
-				if (parentNavNode != null) {
-					childNode.Parent = new WeakReference<NavNode>(parentNavNode);
-					parentNavNode.Children.Add(new WeakReference<NavNode>(childNode));
+			lock (_popupHookLock) {
+				// Already hooked?
+				if (_hookedPopups.Contains(popup)) return;
 
-					if (_verboseDebug) {
-						Debug.WriteLine($"[Observer] Linked {childNode.SimpleName} -> parent: {parentNavNode.SimpleName}");
-					}
-					return;
+				try {
+					// Hook Opened/Closed events
+					popup.Opened -= OnPopupOpened;
+					popup.Opened += OnPopupOpened;
+					popup.Closed -= OnPopupClosed;
+					popup.Closed += OnPopupClosed;
+
+					_hookedPopups.Add(popup);
+
+					Debug.WriteLine($"[Observer] Popup discovered and hooked: {popup.Name ?? "(unnamed)"}");
+				} catch (Exception ex) {
+					Debug.WriteLine($"[Observer] OnPopupDiscovered exception: {ex.Message}");
 				}
-
-				// No parent from stack - this is a root node
-				Debug.WriteLine($"[Observer] Root node: {childNode.SimpleName} (no parent)");
-			} catch (Exception ex) {
-				Debug.WriteLine($"[Observer] Error linking parent for {childNode.SimpleName}: {ex.Message}");
 			}
 		}
 
-		private static void UnlinkNode(NavNode node)
+		/// <summary>
+		/// Called when a hooked Popup opens.
+		/// </summary>
+		private static void OnPopupOpened(object sender, EventArgs e)
 		{
-			if (node == null) return;
+			if (sender is Popup popup) {
+				Debug.WriteLine($"[Observer] Popup.Opened: {popup.Name ?? "(unnamed)"}");
 
-			try {
-				if (node.Parent != null && node.Parent.TryGetTarget(out var parent)) {
-					parent.Children.RemoveAll(wr => {
-						if (!wr.TryGetTarget(out var child)) return true;
-						return ReferenceEquals(child, node);
-					});
+				try {
+					var child = popup.Child;
+					if (child == null) {
+						Debug.WriteLine($"[Observer]   → Child is null");
+						return;
+					}
+
+					var ps = PresentationSource.FromVisual(child);
+					if (ps == null) {
+						Debug.WriteLine($"[Observer]   → PresentationSource is null");
+						return;
+					}
+
+					var rootVisual = ps.RootVisual as FrameworkElement;
+					if (rootVisual == null) {
+						Debug.WriteLine($"[Observer]   → RootVisual is null");
+						return;
+					}
+
+					Debug.WriteLine($"[Observer]   → Registering PopupRoot: {NavNode.ComputeSimpleName(rootVisual)}");
+					RegisterRoot(rootVisual);
+				} catch (Exception ex) {
+					Debug.WriteLine($"[Observer] OnPopupOpened exception: {ex.Message}");
 				}
+			}
+		}
 
-				node.Parent = null;
-				node.Children.Clear();
-			} catch (Exception ex) {
-				Debug.WriteLine($"[Observer] Error unlinking {node.SimpleName}: {ex.Message}");
+		/// <summary>
+		/// Called when a hooked Popup closes.
+		/// </summary>
+		private static void OnPopupClosed(object sender, EventArgs e)
+		{
+			if (sender is Popup popup) {
+				Debug.WriteLine($"[Observer] Popup.Closed: {popup.Name ?? "(unnamed)"}");
+
+				try {
+					var child = popup.Child;
+					if (child == null) return;
+
+					var ps = PresentationSource.FromVisual(child);
+					if (ps == null) return;
+
+					var rootVisual = ps.RootVisual as FrameworkElement;
+					if (rootVisual != null) {
+						Debug.WriteLine($"[Observer]   → Unregistering PopupRoot: {rootVisual.GetType().Name}");
+						UnregisterRoot(rootVisual);
+					}
+				} catch (Exception ex) {
+					Debug.WriteLine($"[Observer] OnPopupClosed exception: {ex.Message}");
+				}
 			}
 		}
 
 		#endregion
 
-		#region Root Management
+		#region Fallback (PopupRoot.Loaded)
+
+		/// <summary>
+		/// Fallback: Catches PresentationSource roots that weren't caught by Popup.Opened.
+		/// This should rarely fire if Popup discovery works correctly.
+		/// </summary>
+		private static void OnFrameworkElementLoaded(object sender, RoutedEventArgs e)
+		{
+			if (sender is FrameworkElement fe) {
+				try {
+					var ps = PresentationSource.FromVisual(fe);
+					if (ps != null && ReferenceEquals(ps.RootVisual, fe)) {
+						// Skip Windows (handled by OnWindowLoaded)
+						if (fe is Window == false) {
+							Debug.WriteLine($"[Observer] PresentationSource root loaded (fallback): {fe.GetType().Name}");
+							RegisterRoot(fe);
+						}
+					}
+				} catch { }
+			}
+		}
+
+		#endregion
+
+		#region Root Management (SIMPLIFIED)
 
 		public static void RegisterRoot(FrameworkElement root)
 		{
@@ -226,76 +294,39 @@ namespace AcManager.UiObserver
 				var psRootVisual = ps.RootVisual as FrameworkElement;
 				if (psRootVisual == null) return;
 
+				// Redirect to actual PresentationSource root
 				if (!object.ReferenceEquals(root, psRootVisual)) {
-					if (_presentationSourceRoots.TryGetValue(ps, out var existingRoot)) {
-						ScheduleDebouncedSync(existingRoot);
+					var simpleName = NavNode.ComputeSimpleName(psRootVisual);
+					if (_rootsBySimpleName.TryGetValue(simpleName, out var existingNavRoot)) {
+						Debug.WriteLine($"[NavRoot] Redirecting through PS, Root {simpleName} is already registered. Scheduling scan only");
+						existingNavRoot.ScheduleScan();
 						return;
 					}
 
 					root = psRootVisual;
 				}
 
-				var isNew = _presentationSourceRoots.TryAdd(ps, root);
-				_rootIndex.GetOrAdd(root, _ => new HashSet<FrameworkElement>());
-
-				try {
-					var typeName = root.GetType().Name;
-					var elementName = string.IsNullOrEmpty(root.Name) ? "(unnamed)" : root.Name;
-					var status = isNew ? "NEW" : "existing";
-					Debug.WriteLine($"[Observer] RegisterRoot: {typeName} '{elementName}' ({status})");
-				} catch { }
-
-				if (isNew) {
-					AttachCleanupHandlers(root);
+				// Compute SimpleName for indexing
+				string rootSimpleName = NavNode.ComputeSimpleName(root);
+				
+				// Check if already exists
+				if (_rootsBySimpleName.TryGetValue(rootSimpleName, out var existingRoot)) {
+					Debug.WriteLine($"[NavRoot] Root {rootSimpleName} is already registered. Scheduling scan only");
+					existingRoot.ScheduleScan();
+					return;
 				}
 
-				ScheduleDebouncedSync(root);
-			} catch { }
-		}
+				var navRoot = new NavRoot(root, rootSimpleName, _navConfig, OnNodesUpdated);
 
-		private static void AttachCleanupHandlers(FrameworkElement root)
-		{
-			if (root == null) return;
+				// Index by SimpleName
+				_rootsBySimpleName[rootSimpleName] = navRoot;
+				_simpleNameByPresentationSource[ps] = rootSimpleName;
 
-			root.Unloaded += OnRootClosed;
+				// Created and added a new NavRoot
+				Debug.WriteLine($"[Observer] RegisterRoot: {rootSimpleName} (NEW) [Total roots: {_rootsBySimpleName.Count}]");
 
-			if (root is Window win) {
-				win.Closed += OnRootClosed;
-			} else if (root is Popup popup) {
-				popup.Closed += OnRootClosed;
-			} else if (root is ContextMenu cm) {
-				cm.Closed += OnRootClosed;
-			}
-		}
-
-		private static void OnRootClosed(object sender, EventArgs e)
-		{
-			if (sender is FrameworkElement root) {
-				UnregisterRoot(root);
-			}
-		}
-
-		private static void ScheduleDebouncedSync(FrameworkElement root)
-		{
-			if (root == null) return;
-
-			try {
-				if (_pendingSyncs.TryGetValue(root, out var pendingOp)) {
-					try {
-						if (pendingOp != null && pendingOp.Status == DispatcherOperationStatus.Pending) {
-							pendingOp.Abort();
-						}
-					} catch { }
-				}
-
-				var newOp = root.Dispatcher.BeginInvoke(new Action(() => {
-					try {
-						_pendingSyncs.TryRemove(root, out var _);
-						SyncRoot(root);
-					} catch { }
-				}), DispatcherPriority.ApplicationIdle);
-
-				_pendingSyncs[root] = newOp;
+				// Trigger initial scan
+				navRoot.ScheduleScan();
 			} catch { }
 		}
 
@@ -303,448 +334,184 @@ namespace AcManager.UiObserver
 		{
 			if (root == null) return;
 
-			if (_pendingSyncs.TryRemove(root, out var pendingOp)) {
-				try {
-					if (pendingOp != null && pendingOp.Status == DispatcherOperationStatus.Pending) {
-						pendingOp.Abort();
-					}
-				} catch { }
-			}
-
 			try {
 				var ps = PresentationSource.FromVisual(root);
-				if (ps != null) {
-					_presentationSourceRoots.TryRemove(ps, out var _);
-				}
-			} catch { }
-
-			DetachCleanupHandlers(root);
-
-			if (_rootIndex.TryRemove(root, out var set)) {
-				foreach (var fe in set) {
-					if (_nodesByElement.TryRemove(fe, out var node)) {
-						UnlinkNode(node);
-						HandleRemovedNodeModalTracking(node);
-					}
-				}
-			}
-		}
-
-		private static void DetachCleanupHandlers(FrameworkElement root)
-		{
-			if (root == null) return;
-
-			try {
-				root.Unloaded -= OnRootClosed;
-			} catch { }
-
-			try {
-				if (root is Window win) {
-					win.Closed -= OnRootClosed;
-				}
-			} catch { }
-
-			try {
-				if (root is Popup popup) {
-					popup.Closed -= OnRootClosed;
-				}
-			} catch { }
-
-			try {
-				if (root is ContextMenu cm) {
-					cm.Closed -= OnRootClosed;
-				}
-			} catch { }
-		}
-
-		#endregion
-
-		#region Scanning
-
-		public static void SyncRoot(FrameworkElement root = null)
-		{
-			if (root == null) return;
-
-			if (!root.Dispatcher.CheckAccess()) {
-				ScheduleDebouncedSync(root);
-				return;
-			}
-
-			try {
-				var typeName = root.GetType().Name;
-				var elementName = string.IsNullOrEmpty(root.Name) ? "(unnamed)" : root.Name;
-				Debug.WriteLine($"[Observer] SyncRoot START: {typeName} '{elementName}'");
-
-				var newElements = new HashSet<FrameworkElement>();
-				var newModalNodes = new List<NavNode>();
-				var addedNodes = new List<NavNode>();
-
-				ScanVisualTree(root, newElements, newModalNodes, addedNodes);
-
-				Debug.WriteLine($"[Observer] SyncRoot END: {typeName} '{elementName}' - found {newElements.Count} elements");
-
-				var removedNodes = new List<NavNode>();
-
-				_rootIndex.AddOrUpdate(root, newElements, (k, old) => {
-					foreach (var oldFe in old) {
-						if (!newElements.Contains(oldFe)) {
-							if (_nodesByElement.TryRemove(oldFe, out var oldNode)) {
-								removedNodes.Add(oldNode);
-								UnlinkNode(oldNode);
-								HandleRemovedNodeModalTracking(oldNode);
-							}
-						}
-					}
-					return newElements;
-				});
-
-				foreach (var modalNode in newModalNodes) {
-					Debug.WriteLine($"[Observer] Modal opened: {modalNode.SimpleName}");
-					try { ModalGroupOpened?.Invoke(modalNode); } catch { }
-				}
-
-				// Fire batch update event if there were any changes
-				if (addedNodes.Count > 0 || removedNodes.Count > 0) {
-					Debug.WriteLine($"[Observer] Firing NodesUpdated: {addedNodes.Count} added, {removedNodes.Count} removed");
-					try {
-						NodesUpdated?.Invoke(addedNodes.ToArray(), removedNodes.ToArray());
-					} catch (Exception ex) {
-						if (_verboseDebug) {
-							Debug.WriteLine($"[Observer] NodesUpdated event handler threw exception: {ex.Message}");
-						}
-					}
-				}
-			} catch { }
-		}
-
-		// Struct to hold scanning context (.NET 4.5.2 compatible)
-		struct ScanContext
-		{
-			public DependencyObject Element;
-			public NavNode ParentNode;
-			public bool ParentVisible;
-
-			public ScanContext(DependencyObject element, NavNode parentNode, bool parentVisible)
-			{
-				Element = element;
-				ParentNode = parentNode;
-				ParentVisible = parentVisible;
-			}
-		}
-
-		private static void ScanVisualTree(FrameworkElement root, HashSet<FrameworkElement> discoveredElements, List<NavNode> newModalNodes, List<NavNode> addedNodes)
-		{
-			if (root == null) return;
-
-			// Get context ONCE for entire tree
-			PresentationSource psRoot = null;
-			try { psRoot = PresentationSource.FromVisual(root); } catch { }
-
-			Window rootWindow = root as Window ?? Window.GetWindow(root);
-			bool hasOverlay = Navigator._overlay != null;
-
-			var visited = new HashSet<DependencyObject>();
-			var stack = new Stack<ScanContext>();
-
-			// Check root visibility once
-			bool rootVisible = root.Visibility == Visibility.Visible && root.IsVisible && root.IsLoaded;
-			stack.Push(new ScanContext(root, null, rootVisible));
-			visited.Add(root);
-
-			while (stack.Count > 0) {
-				var context = stack.Pop();
-				var node = context.Element;
-				var parentNavNode = context.ParentNode;
-				var parentVisible = context.ParentVisible;
-
-				if (node is FrameworkElement fe) {
-					// Cheap reference checks
-					if (ReferenceEquals(fe, Navigator._overlay)) {
-						continue;
-					}
-
-					if (hasOverlay && ReferenceEquals(rootWindow, Navigator._overlay)) {
-						continue;
-					}
-
-					// Check if already tracked (skip expensive operations)
-					bool alreadyTracked = _nodesByElement.TryGetValue(fe, out var existingNode);
-					if (alreadyTracked) {
-						discoveredElements.Add(fe);
-
-						// Check THIS element's visibility (not walking up!)
-						bool thisVisible = parentVisible && fe.Visibility == Visibility.Visible;
-
-						// Push children with current visibility state
-						int childCount = 0;
-						try { childCount = VisualTreeHelper.GetChildrenCount(node); } catch { }
-						for (int i = 0; i < childCount; i++) {
-							try {
-								var child = VisualTreeHelper.GetChild(node, i);
-								if (child != null && !visited.Contains(child)) {
-									visited.Add(child);
-									stack.Push(new ScanContext(child, existingNode, thisVisible));
-								}
-							} catch { }
-						}
-						continue;
-					}
-
-					// For NEW elements: cheap visibility check (no tree walk!)
-					bool isVisible = parentVisible &&
-								 fe.Visibility == Visibility.Visible &&
-								 fe.IsVisible &&
-								 fe.IsLoaded;
-
-					if (!isVisible) {
-						// Still traverse children (they might become visible later)
-						int childCount = 0;
-						try { childCount = VisualTreeHelper.GetChildrenCount(node); } catch { }
-						for (int i = 0; i < childCount; i++) {
-							try {
-								var child = VisualTreeHelper.GetChild(node, i);
-								if (child != null && !visited.Contains(child)) {
-									visited.Add(child);
-									stack.Push(new ScanContext(child, parentNavNode, false));
-								}
-							} catch { }
-						}
-						continue;
-					}
-
-					// Check PresentationSource (might be different for Popups)
-					PresentationSource psFe = null;
-					try {
-						psFe = PresentationSource.FromVisual(fe);
-						if (psFe == null) continue;
-
-						bool isOwnPresentationSourceRoot = false;
-						try {
-							isOwnPresentationSourceRoot = object.ReferenceEquals(psFe.RootVisual, fe);
-						} catch { }
-
-						if (psRoot != null && !object.ReferenceEquals(psFe, psRoot)) {
-							RegisterRoot(fe);
-							continue;
-						}
-
-						if (isOwnPresentationSourceRoot && !object.ReferenceEquals(fe, root)) {
-							RegisterRoot(fe);
-							continue;
-						}
-					} catch { continue; }
-
-					// ✅ STEP 1: Build hierarchical path (always needed for checking)
-					var hierarchicalPath = NavNode.GetHierarchicalPath(fe);
-					var pathWithoutHwnd = StripHwndFromPath(hierarchicalPath);
-					
-					if (_verboseDebug)
-					{
-						Debug.WriteLine($"[Observer] Evaluating: {pathWithoutHwnd}");
-					}
-					
-					// ✅ STEP 2: Check classification FIRST (highest priority)
-					var classification = _navConfig?.GetClassification(pathWithoutHwnd);
+				if (ps == null) return;
 				
-					// ✅ STEP 3: Create node based on priority
-					NavNode navNode = null;
-					
-					if (classification != null) {
-						// PRIORITY 1: Classification exists → force create (ignore type/exclusions)
-						navNode = NavNode.ForceCreateNavNode(fe, hierarchicalPath);
+				// Remove from dictionaries using reverse lookup
+				if (_simpleNameByPresentationSource.TryRemove(ps, out var simpleName)) {
+					if (_rootsBySimpleName.TryRemove(simpleName, out var navRoot)) {
+						var typeName = root.GetType().Name;
+						var elementName = string.IsNullOrEmpty(root.Name) ? "(unnamed)" : root.Name;
+						Debug.WriteLine($"[Observer] UnregisterRoot: {simpleName} [Total roots: {_rootsBySimpleName.Count}]");
 						
-						Debug.WriteLine($"[Observer] ✅ Created via CLASSIFY rule: {navNode.SimpleName}");
-					} else {
-						// PRIORITY 2: No classification → use type-based rules
-						navNode = NavNode.TryCreateNavNode(fe, hierarchicalPath, _navConfig);
-						
-						if (navNode != null) {
-							Debug.WriteLine($"[Observer] ✅ Created via type rules: {navNode.SimpleName}");
-						} else if (_verboseDebug) {
-							Debug.WriteLine($"[Observer] ⊘ Skipped (type/exclusion)");
-						}
-					}
-					
-					// ✅ STEP 4: If node was created, apply classification properties & link
-					if (navNode != null) {
-						_nodesByElement.AddOrUpdate(fe, navNode, (k, old) => navNode);
-						discoveredElements.Add(fe);
-						
-						// Apply classification properties (if found)
-						if (classification != null) {
-							if (!string.IsNullOrEmpty(classification.PageName)) {
-								navNode.PageName = classification.PageName;
-								if (_verboseDebug) {
-									Debug.WriteLine($"[Observer]   → PageName: '{classification.PageName}'");
-								}
-							}
-							if (!string.IsNullOrEmpty(classification.KeyName)) {
-								navNode.KeyName = classification.KeyName;
-								if (_verboseDebug) {
-									Debug.WriteLine($"[Observer]   → KeyName: '{classification.KeyName}'");
-								}
-							}
-							if (!string.IsNullOrEmpty(classification.KeyTitle)) {
-								navNode.KeyTitle = classification.KeyTitle;
-							}
-							if (!string.IsNullOrEmpty(classification.KeyIcon)) {
-								navNode.KeyIcon = classification.KeyIcon;
-							}
-							if (classification.NoAutoClick) {
-								navNode.NoAutoClick = classification.NoAutoClick;
-							}
-							if (classification.TargetType != default(ShortcutTargetType)) {
-								navNode.TargetType = classification.TargetType;
-							}
-							if (classification.RequireConfirmation) {
-								navNode.RequireConfirmation = classification.RequireConfirmation;
-							}
-							if (!string.IsNullOrEmpty(classification.ConfirmationMessage)) {
-								navNode.ConfirmationMessage = classification.ConfirmationMessage;
-							}
-						}
-
-						// Link to parent
-						LinkToParentOptimized(navNode, fe, parentNavNode);
-
-						// Debug logging
-						if (fe is Popup popupElement) {
-							var placementTargetInfo = popupElement.PlacementTarget != null
-								? $"{popupElement.PlacementTarget.GetType().Name} '{(string.IsNullOrEmpty((popupElement.PlacementTarget as FrameworkElement)?.Name) ? "(unnamed)" : (popupElement.PlacementTarget as FrameworkElement)?.Name)}'"
-								: "NULL";
-							Debug.WriteLine($"[Observer] NavNode discovered: Popup '{navNode.SimpleName}' with PlacementTarget={placementTargetInfo}");
-						} else {
-							Debug.WriteLine($"[Observer] NavNode discovered: {fe.GetType().Name} '{navNode.SimpleName}'");
-						}
-
-						// Track as newly added
-						addedNodes.Add(navNode);
-
-						if (navNode.IsModal && navNode.IsGroup) {
-							newModalNodes.Add(navNode);
-						}
-
-						// Push children with updated visibility
-						int childCount = 0;
-						try { childCount = VisualTreeHelper.GetChildrenCount(node); } catch { }
-						for (int i = 0; i < childCount; i++) {
-							try {
-								var child = VisualTreeHelper.GetChild(node, i);
-								if (child != null && !visited.Contains(child)) {
-									visited.Add(child);
-									stack.Push(new ScanContext(child, navNode, isVisible));
-								}
-							} catch { }
-						}
-						continue;
+						navRoot.Dispose(); // Fires removal events automatically
 					}
 				}
-
-				// Traverse children for non-FrameworkElements
-				int visualCount = 0;
-				try { visualCount = VisualTreeHelper.GetChildrenCount(node); } catch { }
-				for (int i = 0; i < visualCount; i++) {
-					try {
-						var child = VisualTreeHelper.GetChild(node, i);
-						if (child != null && !visited.Contains(child)) {
-							visited.Add(child);
-							stack.Push(new ScanContext(child, parentNavNode, parentVisible));
-						}
-					} catch { }
-				}
-			}
-		}
-
-		/// <summary>
-		/// Strips :HWND components from hierarchical path for pattern matching.
-		/// 
-		/// Example:
-		///   Input: "(unnamed):PopupRoot:3F4A21B > (unnamed):MenuItem"
-		///   Output: "(unnamed):PopupRoot > (unnamed):MenuItem"
-		/// 
-		/// This is needed because classification rules don't include HWND values,
-		/// but node paths include them for uniqueness.
-		/// </summary>
-		private static string StripHwndFromPath(string path)
-		{
-			if (string.IsNullOrEmpty(path)) return path;
-
-			// Split path into segments
-			var segments = path.Split(new[] { " > " }, StringSplitOptions.None);
-			
-			// Strip HWND from each segment (format: Name:Type:HWND → Name:Type)
-			for (int i = 0; i < segments.Length; i++) {
-				var parts = segments[i].Split(':');
-				if (parts.Length >= 3 && !segments[i].Contains("[")) {
-					// Has HWND component (and no content) - keep only Name:Type
-					segments[i] = $"{parts[0]}:{parts[1]}";
-				}
-			}
-
-			return string.Join(" > ", segments);
-		}
-
-		/// <summary>
-		/// Gets the hierarchical path without HWND components.
-		/// DEPRECATED: Use StripHwndFromPath() instead.
-		/// </summary>
-		private static string GetPathWithoutHwnd(NavNode node)
-		{
-			if (node == null) return null;
-
-			var path = node.HierarchicalPath;
-			if (string.IsNullOrEmpty(path)) return path;
-
-			// Split path into segments
-			var segments = path.Split(new[] { " > " }, StringSplitOptions.None);
-			
-			// Strip HWND from each segment (format: Name:Type:HWND → Name:Type)
-			for (int i = 0; i < segments.Length; i++) {
-				var parts = segments[i].Split(':');
-				if (parts.Length >= 3) {
-					// Has HWND component - keep only Name:Type
-					segments[i] = $"{parts[0]}:{parts[1]}";
-				}
-			}
-
-			return string.Join(" > ", segments);
+			} catch { }
 		}
 
 		#endregion
 
-		#region Query API
+		#region Event Forwarding
 
+		/// <summary>
+		/// Called by NavRoot instances when nodes are added/removed.
+		/// Forwards the event to Navigator and other subscribers.
+		/// </summary>
+		private static void OnNodesUpdated(NavNode[] addedNodes, NavNode[] removedNodes)
+		{
+			try {
+				NodesUpdated?.Invoke(addedNodes, removedNodes);
+			} catch (Exception ex) {
+				if (_verboseDebug) {
+					Debug.WriteLine($"[Observer] NodesUpdated event handler threw exception: {ex.Message}");
+				}
+			}
+		}
+
+		#endregion
+
+		#region Query API (SIMPLIFIED)
+
+		/// <summary>
+		/// Extracts the root SimpleName from a hierarchical path.
+		/// The root SimpleName is the first segment before " > " separator.
+		/// </summary>
+		/// <param name="hierarchicalPath">Full hierarchical path (e.g., "Window:MainWindow > Border:Border > Button:Go")</param>
+		/// <returns>Root SimpleName (e.g., "Window:MainWindow")</returns>
+		private static string ExtractRootSimpleName(string hierarchicalPath)
+		{
+			if (string.IsNullOrWhiteSpace(hierarchicalPath))
+				return null;
+			
+			// Extract first segment: "Window:MainWindow > Border:Border" → "Window:MainWindow"
+			int separatorIndex = hierarchicalPath.IndexOf(" > ", StringComparison.Ordinal);
+			return separatorIndex > 0 
+				? hierarchicalPath.Substring(0, separatorIndex) 
+				: hierarchicalPath;
+		}
+
+		/// <summary>
+		/// Gets all NavNodes under the given hierarchical path prefix.
+		/// Efficient O(1) lookup - goes directly to the NavRoot by SimpleName.
+		/// 
+		/// ✅ NEW (Phase 3): Efficient scoped query API.
+		/// Use this instead of GetAllNavNodes() + filtering for better performance.
+		/// </summary>
+		/// <param name="pathPrefix">
+		/// Hierarchical path prefix to match.
+		/// Examples:
+		///   "Window:MainWindow" - all nodes in MainWindow
+		///   "PopupRoot:(unnamed):3E0A44" - all nodes in specific popup
+		///   "Window:MainWindow > Border:PART_Content" - nodes under specific Border
+		/// </param>
+		/// <returns>Collection of NavNodes under the specified path</returns>
+		public static IReadOnlyCollection<NavNode> GetNodesUnderPath(string pathPrefix)
+		{
+			if (string.IsNullOrWhiteSpace(pathPrefix))
+				return new List<NavNode>();
+			
+			// Extract root SimpleName (first segment before " > ")
+			string rootSimpleName = ExtractRootSimpleName(pathPrefix);
+			
+			if (string.IsNullOrWhiteSpace(rootSimpleName))
+				return new List<NavNode>();
+
+			Debug.WriteLine($"[Observer] GetNodesUnderPath: Looking up root '{rootSimpleName}' for path prefix '{pathPrefix}' [Total roots: {_rootsBySimpleName.Count}]");
+
+			// ✅ NEW: Lookup NavRoot by SimpleName (O(1))
+			if (!_rootsBySimpleName.TryGetValue(rootSimpleName, out var navRoot))
+			{
+				// Root not found - return empty collection
+				if (_verboseDebug)
+				{
+					Debug.WriteLine($"[Observer] GetNodesUnderPath: Root not found (SimpleName='{rootSimpleName}')");
+				}
+				return new List<NavNode>();
+			}
+			
+			// Get all nodes from this root
+			var allNodesInRoot = navRoot.GetNodes();
+			
+			if (_verboseDebug)
+			{
+				Debug.WriteLine($"[Observer] GetNodesUnderPath: Found root '{rootSimpleName}' with {allNodesInRoot.Count} nodes");
+			}
+			
+			// If requesting entire root, return all nodes
+			if (pathPrefix.Equals(rootSimpleName, StringComparison.OrdinalIgnoreCase))
+			{
+				return allNodesInRoot;
+			}
+			
+			// Filter by path prefix (case-insensitive StartsWith)
+			var filtered = allNodesInRoot
+				.Where(node => node.HierarchicalPath.StartsWith(pathPrefix, StringComparison.OrdinalIgnoreCase))
+				.ToList();
+			
+			if (_verboseDebug)
+			{
+				Debug.WriteLine($"[Observer] GetNodesUnderPath: Filtered to {filtered.Count} nodes under '{pathPrefix}'");
+			}
+			
+			return filtered;
+		}
+
+		/// <summary>
+		/// Gets all NavNodes from all registered NavRoots.
+		/// 
+		/// ⚠️ DEPRECATED: This method iterates ALL NavRoots (windows + popups).
+		/// For scoped queries, use GetNodesUnderPath() instead for better performance.
+		/// 
+		/// Example migration:
+		/// <code>
+		/// // ❌ OLD (inefficient - iterates all roots):
+		/// var allNodes = Observer.GetAllNavNodes();
+		/// var scoped = allNodes.Where(n => n.HierarchicalPath.StartsWith(scopePath));
+		/// 
+		/// // ✅ NEW (efficient - O(1) root lookup):
+		/// var scoped = Observer.GetNodesUnderPath(scopePath);
+		/// </code>
+		/// 
+		/// Debug tools may continue using this method since performance is not critical.
+		/// </summary>
+		/// <returns>All NavNodes from all NavRoots</returns>
+		[Obsolete("Use GetNodesUnderPath(pathPrefix) for scoped queries. GetAllNavNodes() is inefficient for most use cases. Only use for debug/diagnostic tools.", false)]
 		public static IReadOnlyCollection<NavNode> GetAllNavNodes()
 		{
-			return _nodesByElement.Values.Distinct().ToArray();
-		}
-
-		public static bool TryGetNavNode(FrameworkElement fe, out NavNode node)
-		{
-			if (fe != null) {
-				return _nodesByElement.TryGetValue(fe, out node);
+			var allNodes = new List<NavNode>();
+			foreach (var navRoot in _rootsBySimpleName.Values) {
+				allNodes.AddRange(navRoot.GetNodes());
 			}
-			node = null;
-			return false;
+			return allNodes;
 		}
 
-		#endregion
-
-		#region Modal State Tracking
-
-		private static void HandleRemovedNodeModalTracking(NavNode node)
+		public static bool TryGetNavNode(FrameworkElement fe, out NavNode node, FrameworkElement rootFe = null)
 		{
-			if (node == null) return;
+			if (fe == null) {
+				node = null;
+				return false;
+			}
 
 			try {
-				if (node.IsModal && node.IsGroup) {
-					Debug.WriteLine($"[Observer] Pure modal CLOSED (removed): {node.SimpleName}");
-					try { ModalGroupClosed?.Invoke(node); } catch { }
+				string rootSimpleName = rootFe is null ? null : NavNode.ComputeSimpleName(rootFe);
+				if (rootSimpleName is null) {
+					var ps = PresentationSource.FromVisual(fe);
+					var rootFrameworkElement = ps?.RootVisual as FrameworkElement;
+					rootSimpleName = NavNode.ComputeSimpleName(rootFrameworkElement);
 				}
-
-			} catch (Exception ex) {
-				Debug.WriteLine($"[Observer] Error handling removal of {node.SimpleName}: {ex.Message}");
-			}
+				
+				if (!string.IsNullOrWhiteSpace(rootSimpleName) && 
+				    _rootsBySimpleName.TryGetValue(rootSimpleName, out var navRoot)) {
+					if (navRoot.TryGetNode(fe, out node)) {
+						return true;
+					}
+				}
+			} catch { }
+	
+			node = null;
+			return false;
 		}
 
 		#endregion

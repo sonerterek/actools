@@ -985,6 +985,7 @@
     <Compile Include="UiObserver\Navigator.SD.cs" />
     <Compile Include="UiObserver\NavNode.cs" />
     <Compile Include="UiObserver\NavPathFilter.cs" />
+    <Compile Include="UiObserver\NavRoot.cs" />
     <Compile Include="UiObserver\Observer.cs" />
     <Compile Include="UiObserver\SDPClient.cs" />
     <Compile Include="UserControls\AdditionalContentEntryTemplateSelector.cs" />

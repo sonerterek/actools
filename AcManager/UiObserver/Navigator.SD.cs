@@ -524,17 +524,21 @@ namespace AcManager.UiObserver
 		/// Finds the first navigable child of a group node.
 		/// Uses top-to-bottom, left-to-right ordering based on screen position.
 		/// Called when executing a shortcut with TargetType=Group.
+		/// ✅ PHASE 5: Uses efficient GetNodesUnderPath() instead of GetAllNavNodes().
+		/// ✅ PHASE 8: Removed redundant IsDescendantOf() check - nodes are already scoped.
 		/// </summary>
 		private static NavNode FindFirstNavigableChild(NavNode groupNode)
 		{
 			if (groupNode == null) return null;
 			
-			// Get all nodes
-			var allNodes = Observer.GetAllNavNodes();
+			// ✅ Get nodes directly from group's scope (efficient!)
+			var groupPath = groupNode.HierarchicalPath;
+			var allNodesInGroup = Observer.GetNodesUnderPath(groupPath);
 			
 			// Find children of this group that are navigable
-			var children = allNodes
-				.Where(n => IsNavigableForSelection(n) && IsDescendantOf(n, groupNode))
+			// ✅ PHASE 8: Only filter by navigability - scope filtering already done by GetNodesUnderPath
+			var children = allNodesInGroup
+				.Where(n => IsNavigableForSelection(n))
 				.ToList();
 			
 			if (children.Count == 0)
@@ -566,6 +570,7 @@ namespace AcManager.UiObserver
 		/// <summary>
 		/// Binds shortcut keys to their matching NavNodes based on KeyName property.
 		/// Called during Observer.NodesUpdated event to update bindings as nodes are added/removed.
+		/// ✅ PHASE 5: Uses efficient GetNodesUnderPath() if current context exists, GetAllNavNodes() as fallback.
 		/// </summary>
 		private static void BindShortcutsToNodes()
 		{
@@ -577,12 +582,33 @@ namespace AcManager.UiObserver
 				shortcut.BoundNode = null;
 			}
 			
-			// Get all discovered nodes
-			var allNodes = Observer.GetAllNavNodes();
+			// ✅ NEW (Phase 5): Get nodes from current scope if available (efficient!)
+			// Shortcuts should only bind to nodes in the current context
+			IReadOnlyCollection<NavNode> nodesToSearch;
+			if (CurrentContext != null)
+			{
+				var scopePath = CurrentContext.ScopeNode.HierarchicalPath;
+				nodesToSearch = Observer.GetNodesUnderPath(scopePath);
+				
+				if (VerboseNavigationDebug)
+				{
+					Debug.WriteLine($"[Navigator] BindShortcutsToNodes: Searching {nodesToSearch.Count} nodes in scope '{scopePath}'");
+				}
+			}
+			else
+			{
+				// Fallback: No context yet (shouldn't happen after initialization)
+				nodesToSearch = Observer.GetAllNavNodes();
+				
+				if (VerboseNavigationDebug)
+				{
+					Debug.WriteLine($"[Navigator] BindShortcutsToNodes: No current context, searching all {nodesToSearch.Count} nodes");
+				}
+			}
 			
 			// Bind shortcuts to nodes with matching KeyName
 			int boundCount = 0;
-			foreach (var node in allNodes)
+			foreach (var node in nodesToSearch)
 			{
 				if (string.IsNullOrEmpty(node.KeyName)) continue;
 				

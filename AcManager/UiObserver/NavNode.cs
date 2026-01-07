@@ -1,6 +1,7 @@
 ﻿using AcManager.Pages.Dialogs;
 using AcTools.Windows.Input;
 using FirstFloor.ModernUI.Windows.Controls;
+using SlimDX.Direct2D;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -125,47 +126,70 @@ namespace AcManager.UiObserver
         /// - Does NOT check if type is in sanctioned lists
         /// - Does NOT check exclusion rules
         /// - Always creates a node (unless fe is null)
-        /// - Determines IsGroup/IsModal based on type
+        /// - Determines IsGroup/IsModal based on type UNLESS classification overrides them
         /// </summary>
         /// <param name="fe">The FrameworkElement to wrap</param>
         /// <param name="hierarchicalPath">Pre-computed hierarchical path</param>
-        /// <param name="computeId">Optional function to compute the ID. If null, uses default ID generation.</param>
+        /// <param name="classification">Classification rule to apply (optional)</param>
         /// <returns>A new NavNode (never null if fe is not null)</returns>
-        public static NavNode ForceCreateNavNode(FrameworkElement fe, string hierarchicalPath, Func<FrameworkElement, string> computeId = null)
+        public static NavNode CreateNavNode(
+            FrameworkElement fe, 
+            string hierarchicalPath,
+            NavNodeClassification classification = null)
         {
             if (fe == null) throw new ArgumentNullException(nameof(fe));
 
             var feType = fe.GetType();
 
             if (VerboseDebug) {
-                Debug.WriteLine($"[NavNode] ForceCreateNavNode: {feType.Name} '{(string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name)}'");
+                Debug.WriteLine($"[NavNode] CreateNavNode: {feType.Name} '{(string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name)}'");
             }
 
-            // Determine type characteristics
+            // Start with type-based defaults
             bool isGroup = IsGroupType(feType);
             bool isModal = IsModalType(feType);
             
-            // PopupRoot special case
+            // PopupRoot special case (type-based)
             if (feType.Name == "PopupRoot") {
                 isGroup = true;
                 isModal = true;
                 
                 if (VerboseDebug) {
-                    Debug.WriteLine($"[NavNode]   -> PopupRoot detected - treating as modal group");
+                    Debug.WriteLine($"[NavNode]   -> PopupRoot detected - type-based: isGroup=true, isModal=true");
                 }
+            }
+            
+            // Apply classification overrides
+            if (classification != null) {
+                // Override Role (Group vs Leaf)
+                if (classification.Role == NavRole.Group) {
+                    isGroup = true;
+                    if (VerboseDebug) Debug.WriteLine($"[NavNode]   -> Classification override: isGroup=true (role=group)");
+                } else if (classification.Role == NavRole.Leaf) {
+                    isGroup = false;
+                    if (VerboseDebug) Debug.WriteLine($"[NavNode]   -> Classification override: isGroup=false (role=leaf)");
+                }
+                // If Role == Undefined, keep type-based default
+                
+                // Override IsModal
+                if (classification.IsModal) {
+                    isModal = true;
+                    if (VerboseDebug) Debug.WriteLine($"[NavNode]   -> Classification override: isModal=true");
+                }
+                // If IsModal == false, keep type-based default (no override)
             }
 
             // Compute ID
-            string id = computeId != null ? computeId(fe) : ComputeDefaultId(fe);
+            string simpleName = ComputeSimpleName(fe);
 
             if (VerboseDebug) {
-                Debug.WriteLine($"[NavNode]   -> FORCE-CREATED: {feType.Name} Id={id}");
+                Debug.WriteLine($"[NavNode]   -> CREATED: SimpleName={simpleName}");
                 Debug.WriteLine($"[NavNode]   -> IsGroup={isGroup}, IsModal={isModal}");
                 Debug.WriteLine($"[NavNode]   -> Path: {hierarchicalPath}");
             }
 
             // Create node with determined characteristics
-            return new NavNode(fe, id, hierarchicalPath, isGroup, isModal);
+            return new NavNode(fe, simpleName, hierarchicalPath, isGroup, isModal);
         }
 
         /// <summary>
@@ -176,20 +200,18 @@ namespace AcManager.UiObserver
         /// 2. Exclusion rules must not apply
         /// 3. No nested leaf constraint
         /// 
-        /// If all checks pass, delegates to ForceCreateNavNode for actual creation.
+        /// If all checks pass, delegates to CreateNavNode for actual creation.
         /// 
         /// Returns null if element shouldn't be tracked.
         /// </summary>
         /// <param name="fe">The FrameworkElement to wrap</param>
         /// <param name="hierarchicalPath">Pre-computed hierarchical path</param>
         /// <param name="navConfig">Configuration for exclusion checking (can be null)</param>
-        /// <param name="computeId">Optional function to compute the ID. If null, uses default ID generation.</param>
         /// <returns>A new NavNode, or null if the element should not be tracked</returns>
         public static NavNode TryCreateNavNode(
             FrameworkElement fe, 
             string hierarchicalPath, 
-            NavConfiguration navConfig,
-            Func<FrameworkElement, string> computeId = null)
+            NavConfiguration navConfig)
         {
             if (fe == null) return null;
 
@@ -198,6 +220,7 @@ namespace AcManager.UiObserver
             if (VerboseDebug) {
                 Debug.WriteLine($"[NavNode] TryCreateNavNode: {feType.Name} '{(string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name)}'");
             }
+            // Debug.WriteLine($"[NavNode] HP => {hierarchicalPath}");
 
             // STEP 1: Check if type is sanctioned
             bool isGroup = IsGroupType(feType);
@@ -212,9 +235,9 @@ namespace AcManager.UiObserver
 
             // STEP 2: Check exclusions (only if config provided)
             if (navConfig != null && navConfig.IsExcluded(hierarchicalPath)) {
-                if (VerboseDebug) {
-                    Debug.WriteLine($"[NavNode]   -> Excluded by rule, rejected");
-                }
+                // if (VerboseDebug) {
+                    Debug.WriteLine($"[NavNode]   -> Excluded by rule, rejected {hierarchicalPath}");
+                // }
                 return null;
             }
 
@@ -242,40 +265,18 @@ namespace AcManager.UiObserver
 
                 if (nonModalParent != null) {
                     // Compute ID for error reporting
-                    string id = computeId != null ? computeId(fe) : ComputeDefaultId(fe);
-                    ReportNonModalNesting(fe, feType, id, hierarchicalPath, nonModalParent, modalBlocker);
+                    string simpleName = ComputeSimpleName(fe);
+                    ReportNonModalNesting(fe, feType, simpleName, hierarchicalPath, nonModalParent, modalBlocker);
                 }
             }
 
-            // STEP 5: All checks passed - delegate to ForceCreateNavNode for actual creation
+            // STEP 5: All checks passed - delegate to CreateNavNode for actual creation
             // This ensures we reuse the same node construction logic
             if (VerboseDebug) {
-                Debug.WriteLine($"[NavNode]   -> Type rules passed, delegating to ForceCreateNavNode");
+                Debug.WriteLine($"[NavNode]   -> Type rules passed, delegating to CreateNavNode");
             }
             
-            return ForceCreateNavNode(fe, hierarchicalPath, computeId);
-        }
-
-        /// <summary>
-        /// Creates a NavNode for the given FrameworkElement, determining its type (leaf/group)
-        /// based on the element's runtime type. Returns null if the element should not be tracked.
-        /// 
-        /// THIS IS THE LEGACY METHOD - kept for backward compatibility.
-        /// New code should use TryCreateNavNode() for type-based creation or
-        /// ForceCreateNavNode() for classification-based creation.
-        /// </summary>
-        /// <param name="fe">The FrameworkElement to wrap</param>
-        /// <param name="computeId">Optional function to compute the ID. If null, uses default ID generation.</param>
-        /// <returns>A new NavNode, or null if the element type should be ignored</returns>
-        public static NavNode CreateNavNode(FrameworkElement fe, Func<FrameworkElement, string> computeId = null)
-        {
-            if (fe == null) return null;
-
-            // Compute hierarchical path
-            string hierarchicalPath = GetHierarchicalPath(fe);
-            
-            // Delegate to TryCreateNavNode (no config = no exclusion checking)
-            return TryCreateNavNode(fe, hierarchicalPath, null, computeId);
+            return CreateNavNode(fe, hierarchicalPath, null);
         }
 
         private static bool IsLeafType(Type type)
@@ -340,7 +341,7 @@ namespace AcManager.UiObserver
                     if (current is FrameworkElement parent) {
                         var parentType = parent.GetType();
 
-                        // Check if parent is a leaf - groups and unknown types are safe
+                        // Check if currentFe is a leaf - groups and unknown types are safe
                         if (!IsGroupType(parentType) && IsLeafType(parentType)) {
                             // Found a leaf ancestor - this element should not be a separate leaf
                             leafAncestor = parent;
@@ -355,7 +356,7 @@ namespace AcManager.UiObserver
 
         /// <summary>
         /// Determines if this element type creates a modal navigation context.
-        /// Modal elements block access to parent/background elements during navigation.
+        /// Modal elements block access to currentFe/background elements during navigation.
         /// 
         /// In our "observe and react" model:
         /// - Window creates a modal scope (separate navigation context)
@@ -490,38 +491,6 @@ namespace AcManager.UiObserver
             Debug.WriteLine("");
         }
 
-        private static string ComputeDefaultId(FrameworkElement fe)
-        {
-            var typeName = fe.GetType().Name;
-            var elementName = string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name;
-            
-            // Start with simple Name:Type format
-            string baseId = $"{elementName}:{typeName}";
-            
-            // ✓ For top-level elements (Window, PopupRoot), append WindowHandle as third component
-            // This makes each popup window unique: (unnamed):PopupRoot:12345
-            bool isTopLevel = fe is Window || typeName == "PopupRoot";
-            
-            if (isTopLevel) {
-                try {
-                    var hwndSource = PresentationSource.FromVisual(fe) as System.Windows.Interop.HwndSource;
-                    if (hwndSource != null) {
-                        var hwnd = hwndSource.Handle.ToInt32();
-                        baseId = $"{baseId}:{hwnd:X}";
-                        
-                        if (VerboseDebug) {
-                            Debug.WriteLine($"[NavNode] ComputeDefaultId: Top-level {typeName} has HWND, ID={baseId}");
-                        }
-                    }
-                } catch {
-                    // If we can't get HWND, just use the baseId without it
-                    // This can happen if element isn't fully initialized yet
-                }
-            }
-            
-            return baseId;
-        }
-
         /// <summary>
         /// Extracts display content from a FrameworkElement for disambiguation.
         /// Returns null if no meaningful content is found.
@@ -653,25 +622,77 @@ namespace AcManager.UiObserver
             return content;
         }
 
-        /// <summary>
-        /// Gets the hierarchical path of an element in the visual tree.
-        /// Format: Name:Type[:HWND]["Content"] > ChildName:ChildType["Content"] > ...
-        /// 
-        /// ✓ CONTENT DISAMBIGUATION: For unnamed leaf nodes, appends ["Content"] to make paths unique.
-        /// This allows distinguishing between buttons like "OK" vs "Cancel" or list items like "Germany" vs "Italy".
-        /// 
-        /// ✓ HWND FOR TOP-LEVEL: Includes WindowHandle for top-level elements (Window, PopupRoot).
-        /// Each WPF Popup creates its own OS-level window (HWND), ensuring unique paths for different popups.
-        /// 
-        /// Example paths:
-        /// - Named button: "OkButton:Button" (no content needed - name is unique)
-        /// - Unnamed button: "(unnamed):Button["OK"]" (content distinguishes from Cancel)
-        /// - Main menu: "(unnamed):PopupRoot:3F4A21B > (unnamed):MenuItem["File"]"
-        /// - Submenu: "(unnamed):PopupRoot:5C8D943 > (unnamed):MenuItem["Open"]"
-        /// 
-        /// Handles both NavNode elements (uses their SimpleName) and non-NavNode intermediate elements.
-        /// </summary>
-        public static string GetHierarchicalPath(FrameworkElement fe)
+		/// <summary>
+		/// Computes the SimpleName for a FrameworkElement.
+		/// SimpleName format: "Type:Name:HWND" for roots (Window, PopupRoot).
+		/// </summary>
+		/// <param name="fe">The fe FrameworkElement</param>
+		/// <returns>SimpleName string (e.g., "Window:MainWindow", "PopupRoot:(unnamed):3E0A44")</returns>
+		internal static string ComputeSimpleName(FrameworkElement fe)
+		{
+			if (fe == null) return null;
+
+			var typeName = fe.GetType().Name;
+			var elementName = string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name;
+
+			// Start with simple Name:Type format
+			string simpleName = $"{elementName}:{typeName}";
+
+			// ✓ For top-level elements (Window, PopupRoot), append WindowHandle as third component
+			// This makes each window unique: (unnamed):PopupRoot:12345
+			bool isTopLevel = VisualTreeHelper.GetParent(fe) == null;
+
+            // Add WHWND for top level elements
+			if (isTopLevel) {
+				try {
+					var hwndSource = PresentationSource.FromVisual(fe) as System.Windows.Interop.HwndSource;
+					if (hwndSource != null) {
+						var hwnd = hwndSource.Handle.ToInt32();
+						simpleName = $"{simpleName}:{hwnd:X}";
+
+						if (VerboseDebug) {
+							Debug.WriteLine($"[NavNode] ComputeDefaultId: Top-level {typeName} has HWND, ID={simpleName}");
+						}
+					}
+				} catch {
+					// If we can't get HWND, just use the baseId without it
+					// This can happen if element isn't fully initialized yet
+				}
+			}
+
+			// Add content for unnamed LEAF elements for further disambiguation
+			if (string.IsNullOrEmpty(fe.Name) && !isTopLevel && IsLeafType(fe.GetType())) {
+				var content = ExtractElementContent(fe);
+				if (!string.IsNullOrWhiteSpace(content)) {
+					content = SanitizeContent(content);
+					if (!string.IsNullOrWhiteSpace(content)) {
+						simpleName = $"{simpleName}[\"{content}\"]";
+					}
+				}
+			}
+
+			return simpleName;
+		}
+
+		/// <summary>
+		/// Gets the hierarchical path of an element in the visual tree.
+		/// Format: Name:Type[:HWND]["Content"] > ChildName:ChildType["Content"] > ...
+		/// 
+		/// ✓ CONTENT DISAMBIGUATION: For unnamed leaf nodes, appends ["Content"] to make paths unique.
+		/// This allows distinguishing between buttons like "OK" vs "Cancel" or list items like "Germany" vs "Italy".
+		/// 
+		/// ✓ HWND FOR TOP-LEVEL: Includes WindowHandle for top-level elements (Window, PopupRoot).
+		/// Each WPF Popup creates its own OS-level window (HWND), ensuring unique paths for different popups.
+		/// 
+		/// Example paths:
+		/// - Named button: "OkButton:Button" (no content needed - name is unique)
+		/// - Unnamed button: "(unnamed):Button["OK"]" (content distinguishes from Cancel)
+		/// - Main menu: "(unnamed):PopupRoot:3F4A21B > (unnamed):MenuItem["File"]"
+		/// - Submenu: "(unnamed):PopupRoot:5C8D943 > (unnamed):MenuItem["Open"]"
+		/// 
+		/// Handles both NavNode elements (uses their SimpleName) and non-NavNode intermediate elements.
+		/// </summary>
+		public static string GetHierarchicalPath(FrameworkElement fe, FrameworkElement rootFe = null)
         {
             var path = new List<string>();
 
@@ -679,62 +700,18 @@ namespace AcManager.UiObserver
                 DependencyObject current = fe;
                 
                 while (current != null) {
-                    if (current is FrameworkElement parent) {
-                        string pathSegment;
-                        
+                    if (current is FrameworkElement currentFe) {
                         // Check if this element is a NavNode (has been discovered)
-                        if (Observer.TryGetNavNode(parent, out var existingNode)) {
-                            // Use the pre-computed SimpleName from the NavNode
-                            pathSegment = existingNode.SimpleName;
-                            
-                            // ✓ NEW: Add content for unnamed LEAF nodes only
-                            if (!existingNode.IsGroup && string.IsNullOrEmpty(parent.Name)) {
-                                var content = ExtractElementContent(parent);
-                                if (!string.IsNullOrWhiteSpace(content)) {
-                                    content = SanitizeContent(content);
-                                    if (!string.IsNullOrWhiteSpace(content)) {
-                                        pathSegment = $"{pathSegment}[\"{content}\"]";
-                                    }
-                                }
-                            }
+                        if (Observer.TryGetNavNode(currentFe, out var existingNode, rootFe)) {
+							// Great! Use its pre-computed hierarchical path. We are DONE...
+							path.Insert(0, existingNode.HierarchicalPath);
+                            break;
                         } else {
                             // Not a NavNode - compute path segment manually
                             // This handles intermediate elements in the visual tree
-                            var typeName = parent.GetType().Name;
-                            var elementName = string.IsNullOrEmpty(parent.Name) ? "(unnamed)" : parent.Name;
-                            pathSegment = $"{elementName}:{typeName}";
-                            
-                            // For top-level elements, include HWND even if not yet a NavNode
-                            bool isTopLevel = parent is Window || typeName == "PopupRoot";
-                            if (isTopLevel) {
-                                try {
-                                    var hwndSource = PresentationSource.FromVisual(parent) as System.Windows.Interop.HwndSource;
-                                    if (hwndSource != null) {
-                                        var hwnd = hwndSource.Handle.ToInt32();
-                                        pathSegment = $"{pathSegment}:{hwnd:X}";
-                                    }
-                                } catch {
-                                    // HWND not available yet, use base format
-                                }
-                            }
-                            
-                            // ✓ NEW: Add content for unnamed LEAF elements that aren't NavNodes yet
-                            // This is critical for elements during creation (they're not in Observer's dictionary yet)
-                            if (string.IsNullOrEmpty(parent.Name) && !isTopLevel) {
-                                // Check if this looks like a leaf type (not a group/container)
-                                if (IsLeafType(parent.GetType())) {
-                                    var content = ExtractElementContent(parent);
-                                    if (!string.IsNullOrWhiteSpace(content)) {
-                                        content = SanitizeContent(content);
-                                        if (!string.IsNullOrWhiteSpace(content)) {
-                                            pathSegment = $"{pathSegment}[\"{content}\"]";
-                                        }
-                                    }
-                                }
-                            }
+							path.Insert(0, ComputeSimpleName(currentFe));
                         }
                         
-                        path.Insert(0, pathSegment);
                     }
 
                     try {
@@ -763,7 +740,7 @@ namespace AcManager.UiObserver
         public string SimpleName { get; }
 
         /// <summary>
-        /// Full hierarchical path from root to this element.
+        /// Full hierarchical path from fe to this element.
         /// Format: "WindowName:Window > PanelName:StackPanel > ButtonName:Button"
         /// 
         /// Used by PathFilter for pattern matching and as unique identifier.
@@ -773,7 +750,7 @@ namespace AcManager.UiObserver
 
         /// <summary>
         /// Parent node in the visual tree.
-        /// Null if this is a root node (Window/PresentationSource root).
+        /// Null if this is a fe node (Window/PresentationSource fe).
         /// Set by NavForest during discovery.
         /// 
         /// For elements inside Popups, this correctly points to ancestors via PlacementTarget bridging,
@@ -789,21 +766,21 @@ namespace AcManager.UiObserver
         public List<WeakReference<NavNode>> Children { get; } = new List<WeakReference<NavNode>>();
 
         /// <summary>
-        /// Captures the intermediate visual tree path from this element to its parent NavNode.
+        /// Captures the intermediate visual tree path from this element to its currentFe NavNode.
         /// Stored during LinkToParent() for diagnostic purposes.
         /// 
-        /// Format: List of weak references to FrameworkElements between this node and its parent.
+        /// Format: List of weak references to FrameworkElements between this node and its currentFe.
         /// - Does NOT include this node's element (accessible via VisualRef)
-        /// - Does NOT include parent NavNode's element (accessible via Parent.VisualRef)
+        /// - Does NOT include currentFe NavNode's element (accessible via Parent.VisualRef)
         /// - Only contains intermediate non-NavNode FrameworkElements
         /// 
-        /// Index 0 = immediate visual parent (non-NavNode)
-        /// Index 1 = parent's visual parent (non-NavNode)
+        /// Index 0 = immediate visual currentFe (non-NavNode)
+        /// Index 1 = currentFe's visual currentFe (non-NavNode)
         /// ...
-        /// Last index = last intermediate element before parent NavNode
+        /// Last index = last intermediate element before currentFe NavNode
         /// 
-        /// NULL or empty if this node is a direct child of its parent NavNode (no intermediates).
-        /// NULL if this is a root node (no parent).
+        /// NULL or empty if this node is a direct child of its currentFe NavNode (no intermediates).
+        /// NULL if this is a fe node (no currentFe).
         /// 
         /// Used for diagnosing visual tree disconnections by comparing captured path
         /// with current visual tree state.

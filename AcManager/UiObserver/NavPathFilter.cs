@@ -27,7 +27,7 @@ namespace AcManager.UiObserver
         public NavRole Role { get; set; } = NavRole.Undefined;
         
         /// <summary>Override modal behavior for THIS element.</summary>
-        public bool? IsModal { get; set; }
+        public bool IsModal { get; set; }
         
         // ========== StreamDeck Properties =========
         
@@ -59,34 +59,8 @@ namespace AcManager.UiObserver
         
         // Factory methods for common cases (backward compatibility)
         public static NavNodeClassification AsLeaf() => new NavNodeClassification { Role = NavRole.Leaf };
-        public static NavNodeClassification AsGroup(bool? modal = null) => new NavNodeClassification { Role = NavRole.Group, IsModal = modal };
+        public static NavNodeClassification AsGroup(bool? modal = null) => new NavNodeClassification { Role = NavRole.Group, IsModal = modal ?? false };
         public static NavNodeClassification WithModality(bool isModal) => new NavNodeClassification { IsModal = isModal };
-        
-        /// <summary>
-        /// Merges properties from another classification into this one.
-        /// Only overwrites properties that are set in the source.
-        /// Used when multiple rules match the same path (later rules override earlier).
-        /// </summary>
-        public void MergeFrom(NavNodeClassification source)
-        {
-            if (source == null) return;
-            
-            // Navigation properties
-            if (source.Role != NavRole.Undefined) Role = source.Role;
-            if (source.IsModal.HasValue) IsModal = source.IsModal;
-            
-            // StreamDeck properties
-            if (!string.IsNullOrEmpty(source.PageName)) PageName = source.PageName;
-            if (!string.IsNullOrEmpty(source.KeyName)) KeyName = source.KeyName;
-            if (!string.IsNullOrEmpty(source.KeyTitle)) KeyTitle = source.KeyTitle;
-            if (!string.IsNullOrEmpty(source.KeyIcon)) KeyIcon = source.KeyIcon;
-            
-            // Interaction properties
-            if (source.NoAutoClick) NoAutoClick = source.NoAutoClick;
-            if (source.TargetType != default(ShortcutTargetType)) TargetType = source.TargetType;
-            if (source.RequireConfirmation) RequireConfirmation = source.RequireConfirmation;
-            if (!string.IsNullOrEmpty(source.ConfirmationMessage)) ConfirmationMessage = source.ConfirmationMessage;
-        }
     }
     
     /// <summary>
@@ -301,17 +275,38 @@ namespace AcManager.UiObserver
             
             public bool MatchesNode(string node)
             {
-                // Node format is "Name:Type" or "Name:Type:WindowHandle"
-                // We need to extract Name and Type, ignoring WindowHandle for matching
+                // Valid node formats:
+                // - "Name:Type"
+                // - "Name:Type:HWND"
+                // - "Name:Type[Content]"
                 
-                // Split by ALL colons
+                // Pattern formats:
+                // - "Name:Type" - matches both "Name:Type" and "Name:Type[Content]"
+                // - "Name:Type[Content]" - only matches "Name:Type[Content]"
+                
+                // Split by colons
                 var parts = node.Split(':');
                 if (parts.Length < 2) return false;
                 
                 string nodeName = parts[0];
                 string nodeType = parts[1];
-                // parts[2] would be WindowHandle (if present) - we ignore it for matching!
+                // parts[2] is HWND (ignored)
                 
+                // Check if patterns have [Content] attribute
+                bool typePatternHasContent = TypePattern.IndexOf('[') >= 0;
+                
+                // If pattern doesn't have [Content], strip it from node for matching
+                if (!typePatternHasContent)
+                {
+                    int bracketIndex = nodeType.IndexOf('[');
+                    if (bracketIndex >= 0)
+                    {
+                        nodeType = nodeType.Substring(0, bracketIndex);
+                    }
+                }
+                // If pattern HAS [Content], keep nodeType as-is for exact match
+                
+                // Match against patterns
                 bool nameMatches = MatchesPattern(NamePattern, nodeName);
                 bool typeMatches = MatchesPattern(TypePattern, nodeType);
                 
