@@ -266,7 +266,8 @@ namespace AcManager.UiObserver
 			}
 			
 			Debug.WriteLine($"[Navigator] Added {exclusions.Length} built-in exclusion rules");
-			
+
+#if NEVER
 			// Built-in classification rules (as NavClassifier objects)
 			var classifications = new[] {
 				new NavClassifier {
@@ -297,6 +298,7 @@ namespace AcManager.UiObserver
 			}
 			
 			Debug.WriteLine($"[Navigator] Added {classifications.Length} built-in classification rules");
+#endif
 		}
 
 		internal static void EnsureOverlay()
@@ -362,7 +364,7 @@ namespace AcManager.UiObserver
 			}
 		}
 
-		#endregion
+#endregion
 
 		#region Event Handlers
 

@@ -974,6 +974,7 @@
     <Compile Include="UiObserver\HighlightOverlay.cs" />
     <Compile Include="UiObserver\IDebugRect.cs" />
     <Compile Include="UiObserver\NavConfig.cs" />
+    <Compile Include="UiObserver\NavConfigParser.cs" />
     <Compile Include="UiObserver\Navigator.Confirmation.cs" />
     <Compile Include="UiObserver\Navigator.cs" />
     <Compile Include="UiObserver\Navigator.Debug.cs" />
@@ -1949,10 +1950,12 @@
     <Content Include="About\Licenses\SmartThreadPool\SmartThreadPool.txt" />
     <Content Include="About\Licenses\WpfNotifyIcon\WpfNotifyIcon.txt" />
     <Content Include="Assets\Data\DefaultTrajectories.json" />
-    <None Include="NWRS Navigation.cfg.example" />
     <None Include="UiObserver\Configuration System Documentation.md" />
     <None Include="UiObserver\CONTROL_INPUT_ANALYSIS.md" />
     <None Include="UiObserver\DESIGN.md" />
+    <Content Include="UiObserver\NWRS Navigation.cfg">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
     <None Include="UiObserver\REFACTORING_STATUS.md" />
     <None Include="UiObserver\StreamDeck Integration Design.md" />
     <None Include="UiObserver\UNIFIED_RULES.md" />

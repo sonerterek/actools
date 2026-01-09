@@ -1,4 +1,8 @@
-﻿using System;
+﻿using AcManager.Pages.Dialogs;
+using AcManager.Tools.SemiGui;
+using FirstFloor.ModernUI;
+using FirstFloor.ModernUI.Helpers;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -8,8 +12,6 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Threading;
-using FirstFloor.ModernUI;
-using FirstFloor.ModernUI.Helpers;
 
 namespace AcManager.UiObserver
 {
@@ -63,8 +65,8 @@ namespace AcManager.UiObserver
 			_streamDeckClient.ReconnectionAttempt += OnStreamDeckReconnecting;
 			
 			// ✅ NEW: Hook up game lifecycle events for StreamDeck profile management
-			AcManager.Tools.SemiGui.GameWrapper.Started += OnGameStarted;
-			AcManager.Tools.SemiGui.GameWrapper.Ended += OnGameEnded;
+			GameWrapper.Started += OnGameStarted;
+			GameWrapper.Ended += OnGameEnded;
 			
 			// Define all keys and pages
 			DefineStreamDeckKeys(icons);
@@ -224,29 +226,28 @@ namespace AcManager.UiObserver
 							// ✅ Check if we would be exiting the application - we need confirmation
 							if (CurrentContext?.ScopeNode?.TryGetVisual(out var scopeElement) == true
 								&& scopeElement is Window window
-								&& window.GetType().Name == "MainWindow")
-							{
+								&& window.GetType().Name == "MainWindow") {
 								RequestConfirmation(
 									description: "Exit Application",
-									onConfirm: () =>
-									{
+									onConfirm: () => {
 										Debug.WriteLine($"[Navigator] ✅ Exiting application (user confirmed)");
-										Application.Current?.Dispatcher.Invoke(() =>
-										{
+										Application.Current?.Dispatcher.Invoke(() => {
 											Application.Current.Shutdown();
 										});
 									},
-									onCancel: () =>
-									{
+									onCancel: () => {
 										Debug.WriteLine($"[Navigator] User cancelled exit, staying in application");
 									}
 								);
-							}
-							else
-							{
+							} else {
 								// Regular back navigation (exit group/modal/interaction mode)
 								ExitGroup();
 							}
+							break;
+						// Exit key (including Interaction mode)
+						case "Esc":
+							// Send ESC from Keyboard
+							SendEscapeKey();
 							break;
 						// Activation key (not used in Interaction mode any more
 						case "MouseLeft":
@@ -302,6 +303,31 @@ namespace AcManager.UiObserver
 			}), DispatcherPriority.Input);
 		}
 
+		private static void SendEscapeKey()
+		{
+			try {
+				var escKeyInputs = new List<AcTools.Windows.User32.KeyboardInput> {
+					// Key down
+					new AcTools.Windows.User32.KeyboardInput {
+						VirtualKeyCode = (ushort)System.Windows.Forms.Keys.Escape,
+						Flags = 0 // AcTools.Windows.User32.KeyboardFlag.KeyDown
+					},
+					// Key up
+					new AcTools.Windows.User32.KeyboardInput {
+						VirtualKeyCode = (ushort)System.Windows.Forms.Keys.Escape,
+						Flags = AcTools.Windows.User32.KeyboardFlag.KeyUp
+					}
+				};
+
+				AcTools.Windows.User32.SendInput(escKeyInputs);
+				System.Threading.Thread.Sleep(20);
+
+				Debug.WriteLine("[Navigator] ESC key sent via SendInput");
+			} catch (Exception ex) {
+				Debug.WriteLine($"[Navigator] SendEscapeKey failed: {ex.Message}");
+			}
+		}       
+		
 		/// <summary>
 		/// Executes a shortcut key using its bound node.
 		/// Handles confirmation, TargetType (Element vs Group), and NoAutoClick.

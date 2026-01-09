@@ -35,6 +35,7 @@ namespace AcManager.UiObserver
 		{
 			// Define built-in navigation keys
 			_streamDeckClient.DefineKey("Back", null, GetIconPath(icons, "Back"));
+			_streamDeckClient.DefineKey("Esc", null, GetIconPath(icons, "Back"));
 			_streamDeckClient.DefineKey("Up", null, GetIconPath(icons, "Up"));
 			_streamDeckClient.DefineKey("Down", null, GetIconPath(icons, "Down"));
 			_streamDeckClient.DefineKey("Left", null, GetIconPath(icons, "Left"));
@@ -51,8 +52,8 @@ namespace AcManager.UiObserver
 			_streamDeckClient.DefineKey("SliderRangeIncrease", null, GetIconPath(icons, "Up"));
 
 			// ✅ Round Slider adjustment keys (Called TurnCCW and TurnCW, but use Left/Right icons for now)
-			_streamDeckClient.DefineKey("SliderTurnCCW", null, GetIconPath(icons, "Left"));
-			_streamDeckClient.DefineKey("SliderTurnCW", null, GetIconPath(icons, "Right"));
+			_streamDeckClient.DefineKey("SliderTurnCCW", null, GetIconPath(icons, "Turn CCW"));
+			_streamDeckClient.DefineKey("SliderTurnCW", null, GetIconPath(icons, "Turn CW"));
 
 			// ✅ Confirmation keys
 			_streamDeckClient.DefineKey("Yes", "YES", GetIconPath(icons, "confirm_yes"));
@@ -80,15 +81,9 @@ namespace AcManager.UiObserver
 					{
 						iconSpec = shortcut.KeyIcon;
 					}
-					
-					// If still null, use text-based icon
-					if (iconSpec == null)
-					{
-						iconSpec = SDPIconHelper.CreateTextIcon(shortcut.KeyIcon);
-					}
 				}
 				
-				_streamDeckClient.DefineKey(shortcut.KeyName, shortcut.KeyTitle, iconSpec);
+				_streamDeckClient.DefineKey(shortcut.KeyName, shortcut.KeyTitle, null);
 				
 				Debug.WriteLine($"[Navigator] Defined StreamDeck key: {shortcut.KeyName} → {shortcut.PathFilter}");
 			}
@@ -116,7 +111,7 @@ namespace AcManager.UiObserver
 			// UpDown page (vertical navigation only, for menus)
 			Debug.WriteLine($"[Navigator] Defining page: {PageUpDown}");
 			_streamDeckClient.DefinePage(PageUpDown, new[] {
-				new[] { "Back", "", "" },
+				new[] { "Esc", "", "" },
 				new[] { "", "", "" },
 				new[] { "", "Up", "" },
 				new[] { "", "Select", "" },

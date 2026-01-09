@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
+using System.Runtime.InteropServices.WindowsRuntime;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -92,18 +93,19 @@ namespace AcManager.UiObserver
             // Other interactive controls
             typeof(Slider),
             typeof(DoubleSlider),
-            typeof(ScrollBar),
+			typeof(RoundSlider),
+			typeof(ScrollBar),
             typeof(TabItem),
             typeof(Expander),
             typeof(GroupBox),
-            typeof(RoundSlider),
+            typeof(ContextMenuButton),
 		};
 
         // Group elements - containers that can hold navigable children
         private static readonly HashSet<Type> _groupTypes = new HashSet<Type>
         {
             typeof(Window),        // Root modal: application windows (MainWindow, dialogs, etc.)
-            typeof(Popup),         // Pure container: never directly navigable
+            // typeof(Popup),         // Pure container: never directly navigable
             typeof(ToolBar),       // Pure container: never directly navigable
             typeof(StatusBar),     // Pure container: never directly navigable
             typeof(TabControl),    // Pure container: never directly navigable
@@ -111,7 +113,7 @@ namespace AcManager.UiObserver
             typeof(ListBox),       // Pure container: never directly navigable
             typeof(ListView),      // Pure container: never directly navigable
             typeof(DataGrid),      // Pure container: never directly navigable
-            Type.GetType("FirstFloor.ModernUI.Windows.Controls.ReferenceSwitch, FirstFloor.ModernUI")  // Content-swapping container for GameDialog post-game UI
+            typeof(ReferenceSwitch)// Content-swapping container for GameDialog post-game UI
 		};
 
         #endregion
@@ -145,18 +147,12 @@ namespace AcManager.UiObserver
                 Debug.WriteLine($"[NavNode] CreateNavNode: {feType.Name} '{(string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name)}'");
             }
 
-            // Start with type-based defaults
-            bool isGroup = IsGroupType(feType);
-            bool isModal = IsModalType(feType);
+            bool isRoot = VisualTreeHelper.GetParent(fe) is null;
+            bool isGroup = isRoot || IsGroupType(feType);
+            bool isModal = isRoot || IsModalType(feType);
             
-            // PopupRoot special case (type-based)
-            if (feType.Name == "PopupRoot") {
-                isGroup = true;
-                isModal = true;
-                
-                if (VerboseDebug) {
-                    Debug.WriteLine($"[NavNode]   -> PopupRoot detected - type-based: isGroup=true, isModal=true");
-                }
+            if (VerboseDebug && isRoot) {
+                Debug.WriteLine($"[NavNode]   -> VisualRoot detected - type-based: ");
             }
             
             // Apply classification overrides
@@ -176,7 +172,6 @@ namespace AcManager.UiObserver
                     isModal = true;
                     if (VerboseDebug) Debug.WriteLine($"[NavNode]   -> Classification override: isModal=true");
                 }
-                // If IsModal == false, keep type-based default (no override)
             }
 
             // Compute ID
@@ -189,7 +184,7 @@ namespace AcManager.UiObserver
             }
 
             // Create node with determined characteristics
-            return new NavNode(fe, simpleName, hierarchicalPath, isGroup, isModal);
+            return new NavNode(fe, simpleName, hierarchicalPath, isGroup, isModal, isRoot);
         }
 
         /// <summary>
@@ -218,9 +213,10 @@ namespace AcManager.UiObserver
             var feType = fe.GetType();
 
             if (VerboseDebug) {
-                Debug.WriteLine($"[NavNode] TryCreateNavNode: {feType.Name} '{(string.IsNullOrEmpty(fe.Name) ? "(unnamed)" : fe.Name)}'");
+                Debug.WriteLine($"[NavNode] TryCreateNavNode: {hierarchicalPath}'");
             }
-            // Debug.WriteLine($"[NavNode] HP => {hierarchicalPath}");
+
+            var feTypeName = feType.Name;
 
             // STEP 1: Check if type is sanctioned
             bool isGroup = IsGroupType(feType);
@@ -228,16 +224,16 @@ namespace AcManager.UiObserver
             
             if (!isGroup && !isLeaf) {
                 if (VerboseDebug) {
-                    Debug.WriteLine($"[NavNode]   -> Not in whitelist, rejected");
+					Debug.WriteLine($"[NavNode] -> Not in whitelist, rejected {hierarchicalPath}");
                 }
                 return null;
             }
 
             // STEP 2: Check exclusions (only if config provided)
             if (navConfig != null && navConfig.IsExcluded(hierarchicalPath)) {
-                // if (VerboseDebug) {
+                if (VerboseDebug) {
                     Debug.WriteLine($"[NavNode]   -> Excluded by rule, rejected {hierarchicalPath}");
-                // }
+                }
                 return null;
             }
 
@@ -257,29 +253,18 @@ namespace AcManager.UiObserver
                 return null;
             }
 
-            // STEP 4: Validation - Check for non-modal group nesting (only for non-modal groups)
-            bool isModal = IsModalType(feType) || feType.Name == "PopupRoot";
-            
-            if (isGroup && !isModal) {
-                var nonModalParent = FindNonModalGroupAncestorNode(fe, out var modalBlocker);
-
-                if (nonModalParent != null) {
-                    // Compute ID for error reporting
-                    string simpleName = ComputeSimpleName(fe);
-                    ReportNonModalNesting(fe, feType, simpleName, hierarchicalPath, nonModalParent, modalBlocker);
-                }
-            }
-
-            // STEP 5: All checks passed - delegate to CreateNavNode for actual creation
-            // This ensures we reuse the same node construction logic
-            if (VerboseDebug) {
+			// STEP 4: All checks passed - delegate to CreateNavNode for actual creation
+			// This ensures we reuse the same node construction logic
+			if (VerboseDebug) {
                 Debug.WriteLine($"[NavNode]   -> Type rules passed, delegating to CreateNavNode");
             }
             
             return CreateNavNode(fe, hierarchicalPath, null);
         }
 
-        private static bool IsLeafType(Type type)
+        static List<string> ModernUITypes = new List<string>();
+
+		private static bool IsLeafType(Type type)
         {
             // Check exact type match
             if (_leafTypes.Contains(type)) return true;
@@ -287,14 +272,6 @@ namespace AcManager.UiObserver
             // Check if derives from any leaf base type
             foreach (var leafType in _leafTypes) {
                 if (leafType.IsAssignableFrom(type)) return true;
-            }
-
-            // Check for custom ModernUI controls (by namespace)
-            if (type.Namespace != null && type.Namespace.StartsWith("FirstFloor.ModernUI.Windows.Controls")) {
-                var typeName = type.Name;
-                if (typeName.Contains("Button") || typeName.Contains("Link")) {
-                    return true;
-                }
             }
 
             return false;
@@ -381,114 +358,6 @@ namespace AcManager.UiObserver
             // The PopupRoot that appears is the actual modal.
 
             return false;
-        }
-
-        /// <summary>
-        /// Walks up the visual tree to find if there's a non-modal NavGroup ancestor.
-        /// Uses Observer's tracking dictionary to avoid re-evaluating types.
-        /// </summary>
-        private static NavNode FindNonModalGroupAncestorNode(FrameworkElement fe, out NavNode modalBlocker)
-        {
-            modalBlocker = null;
-
-            try {
-                DependencyObject current = fe;
-                while (current != null) {
-                    try {
-                        current = VisualTreeHelper.GetParent(current);
-                    } catch {
-                        break;
-                    }
-
-                    if (current is FrameworkElement parent) {
-                        if (Observer.TryGetNavNode(parent, out var parentNode)) {
-                            if (parentNode.IsGroup) {
-                                if (parentNode.IsModal) {
-                                    modalBlocker = parentNode;
-                                    return null;
-                                } else {
-                                    return parentNode;
-                                }
-                            }
-                        }
-                    }
-                }
-            } catch { }
-
-            return null;
-        }
-
-        /// <summary>
-        /// Outputs detailed debug information about non-modal group nesting violation.
-        /// </summary>
-        private static void ReportNonModalNesting(
-            FrameworkElement childFe,
-            Type childType,
-            string childId,
-            string childPath,
-            NavNode parentNode,
-            NavNode modalBlocker)
-        {
-            Debug.WriteLine("");
-            Debug.WriteLine("???????????????????????????????????????????????????????????????????????????????");
-            Debug.WriteLine("? ??  NON-MODAL GROUP NESTING DETECTED");
-            Debug.WriteLine("???????????????????????????????????????????????????????????????????????????????");
-
-            // Child information
-            try {
-                var childTypeName = childType.Name;
-                var childName = string.IsNullOrEmpty(childFe.Name) ? "(unnamed)" : childFe.Name;
-
-                Debug.WriteLine("? CHILD (Non-Modal Group):");
-                Debug.WriteLine($"?   Type: {childTypeName}");
-                Debug.WriteLine($"?   Name: {childName}");
-                Debug.WriteLine($"?   Would-be NavNode ID: {childId}");
-                Debug.WriteLine($"?   Path: {childPath}");
-            } catch { }
-
-            Debug.WriteLine("???????????????????????????????????????????????????????????????????????????????");
-
-            // Parent information (from already-discovered NavNode)
-            try {
-                if (parentNode.TryGetVisual(out var parentFe)) {
-                    var parentType = parentFe.GetType();
-                    var parentTypeName = parentType.Name;
-                    var parentName = string.IsNullOrEmpty(parentFe.Name) ? "(unnamed)" : parentFe.Name;
-                    var parentPath = GetHierarchicalPath(parentFe);
-
-                    Debug.WriteLine("? PARENT (Non-Modal Group - Already Discovered):");
-                    Debug.WriteLine($"?   Type: {parentTypeName}");
-                    Debug.WriteLine($"?   Name: {parentName}");
-                    Debug.WriteLine($"?   NavNode SimpleName: {parentNode.SimpleName}");
-                    Debug.WriteLine($"?   Path: {parentPath}");
-                }
-            } catch { }
-
-            // Modal blocker information (if any - shouldn't be in violation case)
-            if (modalBlocker != null) {
-                Debug.WriteLine("???????????????????????????????????????????????????????????????????????????????");
-                try {
-                    if (modalBlocker.TryGetVisual(out var blockerFe)) {
-                        var blockerType = blockerFe.GetType();
-                        var blockerTypeName = blockerType.Name;
-                        var blockerName = string.IsNullOrEmpty(blockerFe.Name) ? "(unnamed)" : blockerFe.Name;
-
-                        Debug.WriteLine("? NOTE: Modal Blocker Found (shouldn't see this in violation):");
-                        Debug.WriteLine($"?   Type: {blockerTypeName}");
-                        Debug.WriteLine($"?   Name: {blockerName}");
-                        Debug.WriteLine($"?   NavNode SimpleName: {modalBlocker.SimpleName}");
-                    }
-                } catch { }
-            }
-
-            Debug.WriteLine("???????????????????????????????????????????????????????????????????????????????");
-            Debug.WriteLine("? RECOMMENDATION:");
-            Debug.WriteLine("?   • Remove CHILD from _groupTypes if it shouldn't be a group");
-            Debug.WriteLine("?   • Remove PARENT from _groupTypes if it shouldn't be a group");
-            Debug.WriteLine("?   • Add to PathFilter.AddExcludeRule() if one shouldn't be navigable");
-            Debug.WriteLine("?   • Make one of them modal if the nesting is intentional");
-            Debug.WriteLine("???????????????????????????????????????????????????????????????????????????????");
-            Debug.WriteLine("");
         }
 
         /// <summary>
@@ -726,7 +595,7 @@ namespace AcManager.UiObserver
             return string.Join(" > ", path);
         }
 
-        #endregion
+#endregion
 
         #region Properties
 
@@ -800,6 +669,12 @@ namespace AcManager.UiObserver
         public bool IsModal { get; private set; }
 
         /// <summary>
+        /// True if this node is a root in Observer. It implies it does not have a
+        /// parent in the VisualTree, meaning that it is a PresentationSource root.
+        /// </summary>
+        public bool IsRoot { get; private set; }
+
+        /// <summary>
         /// True if this node is a PageSelector (non-modal with PageName).
         /// PageSelector nodes trigger StreamDeck page switches when they become visible.
         /// </summary>
@@ -865,16 +740,18 @@ namespace AcManager.UiObserver
 
         #endregion
 
-        public NavNode(FrameworkElement fe, string simpleName, string hierarchicalPath, bool isGroup = false, bool isModal = false)
+        public NavNode(FrameworkElement fe, string simpleName, string hierarchicalPath, bool isGroup = false, bool isModal = false, bool isRoot = false)
         {
             if (fe == null) throw new ArgumentNullException(nameof(fe));
-            if (string.IsNullOrEmpty(simpleName)) throw new ArgumentException("SimpleName cannot be null or empty", nameof(simpleName));
+            if (string.IsNullOrEmpty(simpleName)) throw new ArgumentException($"SimpleName cannot be null or empty");
+            if (string.IsNullOrEmpty(hierarchicalPath)) throw new ArgumentException($"HierarchicalPath cannot be null or empty");
 
             VisualRef = new WeakReference<FrameworkElement>(fe);
             SimpleName = simpleName;
-            HierarchicalPath = hierarchicalPath ?? simpleName; // Use provided path, fallback to simpleName
+            HierarchicalPath = hierarchicalPath;
             IsGroup = isGroup;
             IsModal = isModal;
+            IsRoot = isRoot;
         }
 
         public bool TryGetVisual(out FrameworkElement fe)
@@ -1025,15 +902,16 @@ namespace AcManager.UiObserver
                 // This triggers the full WPF event chain (PreviewMouseDown → MouseDown → Click)
                 // which ensures all behaviors, animations, and handlers are invoked properly
                 
-                if (fe is Button ||
-                    fe is RepeatButton ||
-                    fe is ToggleButton ||  // Includes CheckBox, RadioButton
-                    fe is MenuItem ||
-                    fe is Menu ||
-                    fe is ListBoxItem ||
-                    fe is ComboBoxItem ||
-                    fe is TreeViewItem ||
-                    fe is TabItem) {
+                if (fe is Button
+                        || fe is RepeatButton
+                        || fe is ToggleButton  // Includes CheckBox, RadioButton
+                        || fe is MenuItem
+                        || fe is Menu
+                        || fe is ListBoxItem
+                        || fe is ComboBoxItem
+                        || fe is TreeViewItem
+                        || fe is TabItem
+                        || fe is ContextMenuButton) {
                     return SimulateMouseClick(fe);
                 }
 
