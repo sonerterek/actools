@@ -250,7 +250,9 @@ namespace AcManager.Pages.Windows {
                 }
             };
 
-            Activated += (sender, args) => {
+			SourceInitialized += OnWindowSourceInitialized;
+
+			Activated += (sender, args) => {
                 if (SettingsHolder.Common.LowerPriorityInBackground) {
                     Process.GetCurrentProcess().PriorityClass = ProcessPriorityClass.Normal;
                 }
@@ -263,7 +265,21 @@ namespace AcManager.Pages.Windows {
             _navigateOnOpen = uri;
         }
 
-        protected override void OnLoadedOverride() {
+		private void OnWindowSourceInitialized(object sender, EventArgs e)
+		{
+			// Find the system buttons panel using FindVisualChildren (plural) and LINQ
+			var systemButtonsPanel = this.FindVisualChildren<StackPanel>()
+				.FirstOrDefault(panel => panel.Name == "PART_SystemButtonsPanel");
+
+			if (systemButtonsPanel != null) {
+				systemButtonsPanel.Visibility = Visibility.Collapsed;
+				Debug.WriteLine("[MainWindow] System buttons hidden successfully");
+			} else {
+				Debug.WriteLine("[MainWindow] WARNING: Could not find system buttons panel");
+			}
+		}
+
+		protected override void OnLoadedOverride() {
             if (_navigateOnOpen != null) {
                 NavigateTo(_navigateOnOpen);
                 this.FindVisualChild<ModernMenu>()?.SkipLoading();
@@ -1214,12 +1230,12 @@ namespace AcManager.Pages.Windows {
 
         private void OnNavigateItemClick(object sender, RoutedEventArgs e) {
             var item = (MenuItem)sender;
-            DownloadsPopup.IsOpen = false;
+            // DownloadsPopup.IsOpen = false;
             NavigateTo(new Uri((string)item.CommandParameter, UriKind.Relative));
         }
 
         private void OnNavigateAboutItemClick(object sender, RoutedEventArgs e) {
-            DownloadsPopup.IsOpen = false;
+            // DownloadsPopup.IsOpen = false;
             NavigateTo(_lastAboutSection.Value ?? AboutPageUri);
         }
 

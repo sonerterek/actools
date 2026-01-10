@@ -338,209 +338,6 @@
     </ResourceDictionary>
   </mui:ModernWindow.Resources>
 
-  <mui:ModernWindow.TitleButtons>
-
-    <mui:Cell Width="45">
-      <!-- ReSharper disable once Xaml.BindingWithContextNotResolved -->
-      <Border mui:FancyHintsService.Hint="{Binding Id, Source={x:Static c:FancyHints.ContentUpdatesArrived}}" mui:FancyHintsService.OffsetX="22"
-          mui:FancyHintsService.OffsetY="-14" mui:FancyHintsService.HorizontalAlignment="Left" mui:FancyHintsService.VerticalAlignment="Bottom"
-          mui:FancyHintsService.HorizontalContentAlignment="Right" mui:FancyHintsService.VerticalContentAlignment="Top">
-        <ToggleButton x:Name="DownloadsButton" Style="{StaticResource SystemButtonGo}" Width="45"
-            IsHitTestVisible="{Binding RelativeSource={RelativeSource AncestorType=Panel}, Path=Children[1].IsOpen, Mode=OneWay, Converter={StaticResource InvertBooleanConverter}}"
-            Tag="{Binding HasUnfinishedItems, Source={x:Static t:ContentInstallationManager.Instance}}" Drop="OnContentTitleLinkDrop" AllowDrop="True"
-            mui:FancyHintsService.Hint="{Binding Id, Source={x:Static c:FancyHints.DownloadsList}}" mui:FancyHintsService.OffsetX="22"
-            mui:FancyHintsService.OffsetY="-14" mui:FancyHintsService.HorizontalAlignment="Left" mui:FancyHintsService.VerticalAlignment="Bottom"
-            mui:FancyHintsService.HorizontalContentAlignment="Right" mui:FancyHintsService.VerticalContentAlignment="Top"
-            PreviewMouseLeftButtonUp="OnDownloadsButtonClick">
-          <FrameworkElement.ToolTip>
-            <mui:Switch Value="{Binding UnfinishedItemsCount, Source={x:Static t:ContentInstallationManager.Instance}}" MaxWidth="480">
-              <TextBlock mui:Switch.When="0" Text="{x:Static g:AppStrings.MainWindow_Downloads_Tooltip}" TextWrapping="Wrap" />
-              <TextBlock TextWrapping="Wrap">
-                <TextBlock.Text>
-                  <Binding Path="UnfinishedItemsCount" Source="{x:Static t:ContentInstallationManager.Instance}"
-                      StringFormat="{x:Static g:AppStrings.MainWindow_Downloads_TooltipFormat}" />
-                </TextBlock.Text>
-              </TextBlock>
-            </mui:Switch>
-          </FrameworkElement.ToolTip>
-          <FrameworkElement.ContextMenu>
-            <ContextMenu>
-              <MenuItem Header="{x:Static g:AppStrings.MainWindow_Downloads_InstallAll}"
-                  Command="{Binding InstallAllCommand, Source={x:Static t:ContentInstallationManager.Instance}}">
-                <MenuItem.Icon>
-                  <Path Width="10" Height="10" Margin="0 2 0 0" Stretch="Uniform" Data="{StaticResource AddMultipleIconData}" HorizontalAlignment="Right"
-                      VerticalAlignment="Center" Fill="{Binding Path=(Control.Foreground), RelativeSource={RelativeSource Self}}" />
-                </MenuItem.Icon>
-              </MenuItem>
-              <Separator />
-              <MenuItem Header="{x:Static g:AppStrings.MainWindow_Downloads_RemoveCompleted}"
-                  Command="{Binding RemoveCompletedCommand, Source={x:Static t:ContentInstallationManager.Instance}}">
-                <MenuItem.Icon>
-                  <Path Width="10" Height="10" Margin="0 2 0 0" Stretch="Uniform" Data="{StaticResource CleanUpIconData}" HorizontalAlignment="Right"
-                      VerticalAlignment="Center" Fill="{Binding Path=(Control.Foreground), RelativeSource={RelativeSource Self}}" />
-                </MenuItem.Icon>
-              </MenuItem>
-              <MenuItem Header="{x:Static g:AppStrings.MainWindow_Downloads_RemoveAll}"
-                  Command="{Binding RemoveAllCommand, Source={x:Static t:ContentInstallationManager.Instance}}">
-                <MenuItem.Icon>
-                  <Path Width="10" Height="10" Margin="0 2 0 0" Stretch="Uniform" Data="{StaticResource TrashBinIconData}" HorizontalAlignment="Right"
-                      VerticalAlignment="Center" Fill="{Binding Path=(Control.Foreground), RelativeSource={RelativeSource Self}}" />
-                </MenuItem.Icon>
-              </MenuItem>
-            </ContextMenu>
-          </FrameworkElement.ContextMenu>
-          <ContentControl ContentTemplate="{StaticResource MenuButtonContent}"
-              Content="{Binding HasLoadingItems, Source={x:Static t:ContentInstallationManager.Instance}}" />
-        </ToggleButton>
-      </Border>
-      <c:ModernPopup x:Name="DownloadsPopup" PlacementTarget="{Binding ElementName=DownloadsButton}" Placement="Bottom"
-          IsOpen="{Binding IsChecked, ElementName=DownloadsButton, Mode=TwoWay}" Padding="0" Opened="OnDownloadsPopupOpened"
-          PopupAnimation="{DynamicResource {x:Static SystemParameters.ComboBoxPopupAnimationKey}}">
-        <StackPanel Width="420">
-
-          <StackPanel Visibility="{Binding AppUpdater.ReadyToUpdateVersion, Converter={StaticResource NullToVisibilityConverter}, ConverterParameter=inverse}">
-            <MenuItem Command="{Binding AppUpdater.FinishUpdateCommand}">
-              <MenuItem.Resources>
-                <!-- ReSharper disable once Xaml.RedundantResource -->
-                <SolidColorBrush x:Key="ItemText" Color="{DynamicResource AccentColor}" />
-              </MenuItem.Resources>
-              <MenuItem.Icon>
-                <Path Width="12" Height="12" Margin="4 2 -2 -2" Stretch="Uniform" Data="{StaticResource UpdateIconData}" HorizontalAlignment="Center"
-                    VerticalAlignment="Center" Fill="{Binding Path=(Control.Foreground), RelativeSource={RelativeSource Self}}" />
-              </MenuItem.Icon>
-              <MenuItem.Header>
-                <mui:BbCodeBlock Text="{Binding AppUpdater.ReadyToUpdateVersion, StringFormat={x:Static mui:UiStrings.UpdateAvailable}}" />
-              </MenuItem.Header>
-            </MenuItem>
-            <MenuItem Header="{x:Static g:AppStrings.MainWindow_UpdateMenu_ViewChangelog}" Command="{Binding ViewChangelogCommand}" />
-            <MenuItem Header="{x:Static g:AppStrings.MainWindow_UpdateMenu_SkipUpdate}" Command="{Binding AppUpdater.IgnoreUpdateCommand}" />
-            <MenuItem Header="{x:Static g:AppStrings.MainWindow_UpdateMenu_DisableAutoUpdates}" Command="{Binding AppUpdater.DisableAutoUpdatesCommand}" />
-            <Separator Style="{StaticResource {x:Static MenuItem.SeparatorStyleKey}}" />
-          </StackPanel>
-
-          <MenuItem Header="{x:Static g:AppStrings.MainWindow_AddDownload_MenuItem}" Click="OnDownloadSomethingItemClick" InputGestureText="Ctrl+V">
-            <MenuItem.Icon>
-              <Path Width="12" Height="12" Margin="4 0 -2 0" Stretch="Uniform" Data="{StaticResource DownloadIconData}" HorizontalAlignment="Center"
-                  VerticalAlignment="Center" Fill="{Binding Path=(Control.Foreground), RelativeSource={RelativeSource Self}}" />
-            </MenuItem.Icon>
-          </MenuItem>
-          <MenuItem Header="{x:Static g:AppStrings.MainWindow_InstallFromAFile_MenuItem}" Click="OnInstallFromAFileItemClick">
-            <MenuItem.Icon>
-              <Path Width="12" Height="12" Margin="4 0 -2 0" Stretch="Uniform" Data="{StaticResource OpenFolderIconData}" HorizontalAlignment="Center"
-                  VerticalAlignment="Center" Fill="{Binding Path=(Control.Foreground), RelativeSource={RelativeSource Self}}" />
-            </MenuItem.Icon>
-          </MenuItem>
-          <Separator Style="{StaticResource {x:Static MenuItem.SeparatorStyleKey}}" />
-          <MenuItem Header="{x:Static g:AppStrings.Main_Drive}" Click="OnNavigateItemClick" CommandParameter="/Pages/Drive/QuickDrive.xaml"
-              InputGestureText="F1">
-            <MenuItem.Icon>
-              <Path Width="12" Height="12" Margin="4 0 -2 0" Stretch="Uniform" Data="{StaticResource CarsIconData}" HorizontalAlignment="Center"
-                  VerticalAlignment="Center" Fill="{Binding Path=(Control.Foreground), RelativeSource={RelativeSource Self}}" />
-            </MenuItem.Icon>
-          </MenuItem>
-          <MenuItem Header="{x:Static g:AppStrings.Main_LapTimes}" Click="OnNavigateItemClick" CommandParameter="/Pages/Miscellaneous/LapTimes_Recent.xaml"
-              InputGestureText="F2">
-            <MenuItem.Icon>
-              <Path Width="12" Height="12" Margin="4 0 -2 0" Stretch="Uniform" Data="{StaticResource TimerIconData}" HorizontalAlignment="Center"
-                  VerticalAlignment="Center" Fill="{Binding Path=(Control.Foreground), RelativeSource={RelativeSource Self}}" />
-            </MenuItem.Icon>
-          </MenuItem>
-          <MenuItem Header="{x:Static g:AppStrings.Main_Results}" Click="OnNavigateItemClick" CommandParameter="/Pages/Miscellaneous/PlayerStats.xaml"
-              InputGestureText="F3">
-            <MenuItem.Icon>
-              <Path Width="12" Height="12" Margin="4 0 -2 0" Stretch="Uniform" Data="{StaticResource ListCheckIconData}" HorizontalAlignment="Center"
-                  VerticalAlignment="Center" Fill="{Binding Path=(Control.Foreground), RelativeSource={RelativeSource Self}}" />
-            </MenuItem.Icon>
-          </MenuItem>
-          <MenuItem Header="{x:Static g:AppStrings.Main_Media}" Click="OnNavigateItemClick" CommandParameter="/Pages/Lists/ReplaysListPage.xaml"
-              InputGestureText="F4">
-            <MenuItem.Icon>
-              <Path Width="12" Height="12" Margin="4 0 -2 0" Stretch="Uniform" Data="{StaticResource VideoIconData}" HorizontalAlignment="Center"
-                  VerticalAlignment="Center" Fill="{Binding Path=(Control.Foreground), RelativeSource={RelativeSource Self}}" />
-            </MenuItem.Icon>
-          </MenuItem>
-          <Separator Style="{StaticResource {x:Static MenuItem.SeparatorStyleKey}}" />
-          <!--<MenuItem Header="{x:Static g:AppStrings.Main_Workshop}" Click="OnNavigateItemClick" CommandParameter="/Pages/Workshop/WorkshopCars.xaml">
-            <MenuItem.Icon>
-              <Path Width="12" Height="12" Margin="4 0 -2 0" Stretch="Uniform" Data="{StaticResource CloudIconData}" HorizontalAlignment="Center"
-                  VerticalAlignment="Center" Fill="{Binding Path=(Control.Foreground), RelativeSource={RelativeSource Self}}" />
-            </MenuItem.Icon>
-          </MenuItem>-->
-          <MenuItem Header="{x:Static g:AppStrings.Main_Content}" Click="OnNavigateItemClick" CommandParameter="/Pages/Lists/CarsListPage.xaml"
-              InputGestureText="Ctrl+F1">
-            <MenuItem.Icon>
-              <Path Width="12" Height="12" Margin="4 0 -2 0" Stretch="Uniform" Data="{StaticResource ToolsIconData}" HorizontalAlignment="Center"
-                  VerticalAlignment="Center" Fill="{Binding Path=(Control.Foreground), RelativeSource={RelativeSource Self}}" />
-            </MenuItem.Icon>
-          </MenuItem>
-          <MenuItem Header="{x:Static g:AppStrings.Main_Server}" Click="OnNavigateItemClick" CommandParameter="/Pages/Lists/ServerPresetsListPage.xaml"
-              InputGestureText="Ctrl+F2" mui:LimitedService.Limited="True">
-            <MenuItem.Icon>
-              <Path Width="12" Height="12" Margin="4 0 -2 0" Stretch="Uniform" Data="{StaticResource ServerIconData}" HorizontalAlignment="Center"
-                  VerticalAlignment="Center" Fill="{Binding Path=(Control.Foreground), RelativeSource={RelativeSource Self}}" />
-            </MenuItem.Icon>
-          </MenuItem>
-          <Separator Style="{StaticResource {x:Static MenuItem.SeparatorStyleKey}}" />
-          <MenuItem Header="{x:Static g:AppStrings.Main_Downloads}" Click="OnNavigateItemClick" CommandParameter="/Pages/Miscellaneous/DownloadsList.xaml"
-              InputGestureText="Ctrl+J"
-              Visibility="{Binding DownloadsInSeparatePage, Source={x:Static c:AppAppearanceManager.Instance}, Converter={StaticResource BooleanToVisibilityConverter}}">
-            <MenuItem.Icon>
-              <Path Width="12" Height="12" Margin="4 0 -2 0" Stretch="Uniform" Data="{StaticResource DownloadIconData}" HorizontalAlignment="Center"
-                  VerticalAlignment="Center" Fill="{Binding Path=(Control.Foreground), RelativeSource={RelativeSource Self}}" />
-            </MenuItem.Icon>
-          </MenuItem>
-          <Separator Style="{StaticResource {x:Static MenuItem.SeparatorStyleKey}}"
-              Visibility="{Binding DownloadsInSeparatePage, Source={x:Static c:AppAppearanceManager.Instance}, Converter={StaticResource BooleanToVisibilityConverter}}" />
-          <MenuItem Header="{x:Static g:AppStrings.Main_CMSettings}" Click="OnNavigateItemClick" CommandParameter="/Pages/Settings/SettingsPage.xaml"
-              InputGestureText="Alt+F1">
-            <MenuItem.Icon>
-              <Path Width="12" Height="12" Margin="4 0 -2 0" Stretch="Uniform" Data="{StaticResource GearIconData}" HorizontalAlignment="Center"
-                  VerticalAlignment="Center" Fill="{Binding Path=(Control.Foreground), RelativeSource={RelativeSource Self}}" />
-            </MenuItem.Icon>
-          </MenuItem>
-          <MenuItem Header="{x:Static g:AppStrings.Main_ACSettings}" Click="OnNavigateItemClick" CommandParameter="/Pages/AcSettings/AcSettingsPage.xaml"
-              InputGestureText="Alt+F2">
-            <MenuItem.Icon>
-              <Path Width="12" Height="12" Margin="4 0 -2 0" Stretch="Uniform" Data="{StaticResource AcIconData}" HorizontalAlignment="Center"
-                  VerticalAlignment="Center" Fill="{Binding Path=(Control.Foreground), RelativeSource={RelativeSource Self}}" />
-            </MenuItem.Icon>
-          </MenuItem>
-          <MenuItem Header="{x:Static g:AppStrings.Main_CSPSettings}" Click="OnNavigateItemClick" CommandParameter="/Pages/Settings/SettingsShadersPatch.xaml"
-              InputGestureText="Alt+F3">
-            <MenuItem.Icon>
-              <Path Width="12" Height="12" Margin="4 0 -2 0" Stretch="Uniform" Data="{StaticResource BookmarkIconData}" HorizontalAlignment="Center"
-                  VerticalAlignment="Center" Fill="{Binding Path=(Control.Foreground), RelativeSource={RelativeSource Self}}" />
-            </MenuItem.Icon>
-          </MenuItem>
-          <MenuItem Header="{x:Static g:AppStrings.Main_AboutContentManager}" Click="OnNavigateAboutItemClick">
-            <MenuItem.Icon>
-              <Path Width="12" Height="12" Margin="4 0 -2 0" Stretch="Uniform" Data="{StaticResource CmIconData}" HorizontalAlignment="Center"
-                  VerticalAlignment="Center" Fill="{Binding Path=(Control.Foreground), RelativeSource={RelativeSource Self}}" />
-              <!--<Image Source="/Assets/Icons/Icon.ico" Width="12" Height="12" Margin="4 0 -2 0" Stretch="Uniform" HorizontalAlignment="Center"
-                  VerticalAlignment="Center" />-->
-            </MenuItem.Icon>
-          </MenuItem>
-          <StackPanel Visibility="{Binding HasUnseen, Source={x:Static mui:NonfatalError.Instance}, Converter={StaticResource BooleanToVisibilityConverter}}">
-            <Separator Style="{StaticResource {x:Static MenuItem.SeparatorStyleKey}}" />
-            <MenuItem Command="{Binding ViewErrorsCommand, Source={x:Static mui:NonfatalError.Instance}}">
-              <MenuItem.Header>
-                <Binding Path="Errors.Count" Source="{x:Static mui:NonfatalError.Instance}" Converter="{StaticResource PluralizingConverter}"
-                    ConverterParameter="{x:Static g:AppStrings.MainWindow_Errors_Format}" />
-              </MenuItem.Header>
-              <MenuItem.Icon>
-                <Path Width="12" Height="12" Margin="4 2 -2 -2" Stretch="Uniform" Data="{StaticResource ErrorIconData}" HorizontalAlignment="Center"
-                    VerticalAlignment="Center" Fill="{Binding Path=(Control.Foreground), RelativeSource={RelativeSource Self}}" />
-              </MenuItem.Icon>
-            </MenuItem>
-          </StackPanel>
-
-          <Border Loaded="OnDownloadListParentLoaded" Tag="DownloadsListParent" />
-          <Border Loaded="OnCupNotificationPanelLoaded" Tag="CupNotificationPanel" />
-        </StackPanel>
-      </c:ModernPopup>
-    </mui:Cell>
-
-  </mui:ModernWindow.TitleButtons>
 
   <mui:ModernWindow.MenuLinkGroups>
     <!-- ReSharper disable Xaml.PathError -->
@@ -823,7 +620,7 @@
         </TextBlock.ContextMenu>
       </TextBlock>
     </mui:TitleLink>-->
-    <mui:TitleLink GroupKey="content" Source="/Pages/Lists/CarsListPage.xaml">
+    <!-- <mui:TitleLink GroupKey="content" Source="/Pages/Lists/CarsListPage.xaml">
       <TextBlock Text="{Binding Source={x:Static g:AppStrings.Main_Content}, Converter={StaticResource ToUpperConverter}}" Drop="OnContentTitleLinkDrop"
           AllowDrop="True" Background="Transparent" Margin="0 -4" Padding="0 4">
         <TextBlock.ContextMenu>
@@ -858,10 +655,10 @@
           </ContextMenu>
         </TextBlock.ContextMenu>
       </TextBlock>
-    </mui:TitleLink>
+    </mui:TitleLink> -->
     <mui:TitleLink DisplayName="{x:Static g:AppStrings.Main_Downloads}" GroupKey="downloads" Source="/Pages/Miscellaneous/DownloadsList.xaml" />
     <mui:TitleLink DisplayName="{x:Static g:AppStrings.Main_Server}" GroupKey="server" IsEnabled="False" Source="/Pages/Lists/ServerPresetsListPage.xaml" />
-    <mui:TitleLink GroupKey="settings" Source="/Pages/Settings/SettingsPage.xaml">
+    <!-- <mui:TitleLink GroupKey="settings" Source="/Pages/Settings/SettingsPage.xaml">
       <TextBlock Text="{Binding Source={x:Static g:AppStrings.Main_Settings}, Converter={StaticResource ToUpperConverter}}" Background="Transparent"
           Margin="0 -4" Padding="0 4">
         <TextBlock.ContextMenu>
@@ -875,7 +672,7 @@
           </ContextMenu>
         </TextBlock.ContextMenu>
       </TextBlock>
-    </mui:TitleLink>
+    </mui:TitleLink> -->
     <mui:TitleLink GroupKey="about" Source="/Pages/About/AboutPage.xaml">
       <TextBlock Text="{Binding Source={x:Static g:AppStrings.Main_About}, Converter={StaticResource ToUpperConverter}}" Background="Transparent" Margin="0 -4"
           Padding="0 4">

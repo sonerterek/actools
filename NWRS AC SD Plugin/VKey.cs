@@ -71,10 +71,10 @@ namespace NWRS_AC_SDPlugin
 
 		public void SetImage(string image)
 		{
-			var sdImage = new SDImage(image ?? _name, false);
-			_image = sdImage.GetImage();
-			sdImage = new SDImage(image ?? _name, true);
-			_imageInv = sdImage.GetImage();
+			var sdImage = image is not null ? new SDImage(image ?? _name, false) : null;
+			_image = sdImage?.GetImage();
+			sdImage = image is not null ? new SDImage(image ?? _name, true) : null;
+			_imageInv = sdImage?.GetImage();
 			_vPage.NewKeyImage(_row, _col);
 		}
 

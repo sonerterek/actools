@@ -6,12 +6,12 @@ using System.Windows.Media;
 // General Information about an assembly is controlled through the following
 // set of attributes. Change these attribute values to modify the information
 // associated with an assembly.
-[assembly: AssemblyTitle("Content Manager")]
+[assembly: AssemblyTitle("Content Manager - NWRS Edition")]
 [assembly: AssemblyDescription("Custom launcher and content manager for Assetto Corsa")]
 [assembly: AssemblyConfiguration("")]
-[assembly: AssemblyCompany("AcClub")]
-[assembly: AssemblyProduct("Content Manager")]
-[assembly: AssemblyCopyright("Copyright © AcClub, 2015-2020")]
+[assembly: AssemblyCompany("NW Racing Simulators")]
+[assembly: AssemblyProduct("Content Manager NWRS")]
+[assembly: AssemblyCopyright("Copyright © NW Racing Simulators, 2025. Based on Content Manager © AcClub, 2015-2020")]
 [assembly: AssemblyTrademark("")]
 [assembly: AssemblyCulture("")]
 
@@ -37,9 +37,14 @@ using System.Windows.Media;
 // You can specify all the values or you can default the Build and Revision Numbers
 // by using the '*' as shown below:
 // [assembly: AssemblyVersion("1.0.*")]
-[assembly: AssemblyVersion("0.8.2136.36454")]
-[assembly: AssemblyFileVersion("0.8.2136.36454")]
+[assembly: AssemblyVersion("1.8.2136.36454")]
+[assembly: AssemblyFileVersion("1.8.2136.36454")]
 
 [assembly: NeutralResourcesLanguage("en-US")]
 // Modified at: 18/04/09 20:20:37
 // Modified at: 6/14/2020 11:00:42 PM
+
+// Original work: Content Manager by AcClub
+// MS-PL License: https://opensource.org/licenses/MS-PL
+// Modifications by: Soner Terek (github.com/sonerterek)
+// Modified at: 2026-01-09 20:00:00
