@@ -9,7 +9,7 @@
     MouseRightButtonUp="OnMouseRightButtonDown" MouseDown="OnMouseUp" PreviewMouseRightButtonUp="OnPreviewMouseRightButtonUp"
     PreviewMouseRightButtonDown="OnPreviewMouseRightButtonDown" KeyDown="OnKeyDown" FrameNavigating="OnFrameNavigating"
     mui:ModernMenu.Initialize="OnMainMenuInitialize" mui:ModernMenu.SelectedChange="OnMainMenuSelectedChange"
-    d:DataContext="{d:DesignInstance w:MainWindow+ViewModel}" SaveKey="MainWindow" LocationAndSizeKey="MainWindow_LS" x:Name="Window" ShowErrorsButton="False"
+    d:DataContext="{d:DesignInstance w:MainWindow+ViewModel}" LocationAndSizeKey="MainWindow_LS" x:Name="Window" ShowErrorsButton="False"
     BackButtonVisibility="{Binding ShowMainWindowBackButton, Source={x:Static c:AppAppearanceManager.Instance}, Converter={StaticResource BooleanToVisibilityConverter}}">
   <mui:ModernWindow.Resources>
     <ResourceDictionary>
