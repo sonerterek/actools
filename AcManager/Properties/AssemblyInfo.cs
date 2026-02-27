@@ -6,11 +6,11 @@ using System.Windows.Media;
 // General Information about an assembly is controlled through the following
 // set of attributes. Change these attribute values to modify the information
 // associated with an assembly.
-[assembly: AssemblyTitle("Content Manager - NWRS Edition")]
+[assembly: AssemblyTitle("NWRS AC Launcher")]
 [assembly: AssemblyDescription("Custom launcher and content manager for Assetto Corsa")]
 [assembly: AssemblyConfiguration("")]
 [assembly: AssemblyCompany("NW Racing Simulators")]
-[assembly: AssemblyProduct("Content Manager NWRS")]
+[assembly: AssemblyProduct("NWRS AC Launcher")]
 [assembly: AssemblyCopyright("Copyright © NW Racing Simulators, 2025. Based on Content Manager © AcClub, 2015-2020")]
 [assembly: AssemblyTrademark("")]
 [assembly: AssemblyCulture("")]

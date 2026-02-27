@@ -619,6 +619,9 @@ namespace AcManager.Pages.Windows {
             if (_loaded) return;
             _loaded = true;
 
+            // Position window: centered, full height, 4:3 aspect ratio
+            PositionWindow4By3();
+
             AboutHelper.Instance.PropertyChanged += OnAboutPropertyChanged;
             UpdateAboutIsNew();
 
@@ -637,6 +640,39 @@ namespace AcManager.Pages.Windows {
                 CupViewModel.Instance.NewUpdate += (o, args) => FancyHints.ContentUpdatesArrived.Trigger();
             }
             Logging.Debug("Main window is loaded and ready");
+        }
+
+        private void PositionWindow4By3() {
+            try {
+                // Get the working area of the primary screen (excludes taskbar)
+                var workingArea = SystemParameters.WorkArea;
+
+                // Set height to full working area height (minus small margin for aesthetics)
+                var targetHeight = workingArea.Height - 20; // 10px margin top and bottom
+
+                // Calculate width based on 4:3 aspect ratio
+                var targetWidth = targetHeight * 4.0 / 3.0;
+
+                // If calculated width exceeds screen width, constrain it
+                if (targetWidth > workingArea.Width - 20) {
+                    targetWidth = workingArea.Width - 20;
+                    targetHeight = targetWidth * 3.0 / 4.0;
+                }
+
+                // Calculate position to center both horizontally and vertically
+                var left = (workingArea.Width - targetWidth) / 2;
+                var top = (workingArea.Height - targetHeight) / 2;
+
+                // Apply the positioning
+                this.Width = targetWidth;
+                this.Height = targetHeight;
+                this.Left = left;
+                this.Top = top;
+
+                Logging.Debug($"Window positioned: {targetWidth:F0}x{targetHeight:F0} (4:3 ratio) at ({left:F0}, {top:F0})");
+            } catch (Exception ex) {
+                Logging.Warning($"Failed to position window: {ex.Message}");
+            }
         }
 
         private DynamicBackground _dynamicBackground;

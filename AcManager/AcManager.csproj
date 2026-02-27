@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="12.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <Import Project="..\packages\CefSharp.Common.114.2.120\build\CefSharp.Common.props" Condition="Exists('..\packages\CefSharp.Common.114.2.120\build\CefSharp.Common.props')" />
   <Import Project="..\packages\cef.redist.x86.114.2.12\build\cef.redist.x86.props" Condition="Exists('..\packages\cef.redist.x86.114.2.12\build\cef.redist.x86.props')" />
@@ -35,7 +35,7 @@
     <OutputType>WinExe</OutputType>
     <AppDesignerFolder>Properties</AppDesignerFolder>
     <RootNamespace>AcManager</RootNamespace>
-    <AssemblyName>Content Manager</AssemblyName>
+    <AssemblyName>NWRS AC Launcher</AssemblyName>
     <TargetFrameworkVersion>v4.5.2</TargetFrameworkVersion>
     <TargetFrameworkProfile />
     <FileAlignment>512</FileAlignment>
@@ -1950,6 +1950,7 @@
     <Content Include="About\Licenses\SmartThreadPool\SmartThreadPool.txt" />
     <Content Include="About\Licenses\WpfNotifyIcon\WpfNotifyIcon.txt" />
     <Content Include="Assets\Data\DefaultTrajectories.json" />
+    <None Include="CreateCleanDistribution.ps1" />
     <None Include="UiObserver\Configuration System Documentation.md" />
     <None Include="UiObserver\CONTROL_INPUT_ANALYSIS.md" />
     <None Include="UiObserver\DESIGN.md" />
@@ -2416,4 +2417,8 @@
     <Error Condition="!Exists('..\packages\CefSharp.Common.114.2.120\build\CefSharp.Common.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\packages\CefSharp.Common.114.2.120\build\CefSharp.Common.targets'))" />
   </Target>
   <Import Project="..\packages\CefSharp.Common.114.2.120\build\CefSharp.Common.targets" Condition="Exists('..\packages\CefSharp.Common.114.2.120\build\CefSharp.Common.targets')" />
+  <PropertyGroup>
+    <PostBuildEvent>if not "$(EditBinLocation)"=="NUL" "$(EditBinLocation)" /largeaddressaware /nologo "$(TargetPath)"
+if "$(ConfigurationName)"=="Release" if "$(UseCosturaToPack)"=="true" powershell.exe -ExecutionPolicy Bypass -NoProfile -File "$(ProjectDir)CreateCleanDistribution.ps1" -OutputPath "$(TargetDir)"</PostBuildEvent>
+  </PropertyGroup>
 </Project>

@@ -3,13 +3,14 @@
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
     xmlns:w="clr-namespace:AcManager.Pages.Windows" xmlns:g="clr-namespace:AcManager" xmlns:t="http://acstuff.club/app/tools"
     xmlns:c="http://acstuff.club/app/controls" xmlns:system="clr-namespace:System;assembly=mscorlib" xmlns:dialogs="clr-namespace:AcManager.Pages.Dialogs"
-    mc:Ignorable="d" Title="{x:Static g:AppStrings.Main_Title}" IsTitleVisible="False" MinWidth="800" MinHeight="640" Width="960" Height="800"
+    mc:Ignorable="d" Title="NWRS AC Launcher" IsTitleVisible="False" MinWidth="800" MinHeight="640" Width="960" Height="800"
     AllowsTransparency="False" FocusVisualStyle="{x:Null}" AllowDrop="True" Drop="OnDrop" DragEnter="OnDragEnter"
     DefaultContentSource="/Pages/Drive/QuickDrive.xaml" Loaded="OnLoaded" Unloaded="OnUnloaded" Closing="OnClosing" Closed="OnClosed"
     MouseRightButtonUp="OnMouseRightButtonDown" MouseDown="OnMouseUp" PreviewMouseRightButtonUp="OnPreviewMouseRightButtonUp"
     PreviewMouseRightButtonDown="OnPreviewMouseRightButtonDown" KeyDown="OnKeyDown" FrameNavigating="OnFrameNavigating"
     mui:ModernMenu.Initialize="OnMainMenuInitialize" mui:ModernMenu.SelectedChange="OnMainMenuSelectedChange"
-    d:DataContext="{d:DesignInstance w:MainWindow+ViewModel}" LocationAndSizeKey="MainWindow_LS" x:Name="Window" ShowErrorsButton="False"
+    d:DataContext="{d:DesignInstance w:MainWindow+ViewModel}" x:Name="Window" ShowErrorsButton="False"
+    ResizeMode="NoResize" WindowStartupLocation="Manual"
     BackButtonVisibility="{Binding ShowMainWindowBackButton, Source={x:Static c:AppAppearanceManager.Instance}, Converter={StaticResource BooleanToVisibilityConverter}}">
   <mui:ModernWindow.Resources>
     <ResourceDictionary>
