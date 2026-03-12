@@ -42,7 +42,7 @@ namespace AcManager.UiObserver
 			_streamDeckClient.DefineKey("Right", null, GetIconPath(icons, "Right"));
 			_streamDeckClient.DefineKey("MouseLeft", null, GetIconPath(icons, "Mouse Left"));
 			_streamDeckClient.DefineKey("Select", null, GetIconPath(icons, "Mouse Left"));
-			
+
 			// ✅ Slider value adjustment keys (use Left/Right icons for now)
 			_streamDeckClient.DefineKey("SliderDecrease", null, GetIconPath(icons, "Left"));
 			_streamDeckClient.DefineKey("SliderIncrease", null, GetIconPath(icons, "Right"));
@@ -68,23 +68,23 @@ namespace AcManager.UiObserver
 					Debug.WriteLine($"[Navigator] Skipping classification without KeyName: {shortcut.PathFilter}");
 					continue;
 				}
-				
+
 				// Get icon path (check if it's a file path or icon name)
 				string iconSpec = null;
 				if (!string.IsNullOrEmpty(shortcut.KeyIcon))
 				{
 					// Try to get icon from discovered icons first
 					iconSpec = GetIconPath(icons, shortcut.KeyIcon);
-					
+
 					// If not found, check if it's a file path
 					if (iconSpec == null && File.Exists(shortcut.KeyIcon))
 					{
 						iconSpec = shortcut.KeyIcon;
 					}
 				}
-				
+
 				_streamDeckClient.DefineKey(shortcut.KeyName, shortcut.KeyTitle, null);
-				
+
 				Debug.WriteLine($"[Navigator] Defined StreamDeck key: {shortcut.KeyName} → {shortcut.PathFilter}");
 			}
 		}

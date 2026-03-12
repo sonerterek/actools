@@ -283,16 +283,16 @@ namespace AcManager.UiObserver
 							break;
 
 						// ✅ Confirmation keys
-						case "Yes":
-							ConfirmAction();
-							break;
-						case "No":
-							CancelAction();
-							break;
+							case "Yes":
+								ConfirmAction();
+								break;
+							case "No":
+								CancelAction();
+								break;
 
-						default:
-							Debug.WriteLine($"[Navigator] Unknown key: {e.KeyName}");
-							break;
+							default:
+								Debug.WriteLine($"[Navigator] Unknown key: {e.KeyName}");
+								break;
 					}
 					
 					Debug.WriteLine($"[Navigator] Command completed for '{e.KeyName}'");

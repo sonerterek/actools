@@ -1,4 +1,5 @@
-﻿using FirstFloor.ModernUI.Windows.Controls;
+﻿using FirstFloor.ModernUI;
+using FirstFloor.ModernUI.Windows.Controls;
 using FirstFloor.ModernUI.Windows.Media;
 using System;
 using System.Collections.Generic;
@@ -200,30 +201,33 @@ namespace AcManager.UiObserver
 
 			// Step 1: Load NavConfig from file FIRST
 			_navConfig = NavConfigParser.Load();
-			
+
 			// Step 2: Add built-in rules to NavConfig
 			AddBuiltInRules();
 
 			// Step 3: Initialize StreamDeck (uses _navConfig)
 			InitializeStreamDeck();
 
-			// Step 4: Disable tooltips globally during navigation
+			// Step 4: Initialize Wheel Navigation (follows same pattern as StreamDeck)
+			InitializeWheelNavigation();
+
+			// Step 5: Disable tooltips globally during navigation
 			DisableTooltips();
 
-			// Step 5: Create overlay BEFORE starting Observer to avoid race condition
+			// Step 6: Create overlay BEFORE starting Observer to avoid race condition
 			EnsureOverlay();
 
-			// Step 6: Pass NavConfig to Observer during initialization
+			// Step 7: Pass NavConfig to Observer during initialization
 			Observer.Initialize(_navConfig);
 
-			// Step 7: Subscribe to Observer events
+			// Step 8: Subscribe to Observer events
 			Observer.WindowLayoutChanged += OnWindowLayoutChanged;
 			Observer.NodesUpdated += Observer_NodesUpdated;
-			
-			// Step 8: Install focus guard to prevent WPF from stealing focus to non-navigable elements
+
+			// Step 9: Install focus guard to prevent WPF from stealing focus to non-navigable elements
 			InstallFocusGuard();
 
-			// Step 9: Register keyboard handler
+			// Step 10: Register keyboard handler
 			try {
 				EventManager.RegisterClassHandler(typeof(Window), UIElement.PreviewKeyDownEvent, 
 					new KeyEventHandler(OnPreviewKeyDown), true);
@@ -908,6 +912,40 @@ namespace AcManager.UiObserver
 		static void OnPreviewKeyDown(object sender, KeyEventArgs e)
 		{
 			if (Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift)) {
+				// Ctrl+Shift+W: Launch Wheel Configuration Wizard
+				if (e.Key == Key.W) {
+					Debug.WriteLine("[Navigator] Ctrl+Shift+W detected, launching wheel config wizard...");
+
+					// Show immediate feedback to user
+					ActionExtension.InvokeInMainThreadAsync(() => {
+						try {
+							FirstFloor.ModernUI.Windows.Toast.Show(
+								"Opening Wheel Configuration",
+								"Please wait..."
+							);
+						} catch { }
+					});
+
+					try {
+						ShowWheelConfigWizard();
+						e.Handled = true;
+					} catch (Exception ex) {
+						Debug.WriteLine($"[Navigator] ShowWheelConfigWizard failed: {ex.Message}");
+
+						// Show error to user
+						ActionExtension.InvokeInMainThreadAsync(() => {
+							try {
+								FirstFloor.ModernUI.Windows.Toast.Show(
+									"Wheel Configuration Error",
+									$"Failed: {ex.Message}"
+								);
+							} catch { }
+						});
+					}
+					return;
+				}
+
+				// Other Ctrl+Shift hotkeys (debug, etc.)
 				OnDebugHotkey(e);
 			}
 		}

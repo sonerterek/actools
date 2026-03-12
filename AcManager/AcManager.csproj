@@ -984,11 +984,15 @@
     <Compile Include="UiObserver\Navigator.Navigation.cs" />
     <Compile Include="UiObserver\Navigator.SD.BuiltInDefinitions.cs" />
     <Compile Include="UiObserver\Navigator.SD.cs" />
+    <Compile Include="UiObserver\Navigator.Wheel.cs" />
     <Compile Include="UiObserver\NavNode.cs" />
     <Compile Include="UiObserver\NavPathFilter.cs" />
     <Compile Include="UiObserver\NavRoot.cs" />
     <Compile Include="UiObserver\Observer.cs" />
     <Compile Include="UiObserver\SDPClient.cs" />
+    <Compile Include="UiObserver\WheelConfigDialog.xaml.cs">
+      <DependentUpon>WheelConfigDialog.xaml</DependentUpon>
+    </Compile>
     <Compile Include="UserControls\AdditionalContentEntryTemplateSelector.cs" />
     <Compile Include="UserControls\BakedShadowsSettings.xaml.cs">
       <DependentUpon>BakedShadowsSettings.xaml</DependentUpon>
@@ -1912,6 +1916,9 @@
       <Generator>MSBuild:Compile</Generator>
       <SubType>Designer</SubType>
     </Page>
+    <Page Include="UiObserver\WheelConfigDialog.xaml">
+      <Generator>MSBuild:Compile</Generator>
+    </Page>
     <Page Include="UserControls\BakedShadowsSettings.xaml">
       <SubType>Designer</SubType>
       <Generator>MSBuild:Compile</Generator>
@@ -1960,6 +1967,7 @@
     <None Include="UiObserver\REFACTORING_STATUS.md" />
     <None Include="UiObserver\StreamDeck Integration Design.md" />
     <None Include="UiObserver\UNIFIED_RULES.md" />
+    <None Include="UiObserver\WHEEL_IMPLEMENTATION_SUMMARY.md" />
     <None Include="UiObserver\ZORDER_FIX.md" />
     <Page Include="Pages\AcSettings\AcSettingsPython_detailed.xaml" />
     <Resource Include="Assets\Img\AppOff.png" />
