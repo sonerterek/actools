@@ -1,4 +1,4 @@
-﻿using AcManager.Pages.Dialogs;
+using AcManager.Pages.Dialogs;
 using AcManager.Tools.SemiGui;
 using FirstFloor.ModernUI;
 using FirstFloor.ModernUI.Helpers;
@@ -46,14 +46,14 @@ namespace AcManager.UiObserver
 		/// </summary>
 		private static void InitializeStreamDeck()
 		{
-			Debug.WriteLine("[Navigator] Initializing StreamDeck integration...");
+			DebugLog.WriteLine("[Navigator] Initializing StreamDeck integration...");
 			
 			// Build runtime shortcut keys from classifications
 			BuildShortcutKeys();
 			
 			// Discover icons
 			var icons = SDPIconHelper.DiscoverIcons();
-			Debug.WriteLine($"[Navigator] Discovered {icons.Count} StreamDeck icons");
+			DebugLog.WriteLine($"[Navigator] Discovered {icons.Count} StreamDeck icons");
 			
 			// Create StreamDeck client
 			_streamDeckClient = new SDPClient();
@@ -72,7 +72,7 @@ namespace AcManager.UiObserver
 			DefineStreamDeckKeys(icons);
 			DefineStreamDeckPages();
 			
-			Debug.WriteLine("[Navigator] StreamDeck initialization complete");
+			DebugLog.WriteLine("[Navigator] StreamDeck initialization complete");
 			
 			// Connect to StreamDeck plugin
 			Task.Run(async () => await _streamDeckClient.ConnectAsync());
@@ -110,10 +110,10 @@ namespace AcManager.UiObserver
 				
 				_shortcutKeysByKeyName[rule.KeyName] = shortcut;
 				
-				Debug.WriteLine($"[Navigator] Defined shortcut key: {rule.KeyName} (Title: {rule.KeyTitle})");
+				DebugLog.WriteLine($"[Navigator] Defined shortcut key: {rule.KeyName} (Title: {rule.KeyTitle})");
 			}
 			
-			Debug.WriteLine($"[Navigator] Built {_shortcutKeysByKeyName.Count} runtime shortcut keys");
+			DebugLog.WriteLine($"[Navigator] Built {_shortcutKeysByKeyName.Count} runtime shortcut keys");
 		}
 
 		#region StreamDeck Key and Page Definition
@@ -139,22 +139,22 @@ namespace AcManager.UiObserver
 				// STEP 2: Define all custom pages from configuration
 				// ═══════════════════════════════════════════════════════════
 				
-				Debug.WriteLine($"[Navigator] Defining {_navConfig.Pages.Count} custom pages...");
+				DebugLog.WriteLine($"[Navigator] Defining {_navConfig.Pages.Count} custom pages...");
 				
 				foreach (var page in _navConfig.Pages)
 				{
 					var pageName = page.GetFullPageName(); // e.g., "QuickDrive:Navigation"
 					
-					Debug.WriteLine($"[Navigator] → DefinePage: {pageName}");
+					DebugLog.WriteLine($"[Navigator] → DefinePage: {pageName}");
 					
 					_streamDeckClient.DefinePage(pageName, page.KeyGrid);
 				}
 				
-				Debug.WriteLine($"[Navigator] ✅ All pages defined (will be sent when plugin connects)");
+				DebugLog.WriteLine($"[Navigator] ✅ All pages defined (will be sent when plugin connects)");
 			}
 			catch (Exception ex)
 			{
-				Debug.WriteLine($"[Navigator] ❌ DefineStreamDeckPages error: {ex.Message}");
+				DebugLog.WriteLine($"[Navigator] ❌ DefineStreamDeckPages error: {ex.Message}");
 				Logging.Write($"[Navigator] DefineStreamDeckPages error: {ex}");
 			}
 		}
@@ -169,12 +169,12 @@ namespace AcManager.UiObserver
 		/// </summary>
 		private static void OnStreamDeckKeyPressed(object sender, SDPKeyPressEventArgs e)
 		{
-			Debug.WriteLine($"[Navigator] StreamDeck key pressed: {e.KeyName}");
+			DebugLog.WriteLine($"[Navigator] StreamDeck key pressed: {e.KeyName}");
 			
 			// Marshal to UI thread (StreamDeck events fire on background thread)
 			Application.Current?.Dispatcher.BeginInvoke(new Action(() => {
 				try {
-					Debug.WriteLine($"[Navigator] Executing command for '{e.KeyName}' on UI thread");
+					DebugLog.WriteLine($"[Navigator] Executing command for '{e.KeyName}' on UI thread");
 
 					// ✅ Check if Ctrl+Shift are held down
 					var modifiers = Keyboard.Modifiers;
@@ -182,7 +182,7 @@ namespace AcManager.UiObserver
 										 modifiers.HasFlag(ModifierKeys.Shift);
 
 					if (ctrlShiftHeld) {
-						Debug.WriteLine($"[Navigator] Ctrl+Shift detected with '{e.KeyName}'");
+						DebugLog.WriteLine($"[Navigator] Ctrl+Shift detected with '{e.KeyName}'");
 
 						// Handle discovery commands
 						switch (e.KeyName) {
@@ -200,7 +200,7 @@ namespace AcManager.UiObserver
 					// ✅ Check if this is a shortcut key first
 					if (_shortcutKeysByKeyName.ContainsKey(e.KeyName))
 					{
-						Debug.WriteLine($"[Navigator] Executing shortcut key: {e.KeyName}");
+						DebugLog.WriteLine($"[Navigator] Executing shortcut key: {e.KeyName}");
 						ExecuteShortcutKey(e.KeyName);
 						return;
 					}
@@ -230,13 +230,13 @@ namespace AcManager.UiObserver
 								RequestConfirmation(
 									description: "Exit Application",
 									onConfirm: () => {
-										Debug.WriteLine($"[Navigator] ✅ Exiting application (user confirmed)");
+										DebugLog.WriteLine($"[Navigator] ✅ Exiting application (user confirmed)");
 										Application.Current?.Dispatcher.Invoke(() => {
 											Application.Current.Shutdown();
 										});
 									},
 									onCancel: () => {
-										Debug.WriteLine($"[Navigator] User cancelled exit, staying in application");
+										DebugLog.WriteLine($"[Navigator] User cancelled exit, staying in application");
 									}
 								);
 							} else {
@@ -291,14 +291,14 @@ namespace AcManager.UiObserver
 								break;
 
 							default:
-								Debug.WriteLine($"[Navigator] Unknown key: {e.KeyName}");
+								DebugLog.WriteLine($"[Navigator] Unknown key: {e.KeyName}");
 								break;
 					}
 					
-					Debug.WriteLine($"[Navigator] Command completed for '{e.KeyName}'");
+					DebugLog.WriteLine($"[Navigator] Command completed for '{e.KeyName}'");
 				} catch (Exception ex) {
-					Debug.WriteLine($"[Navigator] StreamDeck command error: {ex.Message}");
-					Debug.WriteLine($"[Navigator] Stack trace: {ex.StackTrace}");
+					DebugLog.WriteLine($"[Navigator] StreamDeck command error: {ex.Message}");
+					DebugLog.WriteLine($"[Navigator] Stack trace: {ex.StackTrace}");
 				}
 			}), DispatcherPriority.Input);
 		}
@@ -322,9 +322,9 @@ namespace AcManager.UiObserver
 				AcTools.Windows.User32.SendInput(escKeyInputs);
 				System.Threading.Thread.Sleep(20);
 
-				Debug.WriteLine("[Navigator] ESC key sent via SendInput");
+				DebugLog.WriteLine("[Navigator] ESC key sent via SendInput");
 			} catch (Exception ex) {
-				Debug.WriteLine($"[Navigator] SendEscapeKey failed: {ex.Message}");
+				DebugLog.WriteLine($"[Navigator] SendEscapeKey failed: {ex.Message}");
 			}
 		}       
 		
@@ -336,18 +336,18 @@ namespace AcManager.UiObserver
 		{
 			if (!_shortcutKeysByKeyName.TryGetValue(keyName, out var shortcut))
 			{
-				Debug.WriteLine($"[Navigator] Shortcut not found: {keyName}");
+				DebugLog.WriteLine($"[Navigator] Shortcut not found: {keyName}");
 				return;
 			}
 
 			// Check if shortcut is bound to a node
 			if (shortcut.BoundNode == null)
 			{
-				Debug.WriteLine($"[Navigator] ❌ Shortcut '{keyName}' not bound (element not in scope)");
+				DebugLog.WriteLine($"[Navigator] ❌ Shortcut '{keyName}' not bound (element not in scope)");
 				return;
 			}
 
-			Debug.WriteLine($"[Navigator] Executing shortcut: {shortcut}");
+			DebugLog.WriteLine($"[Navigator] Executing shortcut: {shortcut}");
 
 			// Handle confirmation
 			if (shortcut.RequireConfirmation)
@@ -359,7 +359,7 @@ namespace AcManager.UiObserver
 				RequestConfirmation(
 					description: confirmMessage,
 					onConfirm: () => ExecuteShortcutOnNode(shortcut.BoundNode, shortcut),
-					onCancel: () => Debug.WriteLine($"[Navigator] User cancelled '{keyName}'")
+					onCancel: () => DebugLog.WriteLine($"[Navigator] User cancelled '{keyName}'")
 				);
 				return;
 			}
@@ -383,12 +383,12 @@ namespace AcManager.UiObserver
 				{
 					if (SetFocus(firstChild))
 					{
-						Debug.WriteLine($"[Navigator] ✅ Focused first child in group: {firstChild.SimpleName}");
+						DebugLog.WriteLine($"[Navigator] ✅ Focused first child in group: {firstChild.SimpleName}");
 					}
 				}
 				else
 				{
-					Debug.WriteLine($"[Navigator] ❌ Group '{node.SimpleName}' has no navigable children");
+					DebugLog.WriteLine($"[Navigator] ❌ Group '{node.SimpleName}' has no navigable children");
 				}
 				return;
 			}
@@ -415,7 +415,7 @@ namespace AcManager.UiObserver
 		{
 			try {
 				if (CurrentContext?.ScopeNode == null) {
-					Debug.WriteLine("[Navigator] No current modal to write filter for");
+					DebugLog.WriteLine("[Navigator] No current modal to write filter for");
 					return;
 				}
 
@@ -424,9 +424,9 @@ namespace AcManager.UiObserver
 					
 				AppendToDiscoveryFile($"# Modal: {scopeNode.SimpleName}", filter);
 				
-				Debug.WriteLine($"[Navigator] ✅ Written modal filter to discovery file: {scopeNode.SimpleName}");
+				DebugLog.WriteLine($"[Navigator] ✅ Written modal filter to discovery file: {scopeNode.SimpleName}");
 			} catch (Exception ex) {
-				Debug.WriteLine($"[Navigator] ❌ Failed to write modal filter: {ex.Message}");
+				DebugLog.WriteLine($"[Navigator] ❌ Failed to write modal filter: {ex.Message}");
 			}
 		}
 
@@ -439,7 +439,7 @@ namespace AcManager.UiObserver
 		{
 			try {
 				if (CurrentContext?.FocusedNode == null) {
-					Debug.WriteLine("[Navigator] No focused element to write filter for");
+					DebugLog.WriteLine("[Navigator] No focused element to write filter for");
 					return;
 				}
 
@@ -477,9 +477,9 @@ namespace AcManager.UiObserver
 					AppendToDiscoveryFile(headerComment, elementFilter);
 				}
 				
-				Debug.WriteLine($"[Navigator] ✅ Written element filter to discovery file: {focusedNode.SimpleName}");
+				DebugLog.WriteLine($"[Navigator] ✅ Written element filter to discovery file: {focusedNode.SimpleName}");
 			} catch (Exception ex) {
-				Debug.WriteLine($"[Navigator] ❌ Failed to write element filter: {ex.Message}");
+				DebugLog.WriteLine($"[Navigator] ❌ Failed to write element filter: {ex.Message}");
 			}
 		}
 
@@ -569,11 +569,11 @@ namespace AcManager.UiObserver
 			
 			if (children.Count == 0)
 			{
-				Debug.WriteLine($"[Navigator] No navigable children found in group '{groupNode.SimpleName}'");
+				DebugLog.WriteLine($"[Navigator] No navigable children found in group '{groupNode.SimpleName}'");
 				return null;
 			}
 			
-			Debug.WriteLine($"[Navigator] Found {children.Count} navigable children in group '{groupNode.SimpleName}'");
+			DebugLog.WriteLine($"[Navigator] Found {children.Count} navigable children in group '{groupNode.SimpleName}'");
 			
 			// Sort by position (top-to-bottom, left-to-right)
 			// Same algorithm as TryInitializeFocusIfNeeded
@@ -588,7 +588,7 @@ namespace AcManager.UiObserver
 				.ToList();
 			
 			var firstChild = sorted.First().Node;
-			Debug.WriteLine($"[Navigator] First child: {firstChild.SimpleName} (score: {sorted.First().Score:F1})");
+			DebugLog.WriteLine($"[Navigator] First child: {firstChild.SimpleName} (score: {sorted.First().Score:F1})");
 			
 			return firstChild;
 		}
@@ -618,7 +618,7 @@ namespace AcManager.UiObserver
 				
 				if (VerboseNavigationDebug)
 				{
-					Debug.WriteLine($"[Navigator] BindShortcutsToNodes: Searching {nodesToSearch.Count} nodes in scope '{scopePath}'");
+					DebugLog.WriteLine($"[Navigator] BindShortcutsToNodes: Searching {nodesToSearch.Count} nodes in scope '{scopePath}'");
 				}
 			}
 			else
@@ -628,7 +628,7 @@ namespace AcManager.UiObserver
 				
 				if (VerboseNavigationDebug)
 				{
-					Debug.WriteLine($"[Navigator] BindShortcutsToNodes: No current context, searching all {nodesToSearch.Count} nodes");
+					DebugLog.WriteLine($"[Navigator] BindShortcutsToNodes: No current context, searching all {nodesToSearch.Count} nodes");
 				}
 			}
 			
@@ -645,14 +645,14 @@ namespace AcManager.UiObserver
 					
 					if (VerboseNavigationDebug)
 					{
-						Debug.WriteLine($"[Navigator] Bound shortcut '{node.KeyName}' → '{node.SimpleName}'");
+						DebugLog.WriteLine($"[Navigator] Bound shortcut '{node.KeyName}' → '{node.SimpleName}'");
 					}
 				}
 			}
 			
 			if (boundCount > 0 || VerboseNavigationDebug)
 			{
-				Debug.WriteLine($"[Navigator] Bound {boundCount}/{_shortcutKeysByKeyName.Count} shortcuts to nodes");
+				DebugLog.WriteLine($"[Navigator] Bound {boundCount}/{_shortcutKeysByKeyName.Count} shortcuts to nodes");
 			}
 		}
 
@@ -662,7 +662,7 @@ namespace AcManager.UiObserver
 
 		private static void OnStreamDeckConnected(object sender, EventArgs e)
 		{
-			Debug.WriteLine("[Navigator] StreamDeck connected event received");
+			DebugLog.WriteLine("[Navigator] StreamDeck connected event received");
 			
 			// ✅ FIX #2: Only show Toast if this is NOT the first connection
 			if (_streamDeckHasConnectedAtLeastOnce)
@@ -679,14 +679,14 @@ namespace AcManager.UiObserver
 					}
 					catch (Exception ex)
 					{
-						Debug.WriteLine($"[Navigator] Toast notification failed: {ex.Message}");
+						DebugLog.WriteLine($"[Navigator] Toast notification failed: {ex.Message}");
 					}
 				});
 			}
 			else
 			{
 				// First connection - no Toast (expected behavior at startup)
-				Debug.WriteLine("[Navigator] First connection established (no Toast)");
+				DebugLog.WriteLine("[Navigator] First connection established (no Toast)");
 				_streamDeckHasConnectedAtLeastOnce = true;
 				
 				// ✅ REMOVED: Async validation is not needed
@@ -698,7 +698,7 @@ namespace AcManager.UiObserver
 
 		private static void OnStreamDeckDisconnected(object sender, EventArgs e)
 		{
-			Debug.WriteLine("[Navigator] StreamDeck disconnected event received");
+			DebugLog.WriteLine("[Navigator] StreamDeck disconnected event received");
 			
 			// ✅ FIX #2: Only show Toast if we had a successful connection before
 			if (_streamDeckHasConnectedAtLeastOnce)
@@ -715,20 +715,20 @@ namespace AcManager.UiObserver
 					}
 					catch (Exception ex)
 					{
-						Debug.WriteLine($"[Navigator] Toast notification failed: {ex.Message}");
+						DebugLog.WriteLine($"[Navigator] Toast notification failed: {ex.Message}");
 					}
 				});
 			}
 			else
 			{
 				// Disconnected before first successful connection - no Toast (startup sequence)
-				Debug.WriteLine("[Navigator] Disconnected during startup (no Toast)");
+				DebugLog.WriteLine("[Navigator] Disconnected during startup (no Toast)");
 			}
 		}
 
 		private static void OnStreamDeckReconnecting(object sender, int attemptNumber)
 		{
-			Debug.WriteLine($"[Navigator] StreamDeck reconnection attempt {attemptNumber}");
+			DebugLog.WriteLine($"[Navigator] StreamDeck reconnection attempt {attemptNumber}");
 			
 			// Only show toast every 5 attempts to avoid spam
 			if (attemptNumber == 1 || (attemptNumber > 0 && attemptNumber % 5 == 0 && attemptNumber != _lastReconnectAttemptNotified))
@@ -746,7 +746,7 @@ namespace AcManager.UiObserver
 					}
 					catch (Exception ex)
 					{
-						Debug.WriteLine($"[Navigator] Toast notification failed: {ex.Message}");
+						DebugLog.WriteLine($"[Navigator] Toast notification failed: {ex.Message}");
 					}
 				});
 			}
@@ -762,7 +762,7 @@ namespace AcManager.UiObserver
 				}
 				catch (Exception ex)
 				{
-					Debug.WriteLine($"[Navigator] Error toast failed: {ex.Message}");
+					DebugLog.WriteLine($"[Navigator] Error toast failed: {ex.Message}");
 				}
 			});
 		}
@@ -773,7 +773,7 @@ namespace AcManager.UiObserver
 		/// </summary>
 		private static void OnGameStarted(object sender, AcManager.Tools.SemiGui.GameStartedArgs e)
 		{
-			Debug.WriteLine($"[Navigator] Game started: {e.Mode}, switching to ACS profile");
+			DebugLog.WriteLine($"[Navigator] Game started: {e.Mode}, switching to ACS profile");
 			_streamDeckClient?.SwitchProfile("ACS");
 		}
 		
@@ -783,7 +783,7 @@ namespace AcManager.UiObserver
 		/// </summary>
 		private static void OnGameEnded(object sender, AcManager.Tools.SemiGui.GameEndedArgs e)
 		{
-			Debug.WriteLine($"[Navigator] Game ended, switching back from ACS profile");
+			DebugLog.WriteLine($"[Navigator] Game ended, switching back from ACS profile");
 			_streamDeckClient?.SwitchProfileBack();
 		}
 
@@ -859,7 +859,7 @@ namespace AcManager.UiObserver
 					File.AppendAllText(discoveryFile, sessionHeader);
 					_discoverySessionHeaderWritten = true;
 					
-					Debug.WriteLine($"[Navigator] Discovery session header written for this app run");
+					DebugLog.WriteLine($"[Navigator] Discovery session header written for this app run");
 				}
 
 				// Support pre-formatted entries (element + group combined)
@@ -874,9 +874,9 @@ namespace AcManager.UiObserver
 				
 				File.AppendAllText(discoveryFile, entry);
 
-				Debug.WriteLine($"[Navigator] Discovery entry written to: {discoveryFile}");
+				DebugLog.WriteLine($"[Navigator] Discovery entry written to: {discoveryFile}");
 			} catch (Exception ex) {
-				Debug.WriteLine($"[Navigator] ❌ Failed to write to discovery file: {ex.Message}");
+				DebugLog.WriteLine($"[Navigator] ❌ Failed to write to discovery file: {ex.Message}");
 				
 				// Try to log error to error file
 				try {
@@ -926,17 +926,17 @@ namespace AcManager.UiObserver
 				
 				if (success)
 				{
-					Debug.WriteLine($"[Navigator] ✅ KeyDefined: {keyName}");
+					DebugLog.WriteLine($"[Navigator] ✅ KeyDefined: {keyName}");
 				}
 				else
 				{
-					Debug.WriteLine($"[Navigator] ❌ KeyDefined FAILED: {keyName}");
-					Debug.WriteLine($"[Navigator]    Error: {error}");
+					DebugLog.WriteLine($"[Navigator] ❌ KeyDefined FAILED: {keyName}");
+					DebugLog.WriteLine($"[Navigator]    Error: {error}");
 				}
 			}
 			catch (Exception ex)
 			{
-				Debug.WriteLine($"[Navigator] OnKeyDefinedResult error: {ex.Message}");
+				DebugLog.WriteLine($"[Navigator] OnKeyDefinedResult error: {ex.Message}");
 			}
 		}
 		
@@ -955,18 +955,18 @@ namespace AcManager.UiObserver
 				
 				if (success)
 				{
-					Debug.WriteLine($"[Navigator] ✅ PageDefined: {pageName}");
+					DebugLog.WriteLine($"[Navigator] ✅ PageDefined: {pageName}");
 				}
 				else
 				{
-					Debug.WriteLine($"[Navigator] ❌ PageDefined FAILED: {pageName}");
-					Debug.WriteLine($"[Navigator]    Error: {error}");
-					Debug.WriteLine($"[Navigator]    This usually means the page references undefined keys");
+					DebugLog.WriteLine($"[Navigator] ❌ PageDefined FAILED: {pageName}");
+					DebugLog.WriteLine($"[Navigator]    Error: {error}");
+					DebugLog.WriteLine($"[Navigator]    This usually means the page references undefined keys");
 				}
 			}
 			catch (Exception ex)
 			{
-				Debug.WriteLine($"[Navigator] OnPageDefinedResult error: {ex.Message}");
+				DebugLog.WriteLine($"[Navigator] OnPageDefinedResult error: {ex.Message}");
 			}
 		}
 

@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 
@@ -65,7 +65,7 @@ namespace AcManager.UiObserver
 				// Skip classifications without KeyName (modals, page mappings)
 				if (string.IsNullOrEmpty(shortcut.KeyName))
 				{
-					Debug.WriteLine($"[Navigator] Skipping classification without KeyName: {shortcut.PathFilter}");
+					DebugLog.WriteLine($"[Navigator] Skipping classification without KeyName: {shortcut.PathFilter}");
 					continue;
 				}
 
@@ -85,7 +85,7 @@ namespace AcManager.UiObserver
 
 				_streamDeckClient.DefineKey(shortcut.KeyName, shortcut.KeyTitle, null);
 
-				Debug.WriteLine($"[Navigator] Defined StreamDeck key: {shortcut.KeyName} → {shortcut.PathFilter}");
+				DebugLog.WriteLine($"[Navigator] Defined StreamDeck key: {shortcut.KeyName} → {shortcut.PathFilter}");
 			}
 		}
 
@@ -95,10 +95,10 @@ namespace AcManager.UiObserver
 		/// </summary>
 		private static void DefineBuiltInPages()
 		{
-			Debug.WriteLine("[Navigator] DefineBuiltInPages() START");
+			DebugLog.WriteLine("[Navigator] DefineBuiltInPages() START");
 			
 			// Navigation page (full 6-direction navigation)
-			Debug.WriteLine($"[Navigator] Defining page: {PageNavigation}");
+			DebugLog.WriteLine($"[Navigator] Defining page: {PageNavigation}");
 			_streamDeckClient.DefinePage(PageNavigation, new[] {
 				new[] { "Back", "", "" },
 				new[] { "","",""},
@@ -106,10 +106,10 @@ namespace AcManager.UiObserver
 				new[] { "Left", "MouseLeft", "Right" },
 				new[] { "", "Down", "" }
 			});
-			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageNavigation}");
+			DebugLog.WriteLine($"[Navigator] ✅ Defined built-in page: {PageNavigation}");
 			
 			// UpDown page (vertical navigation only, for menus)
-			Debug.WriteLine($"[Navigator] Defining page: {PageUpDown}");
+			DebugLog.WriteLine($"[Navigator] Defining page: {PageUpDown}");
 			_streamDeckClient.DefinePage(PageUpDown, new[] {
 				new[] { "Esc", "", "" },
 				new[] { "", "", "" },
@@ -117,10 +117,10 @@ namespace AcManager.UiObserver
 				new[] { "", "Select", "" },
 				new[] { "", "Down", "" }
 			});
-			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageUpDown}");
+			DebugLog.WriteLine($"[Navigator] ✅ Defined built-in page: {PageUpDown}");
 			
 			// ✅ Slider page (value adjustment only, no range)
-			Debug.WriteLine($"[Navigator] Defining page: {PageSlider}");
+			DebugLog.WriteLine($"[Navigator] Defining page: {PageSlider}");
 			_streamDeckClient.DefinePage(PageSlider, new[] {
 				new[] { "Back", "", "" },
 				new[] { "", "", "" },
@@ -128,10 +128,10 @@ namespace AcManager.UiObserver
 				new[] { "SliderDecrease", "", "SliderIncrease" },
 				new[] { "", "", "" }
 			});
-			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageSlider}");
+			DebugLog.WriteLine($"[Navigator] ✅ Defined built-in page: {PageSlider}");
 			
 			// ✅ DoubleSlider page (value + range adjustment)
-			Debug.WriteLine($"[Navigator] Defining page: {PageDoubleSlider}");
+			DebugLog.WriteLine($"[Navigator] Defining page: {PageDoubleSlider}");
 			_streamDeckClient.DefinePage(PageDoubleSlider, new[] {
 				new[] { "Back", "", "" },
 				new[] { "", "", "" },
@@ -139,10 +139,10 @@ namespace AcManager.UiObserver
 				new[] { "SliderDecrease", "", "SliderIncrease" },
 				new[] { "", "SliderRangeDecrease", "" }
 			});
-			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageDoubleSlider}");
+			DebugLog.WriteLine($"[Navigator] ✅ Defined built-in page: {PageDoubleSlider}");
 			
 			// ✅ RoundSlider page (value adjustment only, circular slider doesn't have range)
-			Debug.WriteLine($"[Navigator] Defining page: {PageRoundSlider}");
+			DebugLog.WriteLine($"[Navigator] Defining page: {PageRoundSlider}");
 			_streamDeckClient.DefinePage(PageRoundSlider, new[] {
 				new[] { "Back", "", "" },
 				new[] { "", "", "" },
@@ -150,10 +150,10 @@ namespace AcManager.UiObserver
 				new[] { "SliderTurnCW", "", "SliderTurnCCW" },
 				new[] { "", "", "" }
 			});
-			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageRoundSlider}");
+			DebugLog.WriteLine($"[Navigator] ✅ Defined built-in page: {PageRoundSlider}");
 			
 			// ✅ Confirm page (Yes/No confirmation dialog)
-			Debug.WriteLine($"[Navigator] Defining page: {PageConfirm}");
+			DebugLog.WriteLine($"[Navigator] Defining page: {PageConfirm}");
 			_streamDeckClient.DefinePage(PageConfirm, new[] {
 				new[] { "", "", "" },
 				new[] { "", "", "" },
@@ -161,10 +161,10 @@ namespace AcManager.UiObserver
 				new[] { "", "", "" },
 				new[] { "", "", "" }
 			});
-			Debug.WriteLine($"[Navigator] ✅ Defined built-in page: {PageConfirm}");
+			DebugLog.WriteLine($"[Navigator] ✅ Defined built-in page: {PageConfirm}");
 			
-			Debug.WriteLine("[Navigator] DefineBuiltInPages() END");
-			Debug.WriteLine($"[Navigator] SDPClient page count: {_streamDeckClient.PageCount}");
+			DebugLog.WriteLine("[Navigator] DefineBuiltInPages() END");
+			DebugLog.WriteLine($"[Navigator] SDPClient page count: {_streamDeckClient.PageCount}");
 		}
 
 		/// <summary>

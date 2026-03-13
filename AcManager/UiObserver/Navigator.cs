@@ -1,4 +1,4 @@
-﻿using FirstFloor.ModernUI;
+using FirstFloor.ModernUI;
 using FirstFloor.ModernUI.Windows.Controls;
 using FirstFloor.ModernUI.Windows.Media;
 using System;
@@ -199,6 +199,16 @@ namespace AcManager.UiObserver
 			if (_initialized) return;
 			_initialized = true;
 
+			// ✅ Initialize debug logging FIRST (before any other logs)
+			// This captures ALL DebugLog.WriteLine() output to a timestamped log file
+			// Works in BOTH Debug and Release builds
+			DebugLog.Initialize();
+			DebugLog.CleanupOldLogs();
+
+			// ✅ TEST: Write directly to ensure logging works
+			DebugLog.WriteLine("[Navigator] ===== NAVIGATOR INITIALIZATION STARTED =====");
+			DebugLog.WriteLine($"[Navigator] Log file: {DebugLog.GetCurrentLogPath()}");
+
 			// Step 1: Load NavConfig from file FIRST
 			_navConfig = NavConfigParser.Load();
 
@@ -269,7 +279,7 @@ namespace AcManager.UiObserver
 				_navConfig.AddExclusionPattern(pattern);
 			}
 			
-			Debug.WriteLine($"[Navigator] Added {exclusions.Length} built-in exclusion rules");
+			DebugLog.WriteLine($"[Navigator] Added {exclusions.Length} built-in exclusion rules");
 
 #if NEVER
 			// Built-in classification rules (as NavClassifier objects)
@@ -301,7 +311,7 @@ namespace AcManager.UiObserver
 				_navConfig.Classifications.Add(classification);
 			}
 			
-			Debug.WriteLine($"[Navigator] Added {classifications.Length} built-in classification rules");
+			DebugLog.WriteLine($"[Navigator] Added {classifications.Length} built-in classification rules");
 #endif
 		}
 
@@ -312,7 +322,7 @@ namespace AcManager.UiObserver
 				try {
 					_overlay = new HighlightOverlay();
 				} catch (Exception ex) {
-					Debug.WriteLine($"[Navigator] Failed to create overlay: {ex.Message}");
+					DebugLog.WriteLine($"[Navigator] Failed to create overlay: {ex.Message}");
 				}
 			}
 #endif
@@ -342,9 +352,9 @@ namespace AcManager.UiObserver
 					new FrameworkPropertyMetadata(disabledDelay));
 
 				_tooltipsDisabled = true;
-				Debug.WriteLine($"[Navigator] Tooltips disabled (original delay: {_originalTooltipDelay}ms, new: {disabledDelay}ms)");
+				DebugLog.WriteLine($"[Navigator] Tooltips disabled (original delay: {_originalTooltipDelay}ms, new: {disabledDelay}ms)");
 			} catch (Exception ex) {
-				Debug.WriteLine($"[Navigator] Failed to disable tooltips: {ex.Message}");
+				DebugLog.WriteLine($"[Navigator] Failed to disable tooltips: {ex.Message}");
 			}
 		}
 
@@ -362,9 +372,9 @@ namespace AcManager.UiObserver
 					new FrameworkPropertyMetadata(_originalTooltipDelay));
 
 				_tooltipsDisabled = false;
-				Debug.WriteLine($"[Navigator] Tooltips restored (delay: {_originalTooltipDelay}ms)");
+				DebugLog.WriteLine($"[Navigator] Tooltips restored (delay: {_originalTooltipDelay}ms)");
 			} catch (Exception ex) {
-				Debug.WriteLine($"[Navigator] Failed to restore tooltips: {ex.Message}");
+				DebugLog.WriteLine($"[Navigator] Failed to restore tooltips: {ex.Message}");
 			}
 		}
 
@@ -407,7 +417,7 @@ namespace AcManager.UiObserver
 					// Check if our currently focused node was removed (safe with ?. operator)
 					if (CurrentContext?.FocusedNode != null && ReferenceEquals(CurrentContext.FocusedNode, removedNode))
 					{
-						Debug.WriteLine($"[Navigator] ⚠ Focused node was removed: {removedNode.SimpleName}");
+						DebugLog.WriteLine($"[Navigator] ⚠ Focused node was removed: {removedNode.SimpleName}");
 						removedNode.HasFocus = false;
 						CurrentContext.FocusedNode = null;
 						_needsFocusReinit = true;
@@ -450,7 +460,7 @@ namespace AcManager.UiObserver
 				{
 					if (!addedNode.IsGroup && addedNode.IsNavigable && IsInActiveModalScope(addedNode))
 					{
-						Debug.WriteLine($"[Navigator] ✅ Re-initializing focus to newly added node: {addedNode.SimpleName}");
+						DebugLog.WriteLine($"[Navigator] ✅ Re-initializing focus to newly added node: {addedNode.SimpleName}");
 						SetFocus(addedNode);
 						_needsFocusReinit = false;
 						break;
@@ -459,7 +469,7 @@ namespace AcManager.UiObserver
 				
 				if (_needsFocusReinit)
 				{
-					Debug.WriteLine($"[Navigator] ⏳ No navigable nodes in added batch, will wait for next sync");
+					DebugLog.WriteLine($"[Navigator] ⏳ No navigable nodes in added batch, will wait for next sync");
 				}
 			}
 			
@@ -489,7 +499,7 @@ namespace AcManager.UiObserver
 		/// </summary>
 		private static void OnModalScopeAdded(NavNode scopeNode)
 		{
-			Debug.WriteLine($"[Navigator] Modal scope added: {scopeNode.SimpleName} @ {scopeNode.HierarchicalPath}");
+			DebugLog.WriteLine($"[Navigator] Modal scope added: {scopeNode.SimpleName} @ {scopeNode.HierarchicalPath}");
 
 			// ✅ CRITICAL: NEVER ignore MainWindow - it's always the root context
 			bool isMainWindow = false;
@@ -510,14 +520,14 @@ namespace AcManager.UiObserver
 					.ToList();
 
 				if (children.Count == 0) {
-					Debug.WriteLine($"[Navigator] Modal '{scopeNode.SimpleName}' has no navigable children - treating as non-modal overlay (ignoring)");
+					DebugLog.WriteLine($"[Navigator] Modal '{scopeNode.SimpleName}' has no navigable children - treating as non-modal overlay (ignoring)");
 					_ignoredModals.Add(scopeNode);
 					return;
 				}
 
-				Debug.WriteLine($"[Navigator] Modal has {children.Count} navigable children - creating navigation context");
+				DebugLog.WriteLine($"[Navigator] Modal has {children.Count} navigable children - creating navigation context");
 			} else {
-				Debug.WriteLine($"[Navigator] MainWindow detected - creating root context (skipping navigable children check)");
+				DebugLog.WriteLine($"[Navigator] MainWindow detected - creating root context (skipping navigable children check)");
 			}
 
 			// Determine context type and page name
@@ -532,9 +542,9 @@ namespace AcManager.UiObserver
 			_contextStack.Add(context);
 			
 			var contextDepth = _contextStack.Count;
-			Debug.WriteLine($"[Navigator] Context stack depth: {contextDepth}");
-			Debug.WriteLine($"[Navigator] Context type: {contextType}");
-			Debug.WriteLine($"[Navigator] Context page: {pageName ?? "(none)"}");
+			DebugLog.WriteLine($"[Navigator] Context stack depth: {contextDepth}");
+			DebugLog.WriteLine($"[Navigator] Context type: {contextType}");
+			DebugLog.WriteLine($"[Navigator] Context page: {pageName ?? "(none)"}");
 			
 			// Schedule focus initialization (deferred for proper layout)
 			ScheduleFocusInitialization(scopeNode, contextDepth);
@@ -549,39 +559,39 @@ namespace AcManager.UiObserver
 		{
 			if (scopeNode == null) return;
 			
-			Debug.WriteLine($"[Navigator] Modal scope removed: {scopeNode.SimpleName} @ {scopeNode.HierarchicalPath}");
+			DebugLog.WriteLine($"[Navigator] Modal scope removed: {scopeNode.SimpleName} @ {scopeNode.HierarchicalPath}");
 			
 			// Check if this was an ignored modal
 			if (_ignoredModals.Remove(scopeNode)) {
-				Debug.WriteLine($"[Navigator] Ignored modal closed (no action needed): {scopeNode.SimpleName}");
+				DebugLog.WriteLine($"[Navigator] Ignored modal closed (no action needed): {scopeNode.SimpleName}");
 				return;
 			}
 			
 			// Validate that this modal is actually on the stack
 			if (_contextStack.Count == 0) {
-				Debug.WriteLine($"[Navigator] ERROR: Context stack is empty, cannot close context!");
+				DebugLog.WriteLine($"[Navigator] ERROR: Context stack is empty, cannot close context!");
 				return;
 			}
 			
 			// Pop context by path (Observer may create new NavNode instances)
 			var currentTop = CurrentContext;
 			if (currentTop.ScopeNode.HierarchicalPath != scopeNode.HierarchicalPath) {
-				Debug.WriteLine($"[Navigator] WARNING: Closed context not at top (expected: {currentTop.ScopeNode.SimpleName}, got: {scopeNode.SimpleName})");
+				DebugLog.WriteLine($"[Navigator] WARNING: Closed context not at top (expected: {currentTop.ScopeNode.SimpleName}, got: {scopeNode.SimpleName})");
 				// Try to find it in the stack by path and remove it
 				for (int i = _contextStack.Count - 1; i >= 0; i--) {
 					if (_contextStack[i].ScopeNode.HierarchicalPath == scopeNode.HierarchicalPath) {
 						_contextStack.RemoveAt(i);
-						Debug.WriteLine($"[Navigator] Removed context from position {i}");
+						DebugLog.WriteLine($"[Navigator] Removed context from position {i}");
 						break;
 					}
 				}
 			} else {
 				// Normal case: pop from top
 				_contextStack.RemoveAt(_contextStack.Count - 1);
-				Debug.WriteLine($"[Navigator] Popped context from top");
+				DebugLog.WriteLine($"[Navigator] Popped context from top");
 			}
 			
-			Debug.WriteLine($"[Navigator] Context stack depth: {_contextStack.Count}");
+			DebugLog.WriteLine($"[Navigator] Context stack depth: {_contextStack.Count}");
 			
 			// Clear old focus visuals immediately
 #if DEBUG
@@ -599,7 +609,7 @@ namespace AcManager.UiObserver
 		private static void ScheduleFocusInitialization(NavNode scopeNode, int contextDepth)
 		{
 			if (!scopeNode.TryGetVisual(out var fe)) {
-				Debug.WriteLine($"[Navigator] WARNING: Visual reference dead for newly opened context, cannot schedule focus init");
+				DebugLog.WriteLine($"[Navigator] WARNING: Visual reference dead for newly opened context, cannot schedule focus init");
 				return;
 			}
 			
@@ -610,7 +620,7 @@ namespace AcManager.UiObserver
 			
 			var delayMs = isNestedModal ? 50 : 0;
 			
-			Debug.WriteLine($"[Navigator] Scheduling focus init with priority: {priority} (depth={contextDepth}, delay={delayMs}ms)");
+			DebugLog.WriteLine($"[Navigator] Scheduling focus init with priority: {priority} (depth={contextDepth}, delay={delayMs}ms)");
 			
 			fe.Dispatcher.BeginInvoke(priority, new Action(() => {
 				if (delayMs > 0) {
@@ -621,7 +631,7 @@ namespace AcManager.UiObserver
 						if (CurrentContext?.ScopeNode == scopeNode) {
 							TryInitializeFocusIfNeeded();
 						} else {
-							Debug.WriteLine($"[Navigator] Skipped deferred focus init - context no longer current");
+							DebugLog.WriteLine($"[Navigator] Skipped deferred focus init - context no longer current");
 						}
 					};
 					timer.Start();
@@ -630,7 +640,7 @@ namespace AcManager.UiObserver
 					if (CurrentContext?.ScopeNode == scopeNode) {
 						TryInitializeFocusIfNeeded();
 					} else {
-						Debug.WriteLine($"[Navigator] Skipped deferred focus init - context no longer current");
+						DebugLog.WriteLine($"[Navigator] Skipped deferred focus init - context no longer current");
 					}
 				}
 			}));
@@ -643,22 +653,22 @@ namespace AcManager.UiObserver
 		private static void ScheduleParentFocusValidation()
 		{
 			if (CurrentContext == null || !CurrentContext.ScopeNode.TryGetVisual(out var parentElement)) {
-				Debug.WriteLine($"[Navigator] No parent context to restore");
+				DebugLog.WriteLine($"[Navigator] No parent context to restore");
 				return;
 			}
 			
-			Debug.WriteLine($"[Navigator] Scheduling parent focus validation after unload completes");
+			DebugLog.WriteLine($"[Navigator] Scheduling parent focus validation after unload completes");
 			
 			parentElement.Dispatcher.BeginInvoke(
 				DispatcherPriority.Loaded,  // After unload completes
 				new Action(() => {
 					try {
-						Debug.WriteLine($"[Navigator] Restoring parent focus after context closure");
-						Debug.WriteLine($"[Navigator] Current context scope: {CurrentContext.ScopeNode.SimpleName} @ {CurrentContext.ScopeNode.HierarchicalPath}");
+						DebugLog.WriteLine($"[Navigator] Restoring parent focus after context closure");
+						DebugLog.WriteLine($"[Navigator] Current context scope: {CurrentContext.ScopeNode.SimpleName} @ {CurrentContext.ScopeNode.HierarchicalPath}");
 						
 						ValidateAndRestoreParentFocus();
 					} catch (Exception ex) {
-						Debug.WriteLine($"[Navigator] Error restoring parent focus: {ex.Message}");
+						DebugLog.WriteLine($"[Navigator] Error restoring parent focus: {ex.Message}");
 					}
 				})
 			);
@@ -691,7 +701,7 @@ namespace AcManager.UiObserver
 		private static void ValidateAndRestoreParentFocus()
 		{
 			if (CurrentContext == null) {
-				Debug.WriteLine($"[Navigator] ValidateAndRestoreParentFocus: No current context");
+				DebugLog.WriteLine($"[Navigator] ValidateAndRestoreParentFocus: No current context");
 				return;
 			}
 			
@@ -710,13 +720,13 @@ namespace AcManager.UiObserver
 						if (IsDescendantOf(focusToRestore, CurrentContext.ScopeNode)) {
 						 isValid = true;
 						} else {
-							Debug.WriteLine($"[Navigator] Focused node '{focusToRestore.SimpleName}' is outside parent scope (was in closed modal) - clearing focus");
+							DebugLog.WriteLine($"[Navigator] Focused node '{focusToRestore.SimpleName}' is outside parent scope (was in closed modal) - clearing focus");
 						}
 					} else {
-						Debug.WriteLine($"[Navigator] Focused node '{focusToRestore.SimpleName}' is no longer in visual tree - clearing focus");
+						DebugLog.WriteLine($"[Navigator] Focused node '{focusToRestore.SimpleName}' is no longer in visual tree - clearing focus");
 					}
 				} else {
-					Debug.WriteLine($"[Navigator] Focused node '{focusToRestore.SimpleName}' visual reference is dead - clearing focus");
+					DebugLog.WriteLine($"[Navigator] Focused node '{focusToRestore.SimpleName}' visual reference is dead - clearing focus");
 				}
 				
 				if (!isValid) {
@@ -729,10 +739,10 @@ namespace AcManager.UiObserver
 			
 			// Now restore focus if we have a valid node, otherwise initialize
 			if (focusToRestore != null) {
-				Debug.WriteLine($"[Navigator] Restored focus to '{focusToRestore.SimpleName}'");
+				DebugLog.WriteLine($"[Navigator] Restored focus to '{focusToRestore.SimpleName}'");
 				SetFocusVisuals(focusToRestore);
 			} else {
-				Debug.WriteLine($"[Navigator] Parent context has no valid focus, initializing...");
+				DebugLog.WriteLine($"[Navigator] Parent context has no valid focus, initializing...");
 				TryInitializeFocusIfNeeded();
 			}
 		}
@@ -849,7 +859,7 @@ namespace AcManager.UiObserver
 				
 				default:
 					// Unknown type - fail safe to descendant check
-					Debug.WriteLine($"[Navigator] WARNING: Unknown context type: {CurrentContext.ContextType}");
+					DebugLog.WriteLine($"[Navigator] WARNING: Unknown context type: {CurrentContext.ContextType}");
 					return IsDescendantOf(node, CurrentContext.ScopeNode);
 			}
 		}
@@ -914,7 +924,7 @@ namespace AcManager.UiObserver
 			if (Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift)) {
 				// Ctrl+Shift+W: Launch Wheel Configuration Wizard
 				if (e.Key == Key.W) {
-					Debug.WriteLine("[Navigator] Ctrl+Shift+W detected, launching wheel config wizard...");
+					DebugLog.WriteLine("[Navigator] Ctrl+Shift+W detected, launching wheel config wizard...");
 
 					// Show immediate feedback to user
 					ActionExtension.InvokeInMainThreadAsync(() => {
@@ -930,7 +940,7 @@ namespace AcManager.UiObserver
 						ShowWheelConfigWizard();
 						e.Handled = true;
 					} catch (Exception ex) {
-						Debug.WriteLine($"[Navigator] ShowWheelConfigWizard failed: {ex.Message}");
+						DebugLog.WriteLine($"[Navigator] ShowWheelConfigWizard failed: {ex.Message}");
 
 						// Show error to user
 						ActionExtension.InvokeInMainThreadAsync(() => {
@@ -984,7 +994,7 @@ namespace AcManager.UiObserver
 			// Priority 1: Check if node has explicit PageName (from classification)
 			if (!string.IsNullOrEmpty(node.PageName))
 			{
-				Debug.WriteLine($"[Navigator] Using node's PageName: '{node.PageName}' for {node.SimpleName}");
+				DebugLog.WriteLine($"[Navigator] Using node's PageName: '{node.PageName}' for {node.SimpleName}");
 				return node.PageName;
 			}
 			
@@ -1006,7 +1016,7 @@ namespace AcManager.UiObserver
 				
 				if (VerboseNavigationDebug)
 				{
-					Debug.WriteLine($"[Navigator] Type-based page check for {typeName}: no specific page");
+					DebugLog.WriteLine($"[Navigator] Type-based page check for {typeName}: no specific page");
 				}
 			}
 			
@@ -1022,7 +1032,7 @@ namespace AcManager.UiObserver
 					return "Navigation";  // Default fallback
 				
 				default:
-					Debug.WriteLine($"[Navigator] WARNING: Unknown context type: {contextType}");
+					DebugLog.WriteLine($"[Navigator] WARNING: Unknown context type: {contextType}");
 					return "Navigation";
 			}
 		}
@@ -1045,13 +1055,13 @@ namespace AcManager.UiObserver
 		{
 			if (CurrentContext == null)
 			{
-				Debug.WriteLine("[Navigator] No current context - cannot switch page");
+				DebugLog.WriteLine("[Navigator] No current context - cannot switch page");
 				return;
 			}
 			
 			if (string.IsNullOrEmpty(CurrentContext.PageName))
 			{
-				Debug.WriteLine($"[Navigator] Current context ({CurrentContext.ContextType}) has no PageName - skipping page switch");
+				DebugLog.WriteLine($"[Navigator] Current context ({CurrentContext.ContextType}) has no PageName - skipping page switch");
 				return;
 			}
 			
@@ -1060,7 +1070,7 @@ namespace AcManager.UiObserver
 				return;  // Silent fail if StreamDeck not connected
 			}
 			
-			Debug.WriteLine($"[Navigator] Switching to page: '{CurrentContext.PageName}' (context: {CurrentContext.ContextType}, scope: {CurrentContext.ScopeNode.SimpleName})");
+			DebugLog.WriteLine($"[Navigator] Switching to page: '{CurrentContext.PageName}' (context: {CurrentContext.ContextType}, scope: {CurrentContext.ScopeNode.SimpleName})");
 			_streamDeckClient.SwitchPage(CurrentContext.PageName);
 		}
 
@@ -1092,13 +1102,13 @@ namespace AcManager.UiObserver
 			if (pageSelectorNode == null || string.IsNullOrEmpty(pageSelectorNode.PageName)) 
 				return;
 			
-			Debug.WriteLine($"[Navigator] PageSelector activated: {pageSelectorNode.SimpleName} → page '{pageSelectorNode.PageName}'");
+			DebugLog.WriteLine($"[Navigator] PageSelector activated: {pageSelectorNode.SimpleName} → page '{pageSelectorNode.PageName}'");
 			
 			// Find the actual navigation scope by walking up the context stack
 			var scopeNode = FindNavigationScope();
 			if (scopeNode == null)
 			{
-				Debug.WriteLine($"[Navigator] WARNING: Could not find navigation scope for PageSelector (context stack might be empty)");
+				DebugLog.WriteLine($"[Navigator] WARNING: Could not find navigation scope for PageSelector (context stack might be empty)");
 				return;
 			}
 			
@@ -1111,7 +1121,7 @@ namespace AcManager.UiObserver
 			};
 			
 			_contextStack.Add(context);
-			Debug.WriteLine($"[Navigator] Pushed PageSelector context: page='{context.PageName}', scope={scopeNode.SimpleName}, stack depth={_contextStack.Count}");
+			DebugLog.WriteLine($"[Navigator] Pushed PageSelector context: page='{context.PageName}', scope={scopeNode.SimpleName}, stack depth={_contextStack.Count}");
 			
 			// Switch StreamDeck page
 			_streamDeckClient?.SwitchPage(pageSelectorNode.PageName);
@@ -1125,7 +1135,7 @@ namespace AcManager.UiObserver
 		{
 			if (pageSelectorNode == null) return;
 			
-			Debug.WriteLine($"[Navigator] PageSelector deactivated: {pageSelectorNode.SimpleName}");
+			DebugLog.WriteLine($"[Navigator] PageSelector deactivated: {pageSelectorNode.SimpleName}");
 			
 			// Find the context for this PageSelector in the stack (walk backwards to find most recent)
 			for (int i = _contextStack.Count - 1; i >= 0; i--)
@@ -1135,7 +1145,7 @@ namespace AcManager.UiObserver
 					ReferenceEquals(context.PageSelectorNode, pageSelectorNode))
 				{
 					_contextStack.RemoveAt(i);
-					Debug.WriteLine($"[Navigator] Popped PageSelector context from position {i}, stack depth now: {_contextStack.Count}");
+					DebugLog.WriteLine($"[Navigator] Popped PageSelector context from position {i}, stack depth now: {_contextStack.Count}");
 					
 					// Restore previous context's page
 					if (CurrentContext != null)
@@ -1147,7 +1157,7 @@ namespace AcManager.UiObserver
 				}
 			}
 			
-			Debug.WriteLine($"[Navigator] WARNING: No context found for deactivated PageSelector '{pageSelectorNode.SimpleName}'");
+			DebugLog.WriteLine($"[Navigator] WARNING: No context found for deactivated PageSelector '{pageSelectorNode.SimpleName}'");
 		}
 
 		/// <summary>
@@ -1176,7 +1186,7 @@ namespace AcManager.UiObserver
 			}
 			
 			// Should never reach here if stack is properly initialized with RootWindow
-			Debug.WriteLine($"[Navigator] WARNING: FindNavigationScope reached end of stack without finding RootWindow or ModalDialog");
+			DebugLog.WriteLine($"[Navigator] WARNING: FindNavigationScope reached end of stack without finding RootWindow or ModalDialog");
 			return null;
 		}
 
@@ -1191,13 +1201,13 @@ namespace AcManager.UiObserver
 			// ✅ Use context's PageName directly (assigned at creation time)
 			if (!string.IsNullOrEmpty(context.PageName))
 			{
-				Debug.WriteLine($"[Navigator] Switching to page: {context.PageName} (context type: {context.ContextType})");
+				DebugLog.WriteLine($"[Navigator] Switching to page: {context.PageName} (context type: {context.ContextType})");
 				_streamDeckClient?.SwitchPage(context.PageName);
 			}
 			else
 			{
 				// Fallback: Context has no PageName, skip page switch
-				Debug.WriteLine($"[Navigator] Context {context.ContextType} has no PageName - skipping page switch");
+				DebugLog.WriteLine($"[Navigator] Context {context.ContextType} has no PageName - skipping page switch");
 			}
 		}
 

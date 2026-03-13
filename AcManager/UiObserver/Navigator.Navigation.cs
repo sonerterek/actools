@@ -38,7 +38,7 @@ namespace AcManager.UiObserver
 			var dirVector = GetDirectionVector(dir);
 
 			if (VerboseNavigationDebug) {
-				Debug.WriteLine($"\n[NAV] ========== From '{current.SimpleName}' ? {dir} @ ({curCenter.Value.X:F0},{curCenter.Value.Y:F0}) | Candidates: {allCandidates.Count} ==========");
+				DebugLog.WriteLine($"\n[NAV] ========== From '{current.SimpleName}' ? {dir} @ ({curCenter.Value.X:F0},{curCenter.Value.Y:F0}) | Candidates: {allCandidates.Count} ==========");
 			}
 
 			// Try same group first
@@ -52,14 +52,14 @@ namespace AcManager.UiObserver
 
 			if (sameGroupBest != null) {
 				if (VerboseNavigationDebug) {
-					Debug.WriteLine($"[NAV] ? FOUND in same group: '{sameGroupBest.SimpleName}'");
-					Debug.WriteLine($"[NAV] ============================================================\n");
+					DebugLog.WriteLine($"[NAV] ? FOUND in same group: '{sameGroupBest.SimpleName}'");
+					DebugLog.WriteLine($"[NAV] ============================================================\n");
 				}
 				return sameGroupBest;
 			}
 
 			if (VerboseNavigationDebug) {
-				Debug.WriteLine($"[NAV] No match in same group, trying across groups...");
+				DebugLog.WriteLine($"[NAV] No match in same group, trying across groups...");
 			}
 
 			// Try across groups
@@ -71,11 +71,11 @@ namespace AcManager.UiObserver
 
 			if (VerboseNavigationDebug) {
 				if (acrossGroupsBest != null) {
-					Debug.WriteLine($"[NAV] ? FOUND across groups: '{acrossGroupsBest.SimpleName}'");
+					DebugLog.WriteLine($"[NAV] ? FOUND across groups: '{acrossGroupsBest.SimpleName}'");
 				} else {
-				 Debug.WriteLine($"[NAV] ? NO CANDIDATE FOUND");
+				 DebugLog.WriteLine($"[NAV] ? NO CANDIDATE FOUND");
 				}
-				Debug.WriteLine($"[NAV] ============================================================\n");
+				DebugLog.WriteLine($"[NAV] ============================================================\n");
 			}
 
 			return acrossGroupsBest;
@@ -99,7 +99,7 @@ namespace AcManager.UiObserver
 			if (candidates.Count == 0) return null;
 
 			if (VerboseNavigationDebug && !string.IsNullOrEmpty(phase)) {
-				Debug.WriteLine($"[NAV] --- {phase}: {candidates.Count} candidates ---");
+				DebugLog.WriteLine($"[NAV] --- {phase}: {candidates.Count} candidates ---");
 			}
 
 			var validCandidates = new List<ScoredCandidate>();
@@ -109,7 +109,7 @@ namespace AcManager.UiObserver
 				// Compare by object reference, not HierarchicalPath (which may not be unique)
 				if (ReferenceEquals(candidate, current)) {
 					if (VerboseNavigationDebug) {
-						Debug.WriteLine($"[NAV]   ? '{candidate.SimpleName}' (skipped: same as current node)");
+						DebugLog.WriteLine($"[NAV]   ? '{candidate.SimpleName}' (skipped: same as current node)");
 					}
 					continue;
 				}
@@ -117,7 +117,7 @@ namespace AcManager.UiObserver
 				var candidateCenter = candidate.GetCenterDip();
 				if (!candidateCenter.HasValue) {
 					if (VerboseNavigationDebug) {
-						Debug.WriteLine($"[NAV]   ? '{candidate.SimpleName}' (skipped: no center point)");
+						DebugLog.WriteLine($"[NAV]   ? '{candidate.SimpleName}' (skipped: no center point)");
 					}
 					continue;
 				}
@@ -127,7 +127,7 @@ namespace AcManager.UiObserver
 				var len = Math.Sqrt(v.X * v.X + v.Y * v.Y);
 				if (len < double.Epsilon) {
 					if (VerboseNavigationDebug) {
-						Debug.WriteLine($"[NAV]   ? '{candidate.SimpleName}' @ ({c.X:F0},{c.Y:F0}) (skipped: zero distance)");
+						DebugLog.WriteLine($"[NAV]   ? '{candidate.SimpleName}' @ ({c.X:F0},{c.Y:F0}) (skipped: zero distance)");
 					}
 					continue;
 				}
@@ -137,7 +137,7 @@ namespace AcManager.UiObserver
 
 				if (dot <= 0) {
 					if (VerboseNavigationDebug) {
-						Debug.WriteLine($"[NAV]   ? '{candidate.SimpleName}' @ ({c.X:F0},{c.Y:F0}) | dot={dot:F2} (wrong direction)");
+						DebugLog.WriteLine($"[NAV]   ? '{candidate.SimpleName}' @ ({c.X:F0},{c.Y:F0}) | dot={dot:F2} (wrong direction)");
 					}
 					continue;
 				}
@@ -147,16 +147,16 @@ namespace AcManager.UiObserver
 
 				if (HaveSameImmediateParent(current, candidate)) {
 					cost *= 0.7;
-					bonuses += " parent×0.7";
+					bonuses += " parentï¿½0.7";
 				}
 				
 				if (IsWellAligned(currentCenter, c, dir)) {
 					cost *= 0.8;
-					bonuses += " align×0.8";
+					bonuses += " alignï¿½0.8";
 				}
 
 				if (VerboseNavigationDebug) {
-					Debug.WriteLine($"[NAV]   ? '{candidate.SimpleName}' @ ({c.X:F0},{c.Y:F0}) | dist={len:F0} dot={dot:F2} cost={cost:F0}{bonuses}");
+					DebugLog.WriteLine($"[NAV]   ? '{candidate.SimpleName}' @ ({c.X:F0},{c.Y:F0}) | dist={len:F0} dot={dot:F2} cost={cost:F0}{bonuses}");
 				}
 
 				validCandidates.Add(new ScoredCandidate { Node = candidate, Cost = cost });
@@ -164,14 +164,14 @@ namespace AcManager.UiObserver
 
 			if (VerboseNavigationDebug && validCandidates.Count > 0) {
 				var sorted = validCandidates.OrderBy(sc => sc.Cost).ToList();
-				Debug.WriteLine($"[NAV]   ?? WINNER: '{sorted[0].Node.SimpleName}' (cost={sorted[0].Cost:F0})");
+				DebugLog.WriteLine($"[NAV]   ?? WINNER: '{sorted[0].Node.SimpleName}' (cost={sorted[0].Cost:F0})");
 				
 				// Show runner-ups if available
 				if (sorted.Count > 1) {
-					Debug.WriteLine($"[NAV]   ?? Runner-up: '{sorted[1].Node.SimpleName}' (cost={sorted[1].Cost:F0})");
+					DebugLog.WriteLine($"[NAV]   ?? Runner-up: '{sorted[1].Node.SimpleName}' (cost={sorted[1].Cost:F0})");
 				}
 				if (sorted.Count > 2) {
-					Debug.WriteLine($"[NAV]   ?? 3rd place: '{sorted[2].Node.SimpleName}' (cost={sorted[2].Cost:F0})");
+					DebugLog.WriteLine($"[NAV]   ?? 3rd place: '{sorted[2].Node.SimpleName}' (cost={sorted[2].Cost:F0})");
 				}
 			}
 
@@ -207,7 +207,7 @@ namespace AcManager.UiObserver
 
 		/// <summary>
 		/// Checks if two nodes are well-aligned in the specified direction.
-		/// Well-aligned nodes receive a cost bonus (×0.8) during navigation scoring.
+		/// Well-aligned nodes receive a cost bonus (ï¿½0.8) during navigation scoring.
 		/// </summary>
 		/// <param name="from">Starting node center point</param>
 		/// <param name="to">Candidate node center point</param>

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
@@ -32,13 +32,13 @@ namespace AcManager.UiObserver
 		{
 			if (control == null)
 			{
-				Debug.WriteLine("[Navigator] EnterInteractionMode failed: control is null");
+				DebugLog.WriteLine("[Navigator] EnterInteractionMode failed: control is null");
 				return false;
 			}
 			
 			if (!control.IsNavigable)
 			{
-				Debug.WriteLine($"[Navigator] EnterInteractionMode failed: {control.SimpleName} is not navigable");
+				DebugLog.WriteLine($"[Navigator] EnterInteractionMode failed: {control.SimpleName} is not navigable");
 				return false;
 			}
 			
@@ -47,7 +47,7 @@ namespace AcManager.UiObserver
 				CurrentContext.ContextType == NavContextType.InteractiveControl &&
 				ReferenceEquals(CurrentContext.ScopeNode, control))
 			{
-				Debug.WriteLine($"[Navigator] Already in interaction mode for {control.SimpleName} - ignoring duplicate activation");
+				DebugLog.WriteLine($"[Navigator] Already in interaction mode for {control.SimpleName} - ignoring duplicate activation");
 				return true;  // Return true since we're already in the desired state
 			}
 			
@@ -70,10 +70,10 @@ namespace AcManager.UiObserver
 			_contextStack.Add(context);
 			var depth = _contextStack.Count;
 			
-			Debug.WriteLine($"[Navigator] Entered interaction mode: {control.SimpleName}");
-			Debug.WriteLine($"[Navigator] Context stack depth: {depth}");
-			Debug.WriteLine($"[Navigator] Context type: {NavContextType.InteractiveControl}");
-			Debug.WriteLine($"[Navigator] Context page: {pageName ?? "(none)"}");
+			DebugLog.WriteLine($"[Navigator] Entered interaction mode: {control.SimpleName}");
+			DebugLog.WriteLine($"[Navigator] Context stack depth: {depth}");
+			DebugLog.WriteLine($"[Navigator] Context type: {NavContextType.InteractiveControl}");
+			DebugLog.WriteLine($"[Navigator] Context page: {pageName ?? "(none)"}");
 			
 			// ✅ Switch to interaction page
 			SwitchToCurrentContextPage();
@@ -94,13 +94,13 @@ namespace AcManager.UiObserver
 		{
 			if (CurrentContext == null)
 			{
-				Debug.WriteLine("[Navigator] ExitInteractionMode failed: no current context");
+				DebugLog.WriteLine("[Navigator] ExitInteractionMode failed: no current context");
 				return false;
 			}
 			
 			if (CurrentContext.ContextType != NavContextType.InteractiveControl)
 			{
-				Debug.WriteLine($"[Navigator] ExitInteractionMode failed: current context is {CurrentContext.ContextType}, not InteractiveControl");
+				DebugLog.WriteLine($"[Navigator] ExitInteractionMode failed: current context is {CurrentContext.ContextType}, not InteractiveControl");
 				return false;
 			}
 			
@@ -113,15 +113,15 @@ namespace AcManager.UiObserver
 			}
 			else if (!revertChanges)
 			{
-				Debug.WriteLine($"[Navigator] Confirmed changes (keeping current value)");
+				DebugLog.WriteLine($"[Navigator] Confirmed changes (keeping current value)");
 			}
 			
 			// Pop the interaction context
 			_contextStack.RemoveAt(_contextStack.Count - 1);
 			var depth = _contextStack.Count;
 			
-			Debug.WriteLine($"[Navigator] Exited interaction mode: {control.SimpleName} (revert={revertChanges})");
-			Debug.WriteLine($"[Navigator] Context stack depth: {depth}");
+			DebugLog.WriteLine($"[Navigator] Exited interaction mode: {control.SimpleName} (revert={revertChanges})");
+			DebugLog.WriteLine($"[Navigator] Context stack depth: {depth}");
 			
 			// ✅ Switch to parent context's page
 			SwitchToCurrentContextPage();
@@ -170,7 +170,7 @@ namespace AcManager.UiObserver
 				if (fe is Slider slider)
 				{
 					var value = slider.Value;
-					Debug.WriteLine($"[Navigator] Captured slider value: {value}");
+					DebugLog.WriteLine($"[Navigator] Captured slider value: {value}");
 					return value;
 				}
 				
@@ -181,14 +181,14 @@ namespace AcManager.UiObserver
 					if (valueProperty != null)
 					{
 						var value = valueProperty.GetValue(fe);
-						Debug.WriteLine($"[Navigator] Captured {typeName} value: {value}");
+						DebugLog.WriteLine($"[Navigator] Captured {typeName} value: {value}");
 						return value;
 					}
 				}
 			}
 			catch (Exception ex)
 			{
-				Debug.WriteLine($"[Navigator] Failed to capture control value: {ex.Message}");
+				DebugLog.WriteLine($"[Navigator] Failed to capture control value: {ex.Message}");
 			}
 			
 			return null;
@@ -211,7 +211,7 @@ namespace AcManager.UiObserver
 				{
 					var oldValue = slider.Value;
 					slider.Value = (double)originalValue;
-					Debug.WriteLine($"[Navigator] Reverted slider value: {oldValue:F2} → {slider.Value:F2}");
+					DebugLog.WriteLine($"[Navigator] Reverted slider value: {oldValue:F2} → {slider.Value:F2}");
 					return;
 				}
 				
@@ -223,13 +223,13 @@ namespace AcManager.UiObserver
 					{
 						var oldValue = valueProperty.GetValue(fe);
 						valueProperty.SetValue(fe, originalValue);
-						Debug.WriteLine($"[Navigator] Reverted {typeName} value: {oldValue} → {originalValue}");
+						DebugLog.WriteLine($"[Navigator] Reverted {typeName} value: {oldValue} → {originalValue}");
 					}
 				}
 			}
 			catch (Exception ex)
 			{
-				Debug.WriteLine($"[Navigator] Failed to revert value: {ex.Message}");
+				DebugLog.WriteLine($"[Navigator] Failed to revert value: {ex.Message}");
 			}
 		}
 
@@ -247,18 +247,18 @@ namespace AcManager.UiObserver
 		{
 			if (CurrentContext?.ContextType != NavContextType.InteractiveControl)
 			{
-				Debug.WriteLine("[Navigator] AdjustSliderValue: Not in interaction mode");
+				DebugLog.WriteLine("[Navigator] AdjustSliderValue: Not in interaction mode");
 				return;
 			}
 			
 			var control = CurrentContext.ScopeNode;
 			if (!control.TryGetVisual(out var fe))
 			{
-				Debug.WriteLine("[Navigator] AdjustSliderValue: Visual reference dead");
+				DebugLog.WriteLine("[Navigator] AdjustSliderValue: Visual reference dead");
 				return;
 			}
 			
-			Debug.WriteLine($"[Navigator] AdjustSliderValue: Adjusting {fe.GetType().Name} with {adjustment}");
+			DebugLog.WriteLine($"[Navigator] AdjustSliderValue: Adjusting {fe.GetType().Name} with {adjustment}");
 			
 			try
 			{
@@ -284,11 +284,11 @@ namespace AcManager.UiObserver
 					return;
 				}
 				
-				Debug.WriteLine($"[Navigator] AdjustSliderValue: Unsupported control type '{typeName}'");
+				DebugLog.WriteLine($"[Navigator] AdjustSliderValue: Unsupported control type '{typeName}'");
 			}
 			catch (Exception ex)
 			{
-				Debug.WriteLine($"[Navigator] AdjustSliderValue ERROR: {ex.Message}");
+				DebugLog.WriteLine($"[Navigator] AdjustSliderValue ERROR: {ex.Message}");
 			}
 		}
 
@@ -301,25 +301,25 @@ namespace AcManager.UiObserver
 		{
 			if (CurrentContext?.ContextType != NavContextType.InteractiveControl)
 			{
-				Debug.WriteLine("[Navigator] AdjustSliderRange: Not in interaction mode");
+				DebugLog.WriteLine("[Navigator] AdjustSliderRange: Not in interaction mode");
 				return;
 			}
 			
 			var control = CurrentContext.ScopeNode;
 			if (!control.TryGetVisual(out var fe))
 			{
-				Debug.WriteLine("[Navigator] AdjustSliderRange: Visual reference dead");
+				DebugLog.WriteLine("[Navigator] AdjustSliderRange: Visual reference dead");
 				return;
 			}
 			
 			var typeName = fe.GetType().Name;
 			if (typeName != "DoubleSlider")
 			{
-				Debug.WriteLine($"[Navigator] AdjustSliderRange: Only DoubleSlider supports range adjustment (got '{typeName}')");
+				DebugLog.WriteLine($"[Navigator] AdjustSliderRange: Only DoubleSlider supports range adjustment (got '{typeName}')");
 				return;
 			}
 			
-			Debug.WriteLine($"[Navigator] AdjustSliderRange: Adjusting DoubleSlider range with {adjustment}");
+			DebugLog.WriteLine($"[Navigator] AdjustSliderRange: Adjusting DoubleSlider range with {adjustment}");
 			
 			try
 			{
@@ -327,7 +327,7 @@ namespace AcManager.UiObserver
 			}
 			catch (Exception ex)
 			{
-				Debug.WriteLine($"[Navigator] AdjustSliderRange ERROR: {ex.Message}");
+				DebugLog.WriteLine($"[Navigator] AdjustSliderRange ERROR: {ex.Message}");
 			}
 		}
 
@@ -351,7 +351,7 @@ namespace AcManager.UiObserver
 					break;
 			}
 			
-			Debug.WriteLine($"[Navigator] Slider adjusted: {oldValue:F2} → {slider.Value:F2} (step={adjustmentStep:F2} [2% of {totalRange:F2}], {adjustment})");
+			DebugLog.WriteLine($"[Navigator] Slider adjusted: {oldValue:F2} → {slider.Value:F2} (step={adjustmentStep:F2} [2% of {totalRange:F2}], {adjustment})");
 		}
 
 		/// <summary>
@@ -391,7 +391,7 @@ namespace AcManager.UiObserver
 			}
 			
 			valueProperty.SetValue(element, newValue);
-			Debug.WriteLine($"[Navigator] DoubleSlider value adjusted: {currentValue:F2} → {newValue:F2} (step={adjustmentStep:F2} [2% of total range {totalRange:F2}], current from/to: [{currentFrom:F2}, {currentTo:F2}], {adjustment})");
+			DebugLog.WriteLine($"[Navigator] DoubleSlider value adjusted: {currentValue:F2} → {newValue:F2} (step={adjustmentStep:F2} [2% of total range {totalRange:F2}], current from/to: [{currentFrom:F2}, {currentTo:F2}], {adjustment})");
 		}
 
 		/// <summary>
@@ -419,7 +419,7 @@ namespace AcManager.UiObserver
 			if (valueProperty == null || fromProperty == null || toProperty == null || 
 			    minProperty == null || maxProperty == null)
 			{
-				Debug.WriteLine("[Navigator] AdjustDoubleSliderRange: Required properties not found");
+				DebugLog.WriteLine("[Navigator] AdjustDoubleSliderRange: Required properties not found");
 				return;
 			}
 			
@@ -446,7 +446,7 @@ namespace AcManager.UiObserver
 					// To moves up by rangeStep (or until it hits absoluteMax)
 					newTo = Math.Min(absoluteMax, currentTo + rangeStep);
 					
-					Debug.WriteLine($"[Navigator] DoubleSlider range EXPANDED: " +
+					DebugLog.WriteLine($"[Navigator] DoubleSlider range EXPANDED: " +
 						$"From {currentFrom:F2}→{newFrom:F2}, To {currentTo:F2}→{newTo:F2} " +
 						$"(step={rangeStep:F2}, bounds=[{absoluteMin:F2}, {absoluteMax:F2}])");
 					break;
@@ -462,13 +462,13 @@ namespace AcManager.UiObserver
 					{
 						// From is at minimum limit, only contract To
 						newTo = Math.Max(currentValue + rangeStep, currentTo - rangeStep);
-						Debug.WriteLine($"[Navigator] From at limit, only contracting To: {currentTo:F2}→{newTo:F2}");
+						DebugLog.WriteLine($"[Navigator] From at limit, only contracting To: {currentTo:F2}→{newTo:F2}");
 					}
 					else if (toAtLimit && !fromAtLimit)
 					{
 						// To is at maximum limit, only contract From
 						newFrom = Math.Min(currentValue - rangeStep, currentFrom + rangeStep);
-						Debug.WriteLine($"[Navigator] To at limit, only contracting From: {currentFrom:F2}→{newFrom:F2}");
+						DebugLog.WriteLine($"[Navigator] To at limit, only contracting From: {currentFrom:F2}→{newFrom:F2}");
 					}
 					else
 					{
@@ -479,7 +479,7 @@ namespace AcManager.UiObserver
 						// To moves down (toward Value)
 						newTo = Math.Max(currentValue + rangeStep, currentTo - rangeStep);
 						
-						Debug.WriteLine($"[Navigator] Symmetric contraction: " +
+						DebugLog.WriteLine($"[Navigator] Symmetric contraction: " +
 							$"From {currentFrom:F2}→{newFrom:F2}, To {currentTo:F2}→{newTo:F2}");
 					}
 					
@@ -487,13 +487,13 @@ namespace AcManager.UiObserver
 					double minAllowedRange = rangeStep * 2;
 					if (newTo - newFrom < minAllowedRange)
 					{
-						Debug.WriteLine($"[Navigator] Range too small ({newTo - newFrom:F2} < {minAllowedRange:F2}), " +
+						DebugLog.WriteLine($"[Navigator] Range too small ({newTo - newFrom:F2} < {minAllowedRange:F2}), " +
 							$"keeping current range");
 						newFrom = currentFrom;
 						newTo = currentTo;
 					}
 					
-					Debug.WriteLine($"[Navigator] DoubleSlider range CONTRACTED: " +
+					DebugLog.WriteLine($"[Navigator] DoubleSlider range CONTRACTED: " +
 						$"[{currentFrom:F2}, {currentTo:F2}] → [{newFrom:F2}, {newTo:F2}] " +
 						$"(value={currentValue:F2})");
 					break;
@@ -507,14 +507,14 @@ namespace AcManager.UiObserver
 			{
 				fromProperty.SetValue(element, newFrom);
 				changed = true;
-				Debug.WriteLine($"[Navigator] Set From: {currentFrom:F2} → {newFrom:F2}");
+				DebugLog.WriteLine($"[Navigator] Set From: {currentFrom:F2} → {newFrom:F2}");
 			}
 			
 			if (Math.Abs(newTo - currentTo) > 0.01)
 			{
 				toProperty.SetValue(element, newTo);
 				changed = true;
-				Debug.WriteLine($"[Navigator] Set To: {currentTo:F2} → {newTo:F2}");
+				DebugLog.WriteLine($"[Navigator] Set To: {currentTo:F2} → {newTo:F2}");
 			}
 			
 			if (changed)
@@ -524,11 +524,11 @@ namespace AcManager.UiObserver
 				var actualTo = (double)toProperty.GetValue(element);
 				var actualValue = (double)valueProperty.GetValue(element);
 				
-				Debug.WriteLine($"[Navigator] Applied range: [{actualFrom:F2}, {actualTo:F2}], Value={actualValue:F2}");
+				DebugLog.WriteLine($"[Navigator] Applied range: [{actualFrom:F2}, {actualTo:F2}], Value={actualValue:F2}");
 			}
 			else
 			{
-				Debug.WriteLine($"[Navigator] DoubleSlider range unchanged");
+				DebugLog.WriteLine($"[Navigator] DoubleSlider range unchanged");
 			}
 		}
 
@@ -580,7 +580,7 @@ namespace AcManager.UiObserver
 			newValue = Math.Max(min, Math.Min(max, newValue));
 			
 			valueProperty.SetValue(element, newValue);
-			Debug.WriteLine($"[Navigator] RoundSlider adjusted: {currentValue:F2} → {newValue:F2} (step={adjustmentStep:F2} [2% of {totalRange:F2}], {adjustment})");
+			DebugLog.WriteLine($"[Navigator] RoundSlider adjusted: {currentValue:F2} → {newValue:F2} (step={adjustmentStep:F2} [2% of {totalRange:F2}], {adjustment})");
 		}
 
 		#endregion
@@ -595,27 +595,27 @@ namespace AcManager.UiObserver
 		{
 			var typeName = element.GetType().Name;
 			
-			Debug.WriteLine($"[Navigator] GetBuiltInPageForControl: typeName='{typeName}'");
+			DebugLog.WriteLine($"[Navigator] GetBuiltInPageForControl: typeName='{typeName}'");
 			
 			if (typeName == "DoubleSlider")
 			{
-				Debug.WriteLine($"[Navigator] GetBuiltInPageForControl: Returning 'DoubleSlider' page");
+				DebugLog.WriteLine($"[Navigator] GetBuiltInPageForControl: Returning 'DoubleSlider' page");
 				return "DoubleSlider";
 			}
 			
 			if (typeName == "RoundSlider")
 			{
-				Debug.WriteLine($"[Navigator] GetBuiltInPageForControl: Returning 'RoundSlider' page");
+				DebugLog.WriteLine($"[Navigator] GetBuiltInPageForControl: Returning 'RoundSlider' page");
 				return "RoundSlider";
 			}
 			
 			if (typeName == "Slider" || typeName == "FormattedSlider")
 			{
-				Debug.WriteLine($"[Navigator] GetBuiltInPageForControl: Returning 'Slider' page");
+				DebugLog.WriteLine($"[Navigator] GetBuiltInPageForControl: Returning 'Slider' page");
 				return "Slider";
 			}
 			
-			Debug.WriteLine($"[Navigator] GetBuiltInPageForControl: No specific page for '{typeName}', returning null");
+			DebugLog.WriteLine($"[Navigator] GetBuiltInPageForControl: No specific page for '{typeName}', returning null");
 			return null;
 		}
 

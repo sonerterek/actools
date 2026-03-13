@@ -32,7 +32,8 @@ namespace AcManager.UiObserver
 		private static int[] _wheelButtonMapping = new int[6]; // Map to physical button indices
 		private static bool[] _lastButtonStates = new bool[6];
 		private static bool _wheelNavigationEnabled;
-		private static DispatcherTimer _wheelPollTimer;
+		private static System.Threading.Timer _wheelPollTimer;  // ✅ Background thread timer (not DispatcherTimer)
+		private static readonly object _wheelStateLock = new object();  // ✅ Thread-safety for shared state
 
 		// Button names for debug output
 		private static readonly string[] _stepNames = { "UP", "DOWN", "LEFT", "RIGHT", "SELECT", "BACK" };
@@ -106,49 +107,84 @@ namespace AcManager.UiObserver
 		/// <summary>
 		/// Initializes wheel button navigation subsystem.
 		/// Called during Navigator initialization (same as StreamDeck).
+		/// ✅ HYBRID APPROACH: Device creation on UI thread, polling on background thread.
 		/// </summary>
 		private static void InitializeWheelNavigation()
 		{
-			Debug.WriteLine("[Navigator.Wheel] Initializing wheel navigation...");
+			DebugLog.WriteLine("[Navigator.Wheel] Initializing wheel navigation...");
 
 			// Hook game lifecycle events (SAME PATTERN as StreamDeck - Navigator.SD.cs lines 68-69)
 			GameWrapper.Started += OnGameStarted_Wheel;
 			GameWrapper.Ended += OnGameEnded_Wheel;
 
-			// Create polling timer (but don't start yet)
-			_wheelPollTimer = new DispatcherTimer
-			{
-				Interval = TimeSpan.FromMilliseconds(50) // 20Hz polling (efficient)
-			};
-			_wheelPollTimer.Tick += OnWheelPollTick;
+			// ✅ CRITICAL: Read config from ValuesStorage on UI thread FIRST
+			// ValuesStorage has WPF thread affinity!
+			bool enabled;
+			string deviceId;
+			string mappingString;
 
-			// ✅ FIX: Use Dispatcher.BeginInvoke (stays on UI thread) instead of Task.Run (background thread)
-			// DirectInputDevice has thread affinity and MUST be created on UI thread
+			try
+			{
+				enabled = ValuesStorage.Get("WheelNav_Enabled", false);
+				deviceId = ValuesStorage.Get<string>("WheelNav_DeviceId");
+				mappingString = ValuesStorage.Get<string>("WheelNav_ButtonMapping");
+
+				DebugLog.WriteLine($"[Navigator.Wheel] Config read from UI thread: enabled={enabled}, deviceId={deviceId}");
+			}
+			catch (Exception ex)
+			{
+				DebugLog.WriteLine($"[Navigator.Wheel] Failed to read config from ValuesStorage: {ex.Message}");
+				return;
+			}
+
+			if (!enabled)
+			{
+				DebugLog.WriteLine("[Navigator.Wheel] Wheel navigation disabled in config");
+				return;
+			}
+
+			// ✅ Fire-and-forget UI thread initialization (MUST create device on UI thread!)
 			Application.Current?.Dispatcher.BeginInvoke(
 				DispatcherPriority.ApplicationIdle,
 				new Action(async () =>
 				{
 					try
 					{
-						Debug.WriteLine("[Navigator.Wheel] Initializing - scanning for devices...");
+						DebugLog.WriteLine("[Navigator.Wheel] UI thread initialization started...");
 
-						// Load configuration and enable if valid (ASYNC - waits for DirectInput scan)
-						// This runs on UI thread, so DirectInputDevice.Create() will work!
-						if (await LoadWheelButtonConfigAsync())
+						// Create device on UI thread (DirectInputDevice has WPF dispatcher affinity!)
+						if (await LoadWheelButtonConfigAsync(enabled, deviceId, mappingString))
 						{
+							DebugLog.WriteLine($"[Navigator.Wheel] ✅ Device created: {_navigationWheel?.DisplayName ?? "unknown"}");
+
+							// Now start background thread polling
 							EnableWheelPolling();
-							Debug.WriteLine($"[Navigator.Wheel] ✅ Enabled on {_navigationWheel?.DisplayName ?? "unknown device"}");
 						}
 						else
 						{
-							Debug.WriteLine("[Navigator.Wheel] No valid configuration found - wheel navigation disabled");
-							Debug.WriteLine("[Navigator.Wheel] Tip: Use Ctrl+Shift+W to configure wheel buttons");
+							DebugLog.WriteLine("[Navigator.Wheel] No valid configuration found - wheel navigation disabled");
+							DebugLog.WriteLine("[Navigator.Wheel] Tip: Use Ctrl+Shift+W to configure wheel buttons");
 						}
 					}
 					catch (Exception ex)
 					{
-						Debug.WriteLine($"[Navigator.Wheel] Initialization failed: {ex.Message}");
-						Debug.WriteLine($"[Navigator.Wheel] Stack trace: {ex.StackTrace}");
+						DebugLog.WriteLine($"[Navigator.Wheel] ❌ Initialization failed: {ex.Message}");
+						DebugLog.WriteLine($"[Navigator.Wheel] Stack trace: {ex.StackTrace}");
+
+						if (enabled)
+						{
+							try
+							{
+								ActionExtension.InvokeInMainThreadAsync(() =>
+								{
+									FirstFloor.ModernUI.Windows.Toast.Show(
+										"Wheel Navigation Error",
+										$"Failed to initialize: {ex.Message}"
+									);
+								});
+							}
+							catch { }
+						}
 					}
 				})
 			);
@@ -162,35 +198,33 @@ namespace AcManager.UiObserver
 		/// Loads wheel button configuration from ValuesStorage (ASYNC VERSION).
 		/// Returns true if valid configuration loaded and device found.
 		/// Waits for DirectInput scan to complete before checking devices.
-		/// ✅ MUST be called from UI thread (DirectInputDevice has thread affinity).
+		/// ✅ MUST RUN ON UI THREAD: DirectInputDevice.Create() requires UI thread (WPF dispatcher affinity).
 		/// </summary>
-		private static async Task<bool> LoadWheelButtonConfigAsync()
+		private static async Task<bool> LoadWheelButtonConfigAsync(bool enabled, string deviceId, string mappingString)
 		{
 			try
 			{
-				var enabled = ValuesStorage.Get("WheelNav_Enabled", false);
 				if (!enabled)
 				{
-					Debug.WriteLine("[Navigator.Wheel] Wheel navigation disabled in config");
+					DebugLog.WriteLine("[Navigator.Wheel] Wheel navigation disabled in config");
 					return false;
 				}
 
-				var deviceId = ValuesStorage.Get<string>("WheelNav_DeviceId");
 				if (string.IsNullOrEmpty(deviceId))
 				{
-					Debug.WriteLine("[Navigator.Wheel] No device configured");
+					DebugLog.WriteLine("[Navigator.Wheel] No device configured");
 					return false;
 				}
 
 				// Use GetAsync() to wait for DirectInput scan to complete
-				// We're on UI thread, so DirectInputDevice.Create() will work!
-				Debug.WriteLine($"[Navigator.Wheel] Looking for device: {deviceId}");
+				// We're on UI thread now - DirectInputDevice.Create() will work correctly
+				DebugLog.WriteLine($"[Navigator.Wheel] Looking for device: {deviceId}");
 				var joysticks = await DirectInputScanner.GetAsync();
-				Debug.WriteLine($"[Navigator.Wheel] GetAsync() returned: {(joysticks == null ? "NULL" : $"{joysticks.Count} devices")}");
+				DebugLog.WriteLine($"[Navigator.Wheel] GetAsync() returned: {(joysticks == null ? "NULL" : $"{joysticks.Count} devices")}");
 
 				if (joysticks == null || joysticks.Count == 0)
 				{
-					Debug.WriteLine("[Navigator.Wheel] No devices found - scan failed or too early");
+					DebugLog.WriteLine("[Navigator.Wheel] No devices found - scan failed or too early");
 					return false;
 				}
 
@@ -198,11 +232,12 @@ namespace AcManager.UiObserver
 				{
 					foreach (var joystick in joysticks)
 					{
-						var device = DirectInputDevice.Create(joystick, -1); // Index not important for wheel nav
+						// ✅ CRITICAL: Create on UI thread (DirectInputDevice has WPF dispatcher affinity)
+						var device = DirectInputDevice.Create(joystick, -1);
 						if (device != null && device.ProductId == deviceId)
 						{
 							_navigationWheel = device;
-							Debug.WriteLine($"[Navigator.Wheel] ✅ Found device: {device.DisplayName}");
+							DebugLog.WriteLine($"[Navigator.Wheel] ✅ Found device: {device.DisplayName}");
 							break;
 						}
 					}
@@ -210,15 +245,14 @@ namespace AcManager.UiObserver
 
 				if (_navigationWheel == null)
 				{
-					Debug.WriteLine($"[Navigator.Wheel] Device {deviceId} not found (unplugged?)");
+					DebugLog.WriteLine($"[Navigator.Wheel] Device {deviceId} not found (unplugged?)");
 					return false;
 				}
 
-				Debug.WriteLine($"[Navigator.Wheel] Found device: {_navigationWheel.DisplayName}");
-				Debug.WriteLine($"[Navigator.Wheel] Device has {_navigationWheel.Buttons.Length} buttons");
+				DebugLog.WriteLine($"[Navigator.Wheel] Found device: {_navigationWheel.DisplayName}");
+				DebugLog.WriteLine($"[Navigator.Wheel] Device has {_navigationWheel.Buttons.Length} buttons");
 
-				// Load button mapping as STRING, then parse to int[]
-				var mappingString = ValuesStorage.Get<string>("WheelNav_ButtonMapping");
+				// Parse button mapping from string (already read from ValuesStorage on UI thread)
 				int[] mapping = null;
 
 				if (!string.IsNullOrEmpty(mappingString))
@@ -226,55 +260,42 @@ namespace AcManager.UiObserver
 					try
 					{
 						mapping = mappingString.Split(',').Select(int.Parse).ToArray();
-						Debug.WriteLine($"[Navigator.Wheel] Loaded mapping: [{string.Join(", ", mapping)}]");
+						DebugLog.WriteLine($"[Navigator.Wheel] Loaded mapping: [{string.Join(", ", mapping)}]");
 					}
 					catch (Exception parseEx)
 					{
-						Debug.WriteLine($"[Navigator.Wheel] Failed to parse button mapping: {parseEx.Message}");
+						DebugLog.WriteLine($"[Navigator.Wheel] Failed to parse button mapping: {parseEx.Message}");
+						return false;
 					}
 				}
-
-				// Validate custom mapping
-				if (mapping?.Length == 6 && mapping.All(b => b >= 0 && b < _navigationWheel.Buttons.Length))
+				else
 				{
-					_wheelButtonMapping = mapping;
-					Debug.WriteLine($"[Navigator.Wheel] Loaded custom button mapping: [{string.Join(", ", mapping)}]");
-					return true;
+					DebugLog.WriteLine("[Navigator.Wheel] No button mapping configured");
+					return false;
 				}
 
-				// Try default mapping for this wheel model
-				Debug.WriteLine("[Navigator.Wheel] Custom mapping invalid, trying default mapping...");
-				var defaultMapping = GetDefaultMapping(_navigationWheel);
-
-				if (defaultMapping != null && defaultMapping.Buttons.All(b => b >= 0 && b < _navigationWheel.Buttons.Length))
+				if (mapping.Length != 6)
 				{
-					_wheelButtonMapping = defaultMapping.Buttons;
-					Debug.WriteLine($"[Navigator.Wheel] Using default mapping for {defaultMapping.Name}");
-					Debug.WriteLine($"[Navigator.Wheel] Note: {defaultMapping.Notes}");
+					DebugLog.WriteLine($"[Navigator.Wheel] Invalid button mapping length: {mapping.Length} (expected 6)");
+					return false;
+				}
 
-					if (defaultMapping.IsModularBase)
+						_wheelButtonMapping = mapping;
+						DebugLog.WriteLine("[Navigator.Wheel] Configuration loaded successfully");
+						return true;
+					}
+					catch (Exception ex)
 					{
-						Debug.WriteLine($"[Navigator.Wheel] ⚠ Modular base detected - verify button mapping with your rim");
+						DebugLog.WriteLine($"[Navigator.Wheel] Error loading config: {ex.Message}");
+						return false;
 					}
-
-					return true;
 				}
 
-				Debug.WriteLine("[Navigator.Wheel] No valid button mapping available");
-				return false;
-			}
-			catch (Exception ex)
-			{
-				Debug.WriteLine($"[Navigator.Wheel] Error loading config: {ex.Message}");
-				return false;
-			}
-		}
-
-		/// <summary>
-		/// Loads wheel button configuration from ValuesStorage (SYNCHRONOUS - for game lifecycle).
-		/// This version is kept for OnGameEnded where we can't use async easily.
-		/// Creates a temporary watcher and checks immediately (may fail if scan not complete).
-		/// </summary>
+				/// <summary>
+				/// Loads wheel button configuration from ValuesStorage (SYNCHRONOUS - for game lifecycle).
+				/// This version is kept for OnGameEnded where we can't use async easily.
+				/// Creates a temporary watcher and checks immediately (may fail if scan not complete).
+				/// </summary>
 		private static bool LoadWheelButtonConfig()
 		{
 			try
@@ -282,14 +303,14 @@ namespace AcManager.UiObserver
 				var enabled = ValuesStorage.Get("WheelNav_Enabled", false);
 				if (!enabled)
 				{
-					Debug.WriteLine("[Navigator.Wheel] Wheel navigation disabled in config");
+					DebugLog.WriteLine("[Navigator.Wheel] Wheel navigation disabled in config");
 					return false;
 				}
 
 				var deviceId = ValuesStorage.Get<string>("WheelNav_DeviceId");
 				if (string.IsNullOrEmpty(deviceId))
 				{
-					Debug.WriteLine("[Navigator.Wheel] No device configured");
+					DebugLog.WriteLine("[Navigator.Wheel] No device configured");
 					return false;
 				}
 
@@ -299,7 +320,7 @@ namespace AcManager.UiObserver
 					_navigationWheel = FindDeviceByProductId(deviceId);
 					if (_navigationWheel != null)
 					{
-						Debug.WriteLine($"[Navigator.Wheel] Found device from watcher: {_navigationWheel.DisplayName}");
+						DebugLog.WriteLine($"[Navigator.Wheel] Found device from watcher: {_navigationWheel.DisplayName}");
 
 						// ✅ FIX: Load button mapping as STRING, then parse to int[]
 						var mappingString = ValuesStorage.Get<string>("WheelNav_ButtonMapping");
@@ -313,7 +334,7 @@ namespace AcManager.UiObserver
 							}
 							catch (Exception parseEx)
 							{
-								Debug.WriteLine($"[Navigator.Wheel] Failed to parse button mapping: {parseEx.Message}");
+								DebugLog.WriteLine($"[Navigator.Wheel] Failed to parse button mapping: {parseEx.Message}");
 								return false;
 							}
 						}
@@ -327,12 +348,12 @@ namespace AcManager.UiObserver
 					}
 				}
 
-				Debug.WriteLine($"[Navigator.Wheel] Device {deviceId} not found in current watcher");
+				DebugLog.WriteLine($"[Navigator.Wheel] Device {deviceId} not found in current watcher");
 				return false;
 			}
 			catch (Exception ex)
 			{
-				Debug.WriteLine($"[Navigator.Wheel] Error loading config: {ex.Message}");
+				DebugLog.WriteLine($"[Navigator.Wheel] Error loading config: {ex.Message}");
 				return false;
 			}
 		}
@@ -353,11 +374,11 @@ namespace AcManager.UiObserver
 			
 			if (DefaultMappings.TryGetValue(productKey, out var mapping))
 			{
-				Debug.WriteLine($"[Navigator.Wheel] Default mapping found for ProductId prefix: {productKey}");
+				DebugLog.WriteLine($"[Navigator.Wheel] Default mapping found for ProductId prefix: {productKey}");
 				return mapping;
 			}
 			
-			Debug.WriteLine($"[Navigator.Wheel] No default mapping for ProductId: {productKey}");
+			DebugLog.WriteLine($"[Navigator.Wheel] No default mapping for ProductId: {productKey}");
 			return null;
 		}
 		
@@ -368,42 +389,56 @@ namespace AcManager.UiObserver
 		/// <summary>
 		/// Enables wheel button polling.
 		/// Creates DirectInput watcher (wakes scanner thread) and starts polling timer.
+		/// ✅ NEW: Uses System.Threading.Timer for reliable background polling (20Hz guaranteed).
 		/// ✅ EFFICIENT: Scanner sleeps when no watchers exist.
 		/// </summary>
 		private static void EnableWheelPolling()
 		{
-			if (_wheelWatcher != null)
+			lock (_wheelStateLock)
 			{
-				Debug.WriteLine("[Navigator.Wheel] Already enabled");
-				return;
-			}
-
-			Debug.WriteLine("[Navigator.Wheel] Enabling wheel polling...");
-
-			// Create watcher - this wakes up the DirectInput scanner thread
-			_wheelWatcher = DirectInputScanner.Watch();
-			_wheelWatcher.Update += OnWheelDevicesUpdated;
-
-			// Refresh device reference
-			var deviceId = ValuesStorage.Get<string>("WheelNav_DeviceId");
-			_navigationWheel = FindDeviceByProductId(deviceId);
-
-			if (_navigationWheel != null)
-			{
-				// ✅ Attach button event handlers for navigation
-				foreach (var button in _navigationWheel.Buttons)
+				if (_wheelWatcher != null)
 				{
-					button.PropertyChanged += OnNavigationButtonPressed;
+					DebugLog.WriteLine("[Navigator.Wheel] Already enabled");
+					return;
 				}
 
-				_wheelNavigationEnabled = true;
-				_wheelPollTimer.Start(); // Start 20Hz polling
-				Debug.WriteLine("[Navigator.Wheel] ✅ Polling enabled (20Hz)");
-				Debug.WriteLine($"[Navigator.Wheel] Monitoring {_navigationWheel.Buttons.Length} buttons on {_navigationWheel.DisplayName}");
-			}
-			else
-			{
-				Debug.WriteLine("[Navigator.Wheel] ❌ Device not found, polling not started");
+				DebugLog.WriteLine("[Navigator.Wheel] Enabling wheel polling...");
+
+				// Create watcher - this wakes up the DirectInput scanner thread
+				_wheelWatcher = DirectInputScanner.Watch();
+				_wheelWatcher.Update += OnWheelDevicesUpdated;
+
+				// Refresh device reference
+				var deviceId = ValuesStorage.Get<string>("WheelNav_DeviceId");
+				_navigationWheel = FindDeviceByProductId(deviceId);
+
+				if (_navigationWheel != null)
+				{
+					// ✅ Attach button event handlers for navigation
+					// Events will fire on background thread (polling thread)
+					foreach (var button in _navigationWheel.Buttons)
+					{
+						button.PropertyChanged += OnNavigationButtonPressed;
+					}
+
+					_wheelNavigationEnabled = true;
+
+					// ✅ Use System.Threading.Timer for BACKGROUND polling (not DispatcherTimer)
+					// This guarantees 20Hz polling regardless of UI thread load
+					_wheelPollTimer = new System.Threading.Timer(
+						callback: _ => OnWheelPollTick(),
+						state: null,
+						dueTime: 0,        // Start immediately
+						period: 50         // 20Hz (50ms interval)
+					);
+
+					DebugLog.WriteLine("[Navigator.Wheel] ✅ Polling enabled (20Hz on background thread)");
+					DebugLog.WriteLine($"[Navigator.Wheel] Monitoring {_navigationWheel.Buttons.Length} buttons on {_navigationWheel.DisplayName}");
+				}
+				else
+				{
+					DebugLog.WriteLine("[Navigator.Wheel] ❌ Device not found, polling not started");
+				}
 			}
 		}
 		
@@ -414,28 +449,44 @@ namespace AcManager.UiObserver
 		/// </summary>
 		private static void DisableWheelPolling()
 		{
-			Debug.WriteLine("[Navigator.Wheel] Disabling wheel polling...");
-
-			_wheelNavigationEnabled = false;
-			_wheelPollTimer?.Stop();
-
-			// ✅ Detach button event handlers
-			if (_navigationWheel != null)
+			lock (_wheelStateLock)
 			{
-				foreach (var button in _navigationWheel.Buttons)
+				DebugLog.WriteLine("[Navigator.Wheel] Disabling wheel polling...");
+
+				_wheelNavigationEnabled = false;
+
+				// ✅ Dispose System.Threading.Timer (not Stop like DispatcherTimer)
+				if (_wheelPollTimer != null)
 				{
-					button.PropertyChanged -= OnNavigationButtonPressed;
+					try
+					{
+						_wheelPollTimer.Dispose();
+					}
+					catch (Exception ex)
+					{
+						DebugLog.WriteLine($"[Navigator.Wheel] Error disposing poll timer: {ex.Message}");
+					}
+					_wheelPollTimer = null;
 				}
-			}
 
-			if (_wheelWatcher != null)
-			{
-				_wheelWatcher.Update -= OnWheelDevicesUpdated;
-				_wheelWatcher.Dispose(); // Scanner thread sleeps if no watchers
-				_wheelWatcher = null;
-			}
+				// ✅ Detach button event handlers
+				if (_navigationWheel != null)
+				{
+					foreach (var button in _navigationWheel.Buttons)
+					{
+						button.PropertyChanged -= OnNavigationButtonPressed;
+					}
+				}
 
-			Debug.WriteLine("[Navigator.Wheel] ✅ Polling disabled (zero CPU overhead)");
+				if (_wheelWatcher != null)
+				{
+					_wheelWatcher.Update -= OnWheelDevicesUpdated;
+					_wheelWatcher.Dispose(); // Scanner thread sleeps if no watchers
+					_wheelWatcher = null;
+				}
+
+				DebugLog.WriteLine("[Navigator.Wheel] ✅ Polling disabled (zero CPU overhead)");
+			}
 		}
 		
 		#endregion
@@ -444,33 +495,46 @@ namespace AcManager.UiObserver
 		
 		/// <summary>
 		/// Polls wheel buttons and detects presses.
-		/// Runs at 20Hz when enabled.
-		/// Already on UI thread (DispatcherTimer runs on UI thread).
-		/// This updates button states, which triggers PropertyChanged events.
+		/// ✅ NEW: Runs on BACKGROUND THREAD (System.Threading.Timer callback thread).
+		/// This updates button states, which triggers PropertyChanged events on THIS background thread.
+		/// Guaranteed 20Hz polling regardless of UI thread load - NO MISSED BUTTON PRESSES.
 		/// </summary>
-		private static void OnWheelPollTick(object sender, EventArgs e)
+		private static void OnWheelPollTick()
 		{
-			if (!_wheelNavigationEnabled || _navigationWheel == null)
+			// ✅ Thread-safe read of shared state
+			DirectInputDevice device;
+			bool enabled;
+
+			lock (_wheelStateLock)
+			{
+				enabled = _wheelNavigationEnabled;
+				device = _navigationWheel;
+			}
+
+			if (!enabled || device == null)
 				return;
 
 			try
 			{
-				// Poll device state - this updates button values and triggers PropertyChanged
-				_navigationWheel.OnTick();
+				// ✅ Poll device state - this updates button values and triggers PropertyChanged
+				// PropertyChanged events will fire on THIS background thread
+				device.OnTick();
 			}
 			catch (Exception ex)
 			{
-				Debug.WriteLine($"[Navigator.Wheel] Polling error: {ex.Message}");
+				DebugLog.WriteLine($"[Navigator.Wheel] Polling error: {ex.Message}");
 			}
 		}
 
 		/// <summary>
 		/// Handles button presses for NAVIGATION (not wizard).
-		/// Triggered by PropertyChanged events when buttons are pressed.
+		/// ✅ NEW: Triggered on BACKGROUND THREAD (PropertyChanged fires on polling thread).
 		/// Maps physical button presses to navigation commands.
+		/// Marshals UI interactions to UI thread (SAME PATTERN as StreamDeck).
 		/// </summary>
 		private static void OnNavigationButtonPressed(object sender, PropertyChangedEventArgs e)
 		{
+			// ✅ We're on BACKGROUND THREAD here (polling thread)
 			var button = (DirectInputButton)sender;
 
 			// Only react to rising edge (button just pressed, not held)
@@ -498,8 +562,16 @@ namespace AcManager.UiObserver
 
 					_lastButtonStates[navIndex] = true;
 
-					// Execute navigation command
-					OnWheelButtonPressed(navIndex);
+					// ✅ MARSHAL to UI thread for UI interactions (SAME PATTERN as StreamDeck)
+					// This is the CRITICAL difference from old implementation
+					Application.Current?.Dispatcher.BeginInvoke(
+						DispatcherPriority.Normal,
+						new Action(() =>
+						{
+							// Now on UI thread - safe to interact with WPF UI
+							OnWheelButtonPressed(navIndex);
+						})
+					);
 				}
 			}
 			else if (e.PropertyName == nameof(DirectInputButton.Value) && !button.Value)
@@ -517,9 +589,9 @@ namespace AcManager.UiObserver
 		}
 		
 		/// <summary>
-		/// Handles wheel button press events.
-		/// Already on UI thread (DispatcherTimer runs on UI thread).
-		/// Maps button index to navigation command.
+		/// Handles wheel button press events and executes navigation commands.
+		/// ✅ NEW: Always runs on UI THREAD (marshaled from background thread in OnNavigationButtonPressed).
+		/// Maps button index to navigation command and interacts with WPF UI safely.
 		/// </summary>
 		private static void OnWheelButtonPressed(int navButtonIndex)
 		{
@@ -527,7 +599,7 @@ namespace AcManager.UiObserver
 				? _stepNames[navButtonIndex] 
 				: navButtonIndex.ToString();
 
-			Debug.WriteLine($"[Navigator.Wheel] Button pressed: {buttonName} ({GetActionDescription(navButtonIndex)})");
+			DebugLog.WriteLine($"[Navigator.Wheel] Button pressed: {buttonName} ({GetActionDescription(navButtonIndex)})");
 
 			try
 			{
@@ -558,7 +630,7 @@ namespace AcManager.UiObserver
 								description: "Exit Application",
 								onConfirm: () =>
 								{
-									Debug.WriteLine("[Navigator.Wheel] ✅ Exiting application (user confirmed)");
+									DebugLog.WriteLine("[Navigator.Wheel] ✅ Exiting application (user confirmed)");
 									Application.Current?.Dispatcher.Invoke(() =>
 									{
 										Application.Current.Shutdown();
@@ -566,7 +638,7 @@ namespace AcManager.UiObserver
 								},
 								onCancel: () =>
 								{
-									Debug.WriteLine("[Navigator.Wheel] User cancelled exit");
+									DebugLog.WriteLine("[Navigator.Wheel] User cancelled exit");
 								}
 							);
 						}
@@ -580,7 +652,7 @@ namespace AcManager.UiObserver
 			}
 			catch (Exception ex)
 			{
-				Debug.WriteLine($"[Navigator.Wheel] Error handling button {navButtonIndex}: {ex.Message}");
+				DebugLog.WriteLine($"[Navigator.Wheel] Error handling button {navButtonIndex}: {ex.Message}");
 			}
 		}
 
@@ -604,23 +676,27 @@ namespace AcManager.UiObserver
 		/// <summary>
 		/// Handles DirectInput device list changes (plug/unplug).
 		/// Updates device reference if wheel is reconnected.
+		/// ✅ Thread-safe: Uses lock for shared state access.
 		/// </summary>
 		private static void OnWheelDevicesUpdated(object sender, EventArgs e)
 		{
 			var deviceId = ValuesStorage.Get<string>("WheelNav_DeviceId");
 			var device = FindDeviceByProductId(deviceId);
 
-			if (device == null && _navigationWheel != null)
+			lock (_wheelStateLock)
 			{
-				Debug.WriteLine("[Navigator.Wheel] ⚠ Device disconnected");
-				_navigationWheel = null;
-				_wheelNavigationEnabled = false;
-			}
-			else if (device != null && _navigationWheel == null)
-			{
-				Debug.WriteLine("[Navigator.Wheel] ✅ Device reconnected");
-				_navigationWheel = device;
-				_wheelNavigationEnabled = true;
+				if (device == null && _navigationWheel != null)
+				{
+					DebugLog.WriteLine("[Navigator.Wheel] ⚠ Device disconnected");
+					_navigationWheel = null;
+					_wheelNavigationEnabled = false;
+				}
+				else if (device != null && _navigationWheel == null)
+				{
+					DebugLog.WriteLine("[Navigator.Wheel] ✅ Device reconnected");
+					_navigationWheel = device;
+					_wheelNavigationEnabled = true;
+				}
 			}
 		}
 
@@ -659,7 +735,7 @@ namespace AcManager.UiObserver
 		/// </summary>
 		private static void OnGameStarted_Wheel(object sender, GameStartedArgs e)
 		{
-			Debug.WriteLine($"[Navigator.Wheel] Game started: {e.Mode}, disabling navigation");
+			DebugLog.WriteLine($"[Navigator.Wheel] Game started: {e.Mode}, disabling navigation");
 			DisableWheelPolling();
 		}
 		
@@ -669,7 +745,7 @@ namespace AcManager.UiObserver
 		/// </summary>
 		private static void OnGameEnded_Wheel(object sender, GameEndedArgs e)
 		{
-			Debug.WriteLine("[Navigator.Wheel] Game ended, re-enabling navigation");
+			DebugLog.WriteLine("[Navigator.Wheel] Game ended, re-enabling navigation");
 			
 			if (ValuesStorage.Get("WheelNav_Enabled", false))
 			{
@@ -692,30 +768,30 @@ namespace AcManager.UiObserver
 		/// </summary>
 		public static bool ShowWheelConfigWizard()
 		{
-			Debug.WriteLine("[Navigator.Wheel] Launching configuration wizard...");
+			DebugLog.WriteLine("[Navigator.Wheel] Launching configuration wizard...");
 
 			try
 			{
 				// Ensure we're on UI thread
 				if (Application.Current?.Dispatcher.CheckAccess() == false)
 				{
-					Debug.WriteLine("[Navigator.Wheel] Not on UI thread, invoking on UI thread");
+					DebugLog.WriteLine("[Navigator.Wheel] Not on UI thread, invoking on UI thread");
 					return (bool)Application.Current.Dispatcher.Invoke(() => ShowWheelConfigWizard());
 				}
 
-				Debug.WriteLine("[Navigator.Wheel] Creating WheelConfigDialog...");
+				DebugLog.WriteLine("[Navigator.Wheel] Creating WheelConfigDialog...");
 				var dialog = new WheelConfigDialog();
 
-				Debug.WriteLine("[Navigator.Wheel] Showing dialog...");
+				DebugLog.WriteLine("[Navigator.Wheel] Showing dialog...");
 				var result = dialog.ShowDialog();
 
-				Debug.WriteLine($"[Navigator.Wheel] Wizard result: {result}");
+				DebugLog.WriteLine($"[Navigator.Wheel] Wizard result: {result}");
 				return result == true;
 			}
 			catch (Exception ex)
 			{
-				Debug.WriteLine($"[Navigator.Wheel] Wizard error: {ex.Message}");
-				Debug.WriteLine($"[Navigator.Wheel] Stack trace: {ex.StackTrace}");
+				DebugLog.WriteLine($"[Navigator.Wheel] Wizard error: {ex.Message}");
+				DebugLog.WriteLine($"[Navigator.Wheel] Stack trace: {ex.StackTrace}");
 
 				// Show error to user
 				try
@@ -747,27 +823,27 @@ namespace AcManager.UiObserver
 			// Store array as comma-separated string (ValuesStorage doesn't support int[])
 			var buttonMappingString = string.Join(",", buttonMapping);
 
-			Debug.WriteLine($"[Navigator.Wheel] Saving configuration:");
-			Debug.WriteLine($"[Navigator.Wheel]   Device: {deviceName}");
-			Debug.WriteLine($"[Navigator.Wheel]   ProductId: {deviceId}");
-			Debug.WriteLine($"[Navigator.Wheel]   Buttons: [{string.Join(", ", buttonMapping)}]");
+			DebugLog.WriteLine($"[Navigator.Wheel] Saving configuration:");
+			DebugLog.WriteLine($"[Navigator.Wheel]   Device: {deviceName}");
+			DebugLog.WriteLine($"[Navigator.Wheel]   ProductId: {deviceId}");
+			DebugLog.WriteLine($"[Navigator.Wheel]   Buttons: [{string.Join(", ", buttonMapping)}]");
 
 			ValuesStorage.Set("WheelNav_Enabled", true);
 			ValuesStorage.Set("WheelNav_DeviceId", deviceId);
 			ValuesStorage.Set("WheelNav_DeviceName", deviceName);
 			ValuesStorage.Set("WheelNav_ButtonMapping", buttonMappingString);
 
-			Debug.WriteLine($"[Navigator.Wheel] ✅ Configuration saved successfully");
+			DebugLog.WriteLine($"[Navigator.Wheel] ✅ Configuration saved successfully");
 
 			// Reload and enable (may fail if watcher not created yet - that's OK)
 			if (LoadWheelButtonConfig())
 			{
 				EnableWheelPolling();
-				Debug.WriteLine("[Navigator.Wheel] Configuration activated immediately");
+				DebugLog.WriteLine("[Navigator.Wheel] Configuration activated immediately");
 			}
 			else
 			{
-				Debug.WriteLine("[Navigator.Wheel] Configuration will be loaded on next startup");
+				DebugLog.WriteLine("[Navigator.Wheel] Configuration will be loaded on next startup");
 			}
 		}
 
@@ -778,7 +854,7 @@ namespace AcManager.UiObserver
 		{
 			ValuesStorage.Set("WheelNav_Enabled", false);
 			DisableWheelPolling();
-			Debug.WriteLine("[Navigator.Wheel] Navigation disabled by user");
+			DebugLog.WriteLine("[Navigator.Wheel] Navigation disabled by user");
 		}
 
 		/// <summary>

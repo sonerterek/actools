@@ -50,7 +50,7 @@ namespace AcManager.UiObserver
 			
 			if (VerboseNavigationDebug)
 			{
-				Debug.WriteLine($"[Navigator] Started mouse restore timer for '{node.SimpleName}' (3s duration, 500ms interval)");
+				DebugLog.WriteLine($"[Navigator] Started mouse restore timer for '{node.SimpleName}' (3s duration, 500ms interval)");
 			}
 		}
 		
@@ -64,7 +64,7 @@ namespace AcManager.UiObserver
 				
 				if (VerboseNavigationDebug)
 				{
-					Debug.WriteLine($"[Navigator] Stopped mouse restore timer");
+					DebugLog.WriteLine($"[Navigator] Stopped mouse restore timer");
 				}
 			}
 		}
@@ -76,7 +76,7 @@ namespace AcManager.UiObserver
 			{
 				if (VerboseNavigationDebug)
 				{
-					Debug.WriteLine($"[Navigator] Mouse restore timer expired (3s elapsed)");
+					DebugLog.WriteLine($"[Navigator] Mouse restore timer expired (3s elapsed)");
 				}
 				StopMouseRestoreTimer();
 				return;
@@ -87,7 +87,7 @@ namespace AcManager.UiObserver
 			{
 				if (VerboseNavigationDebug)
 				{
-					Debug.WriteLine($"[Navigator] Mouse restore timer stopped (focus changed)");
+					DebugLog.WriteLine($"[Navigator] Mouse restore timer stopped (focus changed)");
 				}
 				StopMouseRestoreTimer();
 				return;
@@ -113,7 +113,7 @@ namespace AcManager.UiObserver
 				{
 					if (VerboseNavigationDebug)
 					{
-						Debug.WriteLine($"[Navigator] Mouse moved away (distance: {distance:F1}px), restoring to '{node.SimpleName}'");
+						DebugLog.WriteLine($"[Navigator] Mouse moved away (distance: {distance:F1}px), restoring to '{node.SimpleName}'");
 					}
 					
 					// Mouse was moved externally, restore it
@@ -217,73 +217,73 @@ namespace AcManager.UiObserver
 		private static void TryInitializeFocusIfNeeded()
 		{
 			if (CurrentContext == null) {
-				Debug.WriteLine($"[Navigator] TryInitializeFocusIfNeeded: CurrentContext is null!");
+				DebugLog.WriteLine($"[Navigator] TryInitializeFocusIfNeeded: CurrentContext is null!");
 				return;
 			}
 			
 			if (CurrentContext.FocusedNode != null) {
-				Debug.WriteLine($"[Navigator] TryInitializeFocusIfNeeded: Already has focus: {CurrentContext.FocusedNode.SimpleName}");
+				DebugLog.WriteLine($"[Navigator] TryInitializeFocusIfNeeded: Already has focus: {CurrentContext.FocusedNode.SimpleName}");
 				return;
 			}
 			
-			Debug.WriteLine($"[Navigator] Finding first navigable in scope '{CurrentContext.ScopeNode.SimpleName}'...");
+			DebugLog.WriteLine($"[Navigator] Finding first navigable in scope '{CurrentContext.ScopeNode.SimpleName}'...");
 			
 			// Log scope node details
 			if (CurrentContext.ScopeNode.TryGetVisual(out var scopeVisual)) {
-				Debug.WriteLine($"[Navigator] ScopeNode type: {scopeVisual.GetType().Name}");
+				DebugLog.WriteLine($"[Navigator] ScopeNode type: {scopeVisual.GetType().Name}");
 			} else {
-				Debug.WriteLine($"[Navigator] ScopeNode type: (dead reference)");
+				DebugLog.WriteLine($"[Navigator] ScopeNode type: (dead reference)");
 			}
-			Debug.WriteLine($"[Navigator] ScopeNode path: {CurrentContext.ScopeNode.HierarchicalPath}");
+			DebugLog.WriteLine($"[Navigator] ScopeNode path: {CurrentContext.ScopeNode.HierarchicalPath}");
 			
 			// ? NEW (Phase 5): Use efficient scoped query instead of get-all-then-filter
 			var scopePath = CurrentContext.ScopeNode.HierarchicalPath;
 			var allNodesInScope = Observer.GetNodesUnderPath(scopePath);
-			Debug.WriteLine($"[Navigator] GetNodesUnderPath returned {allNodesInScope.Count} nodes for path: {scopePath}");
+			DebugLog.WriteLine($"[Navigator] GetNodesUnderPath returned {allNodesInScope.Count} nodes for path: {scopePath}");
 
 			var navigableNodes = allNodesInScope.Where(n => IsNavigableForSelection(n)).ToList();
-			Debug.WriteLine($"[Navigator] Navigable nodes (IsGroup=false, IsNavigable=true): {navigableNodes.Count}");
+			DebugLog.WriteLine($"[Navigator] Navigable nodes (IsGroup=false, IsNavigable=true): {navigableNodes.Count}");
 			
 			var allCandidates = GetCandidatesInScope();
-			Debug.WriteLine($"[Navigator] GetCandidatesInScope() returned {allCandidates.Count} candidates");
+			DebugLog.WriteLine($"[Navigator] GetCandidatesInScope() returned {allCandidates.Count} candidates");
 			
 			if (allCandidates.Count == 0) {
 				// Enhanced diagnostics
-				Debug.WriteLine($"[Navigator] ? NO CANDIDATES FOUND - Detailed Analysis:");
+				DebugLog.WriteLine($"[Navigator] ? NO CANDIDATES FOUND - Detailed Analysis:");
 				
 				var inScopeNodes = navigableNodes.Where(n => IsInActiveModalScope(n)).ToList();
-				Debug.WriteLine($"[Navigator]   Nodes passing IsInActiveModalScope: {inScopeNodes.Count}");
+				DebugLog.WriteLine($"[Navigator]   Nodes passing IsInActiveModalScope: {inScopeNodes.Count}");
 				
 				if (navigableNodes.Count > 0 && inScopeNodes.Count == 0) {
-					Debug.WriteLine($"[Navigator]   ? Scope filtering removed ALL candidates!");
+					DebugLog.WriteLine($"[Navigator]   ? Scope filtering removed ALL candidates!");
 					
 					// Check first few navigable nodes
 					var samplesToCheck = Math.Min(5, navigableNodes.Count);
 					for (int i = 0; i < samplesToCheck; i++) {
 						var sample = navigableNodes[i];
-						Debug.WriteLine($"[Navigator]   Sample #{i}: {sample.SimpleName}");
+						DebugLog.WriteLine($"[Navigator]   Sample #{i}: {sample.SimpleName}");
 						
 						if (sample.TryGetVisual(out var sampleVisual)) {
-							Debug.WriteLine($"[Navigator]     Type: {sampleVisual.GetType().Name}");
+							DebugLog.WriteLine($"[Navigator]     Type: {sampleVisual.GetType().Name}");
 						} else {
-							Debug.WriteLine($"[Navigator]     Type: (dead reference)");
+							DebugLog.WriteLine($"[Navigator]     Type: (dead reference)");
 						}
 						
-						Debug.WriteLine($"[Navigator]     Path: {sample.HierarchicalPath}");
-						Debug.WriteLine($"[Navigator]     IsDescendantOf(ScopeNode): {IsDescendantOf(sample, CurrentContext.ScopeNode)}");
+						DebugLog.WriteLine($"[Navigator]     Path: {sample.HierarchicalPath}");
+						DebugLog.WriteLine($"[Navigator]     IsDescendantOf(ScopeNode): {IsDescendantOf(sample, CurrentContext.ScopeNode)}");
 						
 						// Walk parent chain
 						var current = sample.Parent;
 						int depth = 0;
-						Debug.WriteLine($"[Navigator]     Parent chain:");
+						DebugLog.WriteLine($"[Navigator]     Parent chain:");
 						while (current != null && current.TryGetTarget(out var parentNode) && depth < 8) {
 							var isScope = ReferenceEquals(parentNode, CurrentContext.ScopeNode);
-							Debug.WriteLine($"[Navigator]       [{depth}] {parentNode.SimpleName} {(isScope ? "? SCOPE ROOT" : "")}");
+							DebugLog.WriteLine($"[Navigator]       [{depth}] {parentNode.SimpleName} {(isScope ? "? SCOPE ROOT" : "")}");
 							current = parentNode.Parent;
 							depth++;
 							if (isScope) break;
 						}
-						if (depth >= 8) Debug.WriteLine($"[Navigator]       [...] (chain continues)");
+						if (depth >= 8) DebugLog.WriteLine($"[Navigator]       [...] (chain continues)");
 					}
 				}
 				
@@ -295,8 +295,8 @@ namespace AcManager.UiObserver
 					var center = n.GetCenterDip();
 					var score = center.HasValue ? center.Value.X + center.Value.Y * 10000.0 : double.MaxValue;
 					
-					Debug.WriteLine($"  Candidate: {n.SimpleName} @ {n.HierarchicalPath}");
-					Debug.WriteLine($"    Center: {center?.X:F1},{center?.Y:F1} | Score: {score:F1}");
+					DebugLog.WriteLine($"  Candidate: {n.SimpleName} @ {n.HierarchicalPath}");
+					DebugLog.WriteLine($"    Center: {center?.X:F1},{center?.Y:F1} | Score: {score:F1}");
 					
 					return new { Node = n, Score = score };
 				})
@@ -305,13 +305,13 @@ namespace AcManager.UiObserver
 	
 			// ? FIX: Skip if all candidates have invalid positions
 			if (candidates.Count == 0 || candidates[0].Score == double.MaxValue) {
-				Debug.WriteLine($"[Navigator] No valid candidates found (all have invalid positions)");
+				DebugLog.WriteLine($"[Navigator] No valid candidates found (all have invalid positions)");
 				return; // Don't try to set focus if nothing is positioned yet
 			}
 			
 			var firstNode = candidates.FirstOrDefault()?.Node;
 			if (firstNode != null) {
-				Debug.WriteLine($"  ? WINNER: {firstNode.SimpleName} (score: {candidates[0].Score:F1})");
+				DebugLog.WriteLine($"  ? WINNER: {firstNode.SimpleName} (score: {candidates[0].Score:F1})");
 				CurrentContext.FocusedNode = firstNode;
 				
 				// ? FIX: Defer visual update until after layout is complete
@@ -330,10 +330,10 @@ namespace AcManager.UiObserver
 					SetFocusVisuals(firstNode);
 				}
 				
-				Debug.WriteLine($"[Navigator] Initialized focus in '{CurrentContext.ScopeNode.SimpleName}' -> '{firstNode.SimpleName}'");
+				DebugLog.WriteLine($"[Navigator] Initialized focus in '{CurrentContext.ScopeNode.SimpleName}' -> '{firstNode.SimpleName}'");
 				try { FocusChanged?.Invoke(null, firstNode); } catch { }
 			} else {
-				Debug.WriteLine($"[Navigator] No valid candidate found after filtering!");
+				DebugLog.WriteLine($"[Navigator] No valid candidate found after filtering!");
 			}
 		}
 
@@ -377,16 +377,16 @@ namespace AcManager.UiObserver
 						// Only set keyboard focus for non-list items (buttons, textboxes, etc.)
 						Keyboard.Focus(element);
 						if (VerboseNavigationDebug) {
-							Debug.WriteLine($"[Navigator] Set keyboard focus to '{node.SimpleName}'");
+							DebugLog.WriteLine($"[Navigator] Set keyboard focus to '{node.SimpleName}'");
 						}
 					} else {
 						if (VerboseNavigationDebug) {
-							Debug.WriteLine($"[Navigator] Skipped keyboard focus for list item '{node.SimpleName}' (would trigger selection)");
+							DebugLog.WriteLine($"[Navigator] Skipped keyboard focus for list item '{node.SimpleName}' (would trigger selection)");
 						}
 					}
 				} catch (Exception ex) {
 					if (VerboseNavigationDebug) {
-						Debug.WriteLine($"[Navigator] Failed to set keyboard focus: {ex.Message}");
+						DebugLog.WriteLine($"[Navigator] Failed to set keyboard focus: {ex.Message}");
 					}
 				}
 			}
@@ -421,7 +421,7 @@ namespace AcManager.UiObserver
 						listBox.ScrollIntoView(item);
 
 						if (VerboseNavigationDebug) {
-							Debug.WriteLine($"[Navigator] Scrolled '{node.SimpleName}' into view in ListBox");
+							DebugLog.WriteLine($"[Navigator] Scrolled '{node.SimpleName}' into view in ListBox");
 						}
 						return;
 					}
@@ -434,7 +434,7 @@ namespace AcManager.UiObserver
 					element.BringIntoView();
 
 					if (VerboseNavigationDebug) {
-						Debug.WriteLine($"[Navigator] Called BringIntoView on '{node.SimpleName}' in ItemsControl");
+						DebugLog.WriteLine($"[Navigator] Called BringIntoView on '{node.SimpleName}' in ItemsControl");
 					}
 					return;
 				}
@@ -445,12 +445,12 @@ namespace AcManager.UiObserver
 					element.BringIntoView();
 
 					if (VerboseNavigationDebug) {
-						Debug.WriteLine($"[Navigator] Called BringIntoView on '{node.SimpleName}' in ScrollViewer");
+						DebugLog.WriteLine($"[Navigator] Called BringIntoView on '{node.SimpleName}' in ScrollViewer");
 					}
 				}
 			} catch (Exception ex) {
 				if (VerboseNavigationDebug) {
-					Debug.WriteLine($"[Navigator] Failed to scroll '{node.SimpleName}' into view: {ex.Message}");
+					DebugLog.WriteLine($"[Navigator] Failed to scroll '{node.SimpleName}' into view: {ex.Message}");
 				}
 			}
 		}
@@ -466,13 +466,13 @@ namespace AcManager.UiObserver
 #if DEBUG
 			if (_overlay == null || node == null) {
 				if (VerboseNavigationDebug && _overlay == null) {
-					Debug.WriteLine($"[Navigator] UpdateFocusRect: overlay is null");
+					DebugLog.WriteLine($"[Navigator] UpdateFocusRect: overlay is null");
 				}
 				return;
 			}
 			
 			if (!node.TryGetVisual(out var fe)) { 
-				Debug.WriteLine($"[Navigator] UpdateFocusRect: Visual DEAD for {node.SimpleName}");
+				DebugLog.WriteLine($"[Navigator] UpdateFocusRect: Visual DEAD for {node.SimpleName}");
 				_overlay.HideFocusRect(); 
 				return; 
 			}
@@ -480,7 +480,7 @@ namespace AcManager.UiObserver
 			// Check if element is in visual tree (connected to window)
 			if (PresentationSource.FromVisual(fe) == null) {
 				if (VerboseNavigationDebug) {
-					Debug.WriteLine($"[Navigator] UpdateFocusRect: NO PRESENTATION SOURCE - {node.SimpleName}");
+					DebugLog.WriteLine($"[Navigator] UpdateFocusRect: NO PRESENTATION SOURCE - {node.SimpleName}");
 				}
 				return;
 			}
@@ -491,20 +491,20 @@ namespace AcManager.UiObserver
 				centerDip = node.GetCenterDip();
 			} catch (InvalidOperationException ex) {
 				if (VerboseNavigationDebug) {
-					Debug.WriteLine($"[Navigator] UpdateFocusRect: BOUNDS ERROR - {node.SimpleName}: {ex.Message}");
+					DebugLog.WriteLine($"[Navigator] UpdateFocusRect: BOUNDS ERROR - {node.SimpleName}: {ex.Message}");
 				}
 				return;
 			}
 
 			if (!centerDip.HasValue) {
 				if (VerboseNavigationDebug) {
-					Debug.WriteLine($"[Navigator] UpdateFocusRect: NO BOUNDS - {node.SimpleName}");
+					DebugLog.WriteLine($"[Navigator] UpdateFocusRect: NO BOUNDS - {node.SimpleName}");
 				}
 				return;
 			}
 
 			if (!fe.IsVisible) {
-				Debug.WriteLine($"[Navigator] UpdateFocusRect: NOT VISIBLE - {node.SimpleName}");
+				DebugLog.WriteLine($"[Navigator] UpdateFocusRect: NOT VISIBLE - {node.SimpleName}");
 				_overlay.HideFocusRect(); 
 				return;
 			}
@@ -514,7 +514,7 @@ namespace AcManager.UiObserver
 				var bottomRight = fe.PointToScreen(new Point(fe.ActualWidth, fe.ActualHeight));
 
 				if (VerboseNavigationDebug) {
-					Debug.WriteLine($"[Navigator] UpdateFocusRect: {node.SimpleName} @ screen({topLeft.X:F1}, {topLeft.Y:F1})");
+					DebugLog.WriteLine($"[Navigator] UpdateFocusRect: {node.SimpleName} @ screen({topLeft.X:F1}, {topLeft.Y:F1})");
 				}
 
 				var ps = PresentationSource.FromVisual(fe);
@@ -535,11 +535,11 @@ namespace AcManager.UiObserver
 					// DO NOT move mouse here - this gets called on resize/layout changes
 					// Mouse should only move on explicit focus changes (in SetFocus)
 				} else {
-					Debug.WriteLine($"[Navigator] UpdateFocusRect: Rectangle too small ({rect.Width:F1}x{rect.Height:F1}) - {node.SimpleName}");
+					DebugLog.WriteLine($"[Navigator] UpdateFocusRect: Rectangle too small ({rect.Width:F1}x{rect.Height:F1}) - {node.SimpleName}");
 					_overlay.HideFocusRect();
 				}
 			} catch (Exception ex) {
-				Debug.WriteLine($"[Navigator] UpdateFocusRect EXCEPTION for {node.SimpleName}: {ex.Message}");
+				DebugLog.WriteLine($"[Navigator] UpdateFocusRect EXCEPTION for {node.SimpleName}: {ex.Message}");
 				_overlay.HideFocusRect();
 			}
 #endif
@@ -588,11 +588,11 @@ namespace AcManager.UiObserver
 				_expectedMousePosition = new Point(centerDevice.X, centerDevice.Y);
 
 				if (VerboseNavigationDebug) {
-					Debug.WriteLine($"[Navigator] Mouse moved to '{node.SimpleName}' @ DIP({centerDip.Value.X:F0},{centerDip.Value.Y:F0}) Device({centerDevice.X:F0},{centerDevice.Y:F0})");
+					DebugLog.WriteLine($"[Navigator] Mouse moved to '{node.SimpleName}' @ DIP({centerDip.Value.X:F0},{centerDip.Value.Y:F0}) Device({centerDevice.X:F0},{centerDevice.Y:F0})");
 				}
 			} catch (Exception ex) {
 				if (VerboseNavigationDebug) {
-					Debug.WriteLine($"[Navigator] Failed to move mouse to '{node?.SimpleName}': {ex.Message}");
+					DebugLog.WriteLine($"[Navigator] Failed to move mouse to '{node?.SimpleName}': {ex.Message}");
 				}
 			}
 		}

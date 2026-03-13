@@ -52,7 +52,7 @@ namespace AcManager.UiObserver
 		{
 			if (IsAwaitingConfirmation)
 			{
-				Debug.WriteLine($"[Navigator] RequestConfirmation: Already awaiting confirmation, ignoring new request");
+				DebugLog.WriteLine($"[Navigator] RequestConfirmation: Already awaiting confirmation, ignoring new request");
 				return;
 			}
 
@@ -60,12 +60,12 @@ namespace AcManager.UiObserver
 			_pendingConfirmAction = onConfirm;
 			_pendingCancelAction = onCancel;
 
-			Debug.WriteLine($"[Navigator] RequestConfirmation: '{description}'");
+			DebugLog.WriteLine($"[Navigator] RequestConfirmation: '{description}'");
 
 			// Switch to Confirm page
 			if (_streamDeckClient != null)
 			{
-				Debug.WriteLine($"[Navigator] Switching to Confirm page");
+				DebugLog.WriteLine($"[Navigator] Switching to Confirm page");
 				_streamDeckClient.SwitchPage("Confirm");
 			}
 		}
@@ -79,11 +79,11 @@ namespace AcManager.UiObserver
 		{
 			if (!IsAwaitingConfirmation)
 			{
-				Debug.WriteLine($"[Navigator] ConfirmAction: No pending confirmation");
+				DebugLog.WriteLine($"[Navigator] ConfirmAction: No pending confirmation");
 				return;
 			}
 
-			Debug.WriteLine($"[Navigator] ? User CONFIRMED: '{_confirmationDescription}'");
+			DebugLog.WriteLine($"[Navigator] ? User CONFIRMED: '{_confirmationDescription}'");
 
 			var action = _pendingConfirmAction;
 			ClearConfirmationState();
@@ -98,7 +98,7 @@ namespace AcManager.UiObserver
 			}
 			catch (Exception ex)
 			{
-				Debug.WriteLine($"[Navigator] ConfirmAction ERROR: {ex.Message}");
+				DebugLog.WriteLine($"[Navigator] ConfirmAction ERROR: {ex.Message}");
 			}
 		}
 
@@ -111,11 +111,11 @@ namespace AcManager.UiObserver
 		{
 			if (!IsAwaitingConfirmation)
 			{
-				Debug.WriteLine($"[Navigator] CancelAction: No pending confirmation");
+				DebugLog.WriteLine($"[Navigator] CancelAction: No pending confirmation");
 				return;
 			}
 
-			Debug.WriteLine($"[Navigator] ? User CANCELLED: '{_confirmationDescription}'");
+			DebugLog.WriteLine($"[Navigator] ? User CANCELLED: '{_confirmationDescription}'");
 
 			var cancelAction = _pendingCancelAction;
 			ClearConfirmationState();
@@ -130,7 +130,7 @@ namespace AcManager.UiObserver
 			}
 			catch (Exception ex)
 			{
-				Debug.WriteLine($"[Navigator] CancelAction ERROR: {ex.Message}");
+				DebugLog.WriteLine($"[Navigator] CancelAction ERROR: {ex.Message}");
 			}
 		}
 

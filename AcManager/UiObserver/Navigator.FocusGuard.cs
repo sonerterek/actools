@@ -55,13 +55,13 @@ namespace AcManager.UiObserver
 					handledEventsToo: true  // ? Monitor even if event is marked as handled
 				);
 
-				Debug.WriteLine("[Navigator] Focus guard installed");
+				DebugLog.WriteLine("[Navigator] Focus guard installed");
 			} catch (Exception ex) {
-				Debug.WriteLine($"[Navigator] Failed to install focus guard: {ex.Message}");
+				DebugLog.WriteLine($"[Navigator] Failed to install focus guard: {ex.Message}");
 			}
 			*/
 			
-			Debug.WriteLine("[Navigator] Focus guard DISABLED (keeping code for future use)");
+			DebugLog.WriteLine("[Navigator] Focus guard DISABLED (keeping code for future use)");
 		}
 
 		/// <summary>
@@ -90,7 +90,7 @@ namespace AcManager.UiObserver
 				// Update our focus tracking to match WPF's focus
 				if (CurrentContext != null && !ReferenceEquals(CurrentContext.FocusedNode, navNode)) {
 					if (VerboseNavigationDebug) {
-						Debug.WriteLine($"[Navigator] Focus moved to tracked NavNode: {navNode.SimpleName}");
+						DebugLog.WriteLine($"[Navigator] Focus moved to tracked NavNode: {navNode.SimpleName}");
 					}
 
 					// Sync our tracking with WPF's focus (don't trigger visual update - already focused)
@@ -110,7 +110,7 @@ namespace AcManager.UiObserver
 			if (CurrentContext?.FocusedNode == null) {
 				// No previous focus to restore - let WPF do its thing
 				if (VerboseNavigationDebug) {
-					Debug.WriteLine($"[Navigator] Focus moved to non-tracked element '{newFocusedElement.GetType().Name}' (no previous focus to restore)");
+					DebugLog.WriteLine($"[Navigator] Focus moved to non-tracked element '{newFocusedElement.GetType().Name}' (no previous focus to restore)");
 				}
 				return;
 			}
@@ -118,7 +118,7 @@ namespace AcManager.UiObserver
 			// CHECK IF OUR FOCUSED NAVNODE IS STILL VALID
 			if (!CurrentContext.FocusedNode.TryGetVisual(out var ourFocusedElement)) {
 				// Our focused element is DEAD - OnNodeUnloaded should have already handled this
-				Debug.WriteLine($"[Navigator] Focus stolen but our focused NavNode is dead (element unloaded) - allowing focus to move");
+				DebugLog.WriteLine($"[Navigator] Focus stolen but our focused NavNode is dead (element unloaded) - allowing focus to move");
 
 				CurrentContext.FocusedNode.HasFocus = false;
 				CurrentContext.FocusedNode = null;
@@ -127,7 +127,7 @@ namespace AcManager.UiObserver
 
 			// CHECK IF ELEMENT IS STILL IN VISUAL TREE
 			if (PresentationSource.FromVisual(ourFocusedElement) == null) {
-				Debug.WriteLine($"[Navigator] Focus stolen but our focused element is no longer in visual tree - allowing focus to move");
+				DebugLog.WriteLine($"[Navigator] Focus stolen but our focused element is no longer in visual tree - allowing focus to move");
 
 				CurrentContext.FocusedNode.HasFocus = false;
 				CurrentContext.FocusedNode = null;
@@ -135,7 +135,7 @@ namespace AcManager.UiObserver
 			}
 
 			// Element is alive and in visual tree - restore focus to it
-			Debug.WriteLine($"[Navigator] ? Focus stolen by non-tracked '{newFocusedElement.GetType().Name}' - restoring to '{CurrentContext.FocusedNode.SimpleName}'");
+			DebugLog.WriteLine($"[Navigator] ? Focus stolen by non-tracked '{newFocusedElement.GetType().Name}' - restoring to '{CurrentContext.FocusedNode.SimpleName}'");
 
 			// Use Dispatcher to avoid re-entrancy issues (focus change during focus change)
 			ourFocusedElement.Dispatcher.BeginInvoke(
@@ -145,14 +145,14 @@ namespace AcManager.UiObserver
 						// ? UPDATED: Re-check that our focused node is STILL valid
 						if (CurrentContext?.FocusedNode == null) {
 							if (VerboseNavigationDebug) {
-								Debug.WriteLine($"[Navigator] Focus restore cancelled - focused node cleared");
+								DebugLog.WriteLine($"[Navigator] Focus restore cancelled - focused node cleared");
 							}
 							return;
 						}
 
 						if (!CurrentContext.FocusedNode.TryGetVisual(out var elementToFocus)) {
 							if (VerboseNavigationDebug) {
-								Debug.WriteLine($"[Navigator] Focus restore cancelled - element died");
+								DebugLog.WriteLine($"[Navigator] Focus restore cancelled - element died");
 							}
 							CurrentContext.FocusedNode.HasFocus = false;
 							CurrentContext.FocusedNode = null;
@@ -161,7 +161,7 @@ namespace AcManager.UiObserver
 
 						if (PresentationSource.FromVisual(elementToFocus) == null) {
 							if (VerboseNavigationDebug) {
-								Debug.WriteLine($"[Navigator] Focus restore cancelled - element removed from tree");
+								DebugLog.WriteLine($"[Navigator] Focus restore cancelled - element removed from tree");
 							}
 							CurrentContext.FocusedNode.HasFocus = false;
 							CurrentContext.FocusedNode = null;
@@ -172,11 +172,11 @@ namespace AcManager.UiObserver
 						Keyboard.Focus(elementToFocus);
 
 						if (VerboseNavigationDebug) {
-							Debug.WriteLine($"[Navigator] Focus restored to '{CurrentContext.FocusedNode.SimpleName}'");
+							DebugLog.WriteLine($"[Navigator] Focus restored to '{CurrentContext.FocusedNode.SimpleName}'");
 						}
 					} catch (Exception ex) {
 						if (VerboseNavigationDebug) {
-							Debug.WriteLine($"[Navigator] Failed to restore focus: {ex.Message}");
+							DebugLog.WriteLine($"[Navigator] Failed to restore focus: {ex.Message}");
 						}
 					}
 				})

@@ -238,11 +238,11 @@ namespace AcManager.UiObserver
                 // Disconnect if already connected
                 if (_pipe != null && _pipe.IsConnected)
                 {
-                    Debug.WriteLine("[SDPClient] Already connected, disconnecting first...");
+                    DebugLog.WriteLine("[SDPClient] Already connected, disconnecting first...");
                     DisconnectInternal();
                 }
 
-                Debug.WriteLine($"[SDPClient] Connecting to pipe: {PipeName}");
+                DebugLog.WriteLine($"[SDPClient] Connecting to pipe: {PipeName}");
                 _pipe = new NamedPipeClientStream(".", PipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
 
                 // .NET 4.5.2 doesn't have ConnectAsync - use Task.Run with synchronous Connect
@@ -251,7 +251,7 @@ namespace AcManager.UiObserver
 
                 if (!_pipe.IsConnected)
                 {
-                    Debug.WriteLine("[SDPClient] Connection failed");
+                    DebugLog.WriteLine("[SDPClient] Connection failed");
                     DisconnectInternal();
                     return;
                 }
@@ -263,7 +263,7 @@ namespace AcManager.UiObserver
                 _listenerCts = new CancellationTokenSource();
                 _listenerTask = Task.Run(() => ListenForEventsAsync(_listenerCts.Token));
 
-                Debug.WriteLine("[SDPClient] Connected successfully");
+                DebugLog.WriteLine("[SDPClient] Connected successfully");
                 OnConnected();
 
                 // ? FIX: Replicate state immediately after initial connection
@@ -274,12 +274,12 @@ namespace AcManager.UiObserver
             }
             catch (TimeoutException)
             {
-                Debug.WriteLine("[SDPClient] Connect() failed: The operation has timed out.");
+                DebugLog.WriteLine("[SDPClient] Connect() failed: The operation has timed out.");
                 DisconnectInternal();
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[SDPClient] Connect() failed: {ex.Message}");
+                DebugLog.WriteLine($"[SDPClient] Connect() failed: {ex.Message}");
                 DisconnectInternal();
             }
             finally
@@ -299,7 +299,7 @@ namespace AcManager.UiObserver
                 period: WatchdogIntervalMs
             );
 
-            if (SDPVerboseDebug) Debug.WriteLine("[SDPClient] Watchdog started");
+            if (SDPVerboseDebug) DebugLog.WriteLine("[SDPClient] Watchdog started");
         }
 
         private async Task CheckConnectionHealthAsync()
@@ -308,7 +308,7 @@ namespace AcManager.UiObserver
 
             if (!IsConnected)
             {
-                if (SDPVerboseDebug) Debug.WriteLine("[SDPClient] Watchdog detected disconnection");
+                if (SDPVerboseDebug) DebugLog.WriteLine("[SDPClient] Watchdog detected disconnection");
                 
                 // ? FIX #3: Fire OnDisconnected() here (unexpected disconnect detected by watchdog)
                 try
@@ -317,7 +317,7 @@ namespace AcManager.UiObserver
                 }
                 catch (Exception ex)
                 {
-                    Debug.WriteLine($"[SDPClient] Error raising Disconnected event: {ex.Message}");
+                    DebugLog.WriteLine($"[SDPClient] Error raising Disconnected event: {ex.Message}");
                 }
                 
                 await TryReconnectAsync();
@@ -338,7 +338,7 @@ namespace AcManager.UiObserver
                 }
                 catch (Exception ex)
                 {
-                    Debug.WriteLine($"[SDPClient] Error raising Disconnected event: {ex.Message}");
+                    DebugLog.WriteLine($"[SDPClient] Error raising Disconnected event: {ex.Message}");
                 }
             }
             finally
@@ -349,7 +349,7 @@ namespace AcManager.UiObserver
 
         private void DisconnectInternal()
         {
-            Debug.WriteLine("[SDPClient] Disconnecting...");
+            DebugLog.WriteLine("[SDPClient] Disconnecting...");
 
             try
             {
@@ -357,7 +357,7 @@ namespace AcManager.UiObserver
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[SDPClient] Error cancelling listener: {ex.Message}");
+                DebugLog.WriteLine($"[SDPClient] Error cancelling listener: {ex.Message}");
             }
 
             try
@@ -366,7 +366,7 @@ namespace AcManager.UiObserver
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[SDPClient] Error waiting for listener: {ex.Message}");
+                DebugLog.WriteLine($"[SDPClient] Error waiting for listener: {ex.Message}");
             }
 
             try
@@ -375,7 +375,7 @@ namespace AcManager.UiObserver
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[SDPClient] Error disposing listener CTS: {ex.Message}");
+                DebugLog.WriteLine($"[SDPClient] Error disposing listener CTS: {ex.Message}");
             }
 
             _listenerCts = null;
@@ -390,7 +390,7 @@ namespace AcManager.UiObserver
 
                 if (discardedCount > 0)
                 {
-                    Debug.WriteLine($"[SDPClient] Discarded {discardedCount} queued commands");
+                    DebugLog.WriteLine($"[SDPClient] Discarded {discardedCount} queued commands");
                 }
             }
 
@@ -407,7 +407,7 @@ namespace AcManager.UiObserver
                 }
                 catch (Exception ex)
                 {
-                    Debug.WriteLine($"[SDPClient] Error disposing writer: {ex.Message}");
+                    DebugLog.WriteLine($"[SDPClient] Error disposing writer: {ex.Message}");
                 }
                 _writer = null;
             }
@@ -424,7 +424,7 @@ namespace AcManager.UiObserver
                 }
                 catch (Exception ex)
                 {
-                    Debug.WriteLine($"[SDPClient] Error disposing reader: {ex.Message}");
+                    DebugLog.WriteLine($"[SDPClient] Error disposing reader: {ex.Message}");
                 }
                 _reader = null;
             }
@@ -441,12 +441,12 @@ namespace AcManager.UiObserver
                 }
                 catch (Exception ex)
                 {
-                    Debug.WriteLine($"[SDPClient] Error disposing pipe: {ex.Message}");
+                    DebugLog.WriteLine($"[SDPClient] Error disposing pipe: {ex.Message}");
                 }
                 _pipe = null;
             }
 
-            Debug.WriteLine("[SDPClient] Disconnected");
+            DebugLog.WriteLine("[SDPClient] Disconnected");
             
             // ? FIX #3: DON'T fire OnDisconnected() here
             // This is cleanup only, not user-facing state change
@@ -485,7 +485,7 @@ namespace AcManager.UiObserver
 
             if (SDPVerboseDebug)
             {
-                Debug.WriteLine($"[SDPClient] Key '{keyName}' defined in state");
+                DebugLog.WriteLine($"[SDPClient] Key '{keyName}' defined in state");
             }
         }
 
@@ -530,7 +530,7 @@ namespace AcManager.UiObserver
 
             if (SDPVerboseDebug)
             {
-                Debug.WriteLine($"[SDPClient] Page '{pageName}' defined in state");
+                DebugLog.WriteLine($"[SDPClient] Page '{pageName}' defined in state");
             }
         }
 
@@ -567,7 +567,7 @@ namespace AcManager.UiObserver
                 
                 if (SDPVerboseDebug)
                 {
-                    Debug.WriteLine($"[SDPClient] Page history: {_currentPage} ? {pageName} (depth: {_pageHistory.Count})");
+                    DebugLog.WriteLine($"[SDPClient] Page history: {_currentPage} ? {pageName} (depth: {_pageHistory.Count})");
                 }
             }
 
@@ -582,7 +582,7 @@ namespace AcManager.UiObserver
 
             if (SDPVerboseDebug)
             {
-                Debug.WriteLine($"[SDPClient] Current page set to '{pageName}'");
+                DebugLog.WriteLine($"[SDPClient] Current page set to '{pageName}'");
             }
         }
         
@@ -596,14 +596,14 @@ namespace AcManager.UiObserver
             {
                 if (SDPVerboseDebug)
                 {
-                    Debug.WriteLine($"[SDPClient] RestorePreviousPage: No previous page in history");
+                    DebugLog.WriteLine($"[SDPClient] RestorePreviousPage: No previous page in history");
                 }
                 return false;
             }
             
             var previousPage = _pageHistory.Pop();
             
-            Debug.WriteLine($"[SDPClient] Restoring previous page: '{previousPage}' (history depth: {_pageHistory.Count})");
+            DebugLog.WriteLine($"[SDPClient] Restoring previous page: '{previousPage}' (history depth: {_pageHistory.Count})");
             
             // Set _currentPage directly without pushing to history (we're going back)
             _currentPage = previousPage;
@@ -625,7 +625,7 @@ namespace AcManager.UiObserver
             _pageHistory.Clear();
             if (SDPVerboseDebug)
             {
-                Debug.WriteLine($"[SDPClient] Page history cleared");
+                DebugLog.WriteLine($"[SDPClient] Page history cleared");
             }
         }
         
@@ -665,7 +665,7 @@ namespace AcManager.UiObserver
 
             if (SDPVerboseDebug)
             {
-                Debug.WriteLine($"[SDPClient] Switching to profile '{profileName}'");
+                DebugLog.WriteLine($"[SDPClient] Switching to profile '{profileName}'");
             }
         }
         
@@ -682,7 +682,7 @@ namespace AcManager.UiObserver
 
             if (SDPVerboseDebug)
             {
-                Debug.WriteLine($"[SDPClient] Switching back to previous profile");
+                DebugLog.WriteLine($"[SDPClient] Switching back to previous profile");
             }
         }
 
@@ -698,7 +698,7 @@ namespace AcManager.UiObserver
         {
             if (_isReplicating)
             {
-                Debug.WriteLine("[SDPClient] Replication already in progress");
+                DebugLog.WriteLine("[SDPClient] Replication already in progress");
                 return;
             }
 
@@ -711,7 +711,7 @@ namespace AcManager.UiObserver
                 lock (_keys) { keyCount = _keys.Count; }
                 lock (_pages) { pageCount = _pages.Count; }
 
-                Debug.WriteLine($"[SDPClient] Replicating state: {keyCount} keys, {pageCount} pages");
+                DebugLog.WriteLine($"[SDPClient] Replicating state: {keyCount} keys, {pageCount} pages");
 
                 // Phase 1: Send all keys
                 List<SDPKeyDef> keysList;
@@ -724,7 +724,7 @@ namespace AcManager.UiObserver
                 {
                     if (!IsConnected)
                     {
-                        Debug.WriteLine("[SDPClient] Disconnected during key replication");
+                        DebugLog.WriteLine("[SDPClient] Disconnected during key replication");
                         return;
                     }
 
@@ -732,7 +732,7 @@ namespace AcManager.UiObserver
                     await Task.Delay(10);
                 }
 
-                Debug.WriteLine($"[SDPClient] ? Replicated {keysList.Count} keys");
+                DebugLog.WriteLine($"[SDPClient] ? Replicated {keysList.Count} keys");
 
                 // Phase 2: Send all pages in dependency order (base pages first, then derived)
                 List<SDPPageDef> pagesList;
@@ -748,7 +748,7 @@ namespace AcManager.UiObserver
                 {
                     if (!IsConnected)
                     {
-                        Debug.WriteLine("[SDPClient] Disconnected during page replication");
+                        DebugLog.WriteLine("[SDPClient] Disconnected during page replication");
                         return;
                     }
 
@@ -756,34 +756,34 @@ namespace AcManager.UiObserver
                     await Task.Delay(10);
                 }
 
-                Debug.WriteLine($"[SDPClient] ? Replicated {orderedPages.Count} pages");
+                DebugLog.WriteLine($"[SDPClient] ? Replicated {orderedPages.Count} pages");
 
                 // Phase 3: Switch to current page (if set)
                 if (!string.IsNullOrEmpty(_currentPage))
                 {
                     if (!IsConnected)
                     {
-                        Debug.WriteLine("[SDPClient] Disconnected before page switch");
+                        DebugLog.WriteLine("[SDPClient] Disconnected before page switch");
                         return;
                     }
 
-                    Debug.WriteLine($"[SDPClient] Restoring current page: {_currentPage}");
+                    DebugLog.WriteLine($"[SDPClient] Restoring current page: {_currentPage}");
                     SendCommandImmediate($"SwitchPage {_currentPage}");
-                    Debug.WriteLine($"[SDPClient] ? Switched to page: {_currentPage}");
+                    DebugLog.WriteLine($"[SDPClient] ? Switched to page: {_currentPage}");
                 }
                 else
                 {
-                    Debug.WriteLine("[SDPClient] No current page to restore");
+                    DebugLog.WriteLine("[SDPClient] No current page to restore");
                 }
 
                 _isReplicaSynced = true;
-                Debug.WriteLine("[SDPClient] ? Replication complete");
+                DebugLog.WriteLine("[SDPClient] ? Replication complete");
 
                 ProcessAsyncCommandQueue();
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[SDPClient] Replication failed: {ex.Message}");
+                DebugLog.WriteLine($"[SDPClient] Replication failed: {ex.Message}");
                 LogError($"Replication failed: {ex.Message}");
                 _isReplicaSynced = false;
             }
@@ -825,7 +825,7 @@ namespace AcManager.UiObserver
 
                         if (SDPVerboseDebug && basePage != null)
                         {
-                            Debug.WriteLine($"[SDPClient] Page ordering: {page.PageName} (depends on {basePage})");
+                            DebugLog.WriteLine($"[SDPClient] Page ordering: {page.PageName} (depends on {basePage})");
                         }
                     }
                 }
@@ -833,12 +833,12 @@ namespace AcManager.UiObserver
                 // If we couldn't add anything, we have circular dependency or missing base
                 if (!addedAny)
                 {
-                    Debug.WriteLine($"[SDPClient] WARNING: Circular dependency or missing base pages detected");
+                    DebugLog.WriteLine($"[SDPClient] WARNING: Circular dependency or missing base pages detected");
                     
                     // Add remaining pages anyway (will fail on plugin side, but at least we tried)
                     foreach (var page in remaining)
                     {
-                        Debug.WriteLine($"[SDPClient] WARNING: Page '{page.PageName}' has unresolved base page");
+                        DebugLog.WriteLine($"[SDPClient] WARNING: Page '{page.PageName}' has unresolved base page");
                         result.Add(page);
                     }
                     break;
@@ -874,7 +874,7 @@ namespace AcManager.UiObserver
 
                 if (SDPVerboseDebug)
                 {
-                    Debug.WriteLine($"[SDPClient] Queued: {command}");
+                    DebugLog.WriteLine($"[SDPClient] Queued: {command}");
                 }
             }
 
@@ -915,7 +915,7 @@ namespace AcManager.UiObserver
                     // ? Always log SwitchPage commands for debugging
                     if (command.StartsWith("SwitchPage") || SDPVerboseDebug)
                     {
-                        Debug.WriteLine($"[SDPClient] Sent: {command}");
+                        DebugLog.WriteLine($"[SDPClient] Sent: {command}");
                     }
                 }
             }
@@ -944,7 +944,7 @@ namespace AcManager.UiObserver
             if (_isReconnecting || _disposed) return;
 
             _isReconnecting = true;
-            Debug.WriteLine("[SDPClient] Starting reconnection...");
+            DebugLog.WriteLine("[SDPClient] Starting reconnection...");
 
             // Exponential backoff capped at 5 seconds: 1s, 2s, 5s, 5s, 5s...
             int[] retryDelays = { 1000, 2000, 5000 };
@@ -954,7 +954,7 @@ namespace AcManager.UiObserver
             {
                 // Use max delay of 5s for all attempts after the third
                 int delayMs = retryDelays[Math.Min(retryIndex, retryDelays.Length - 1)];
-                Debug.WriteLine($"[SDPClient] Reconnecting in {delayMs}ms... (attempt {retryIndex + 1})");
+                DebugLog.WriteLine($"[SDPClient] Reconnecting in {delayMs}ms... (attempt {retryIndex + 1})");
 
                 // Notify observers of reconnection attempt
                 ReconnectionAttempt?.Invoke(this, retryIndex + 1);
@@ -965,10 +965,10 @@ namespace AcManager.UiObserver
 
                 try
                 {
-                    Debug.WriteLine("[SDPClient] Disconnecting...");
+                    DebugLog.WriteLine("[SDPClient] Disconnecting...");
                     DisconnectInternal();
 
-                    Debug.WriteLine($"[SDPClient] Connecting to pipe: {PipeName}");
+                    DebugLog.WriteLine($"[SDPClient] Connecting to pipe: {PipeName}");
 
                     // Try to connect (fire-and-forget, no result check)
                     await ConnectAsync();
@@ -976,7 +976,7 @@ namespace AcManager.UiObserver
                     // Check if connection succeeded
                     if (_pipe != null && _pipe.IsConnected)
                     {
-                        Debug.WriteLine("[SDPClient] ? Reconnected");
+                        DebugLog.WriteLine("[SDPClient] ? Reconnected");
 
                         // Replicate state to plugin
                         await ReplicateStateToPluginAsync();
@@ -985,12 +985,12 @@ namespace AcManager.UiObserver
                         return;
                     }
 
-                    Debug.WriteLine("[SDPClient] Reconnection attempt failed");
+                    DebugLog.WriteLine("[SDPClient] Reconnection attempt failed");
                     retryIndex++;
                 }
                 catch (Exception ex)
                 {
-                    Debug.WriteLine($"[SDPClient] Reconnection error: {ex.Message}");
+                    DebugLog.WriteLine($"[SDPClient] Reconnection error: {ex.Message}");
                     retryIndex++;
                 }
             }
@@ -1004,7 +1004,7 @@ namespace AcManager.UiObserver
 
         private void LogError(string message)
         {
-            Debug.WriteLine($"[SDPClient] ERROR: {message}");
+            DebugLog.WriteLine($"[SDPClient] ERROR: {message}");
 
             try
             {
@@ -1028,7 +1028,7 @@ namespace AcManager.UiObserver
 
         private async Task ListenForEventsAsync(CancellationToken cancellationToken)
         {
-            Debug.WriteLine("[SDPClient] Listener started");
+            DebugLog.WriteLine("[SDPClient] Listener started");
 
             try
             {
@@ -1040,7 +1040,7 @@ namespace AcManager.UiObserver
 
                         if (line == null)
                         {
-                            Debug.WriteLine("[SDPClient] Plugin disconnected");
+                            DebugLog.WriteLine("[SDPClient] Plugin disconnected");
                             break;
                         }
 
@@ -1048,18 +1048,18 @@ namespace AcManager.UiObserver
                     }
                     catch (IOException ex)
                     {
-                        Debug.WriteLine($"[SDPClient] Connection lost: {ex.Message}");
+                        DebugLog.WriteLine($"[SDPClient] Connection lost: {ex.Message}");
                         break;
                     }
                     catch (Exception ex)
                     {
-                        Debug.WriteLine($"[SDPClient] Event error: {ex.Message}");
+                        DebugLog.WriteLine($"[SDPClient] Event error: {ex.Message}");
                     }
                 }
             }
             finally
             {
-                Debug.WriteLine("[SDPClient] Listener stopped");
+                DebugLog.WriteLine("[SDPClient] Listener stopped");
                 if (_pipe?.IsConnected == true)
                 {
                     Task.Run(() => Disconnect());
@@ -1077,7 +1077,7 @@ namespace AcManager.UiObserver
                 message = message.Substring(1);
             }
 
-            if (SDPVerboseDebug) Debug.WriteLine($"[SDPClient] ? Received: {message}");
+            if (SDPVerboseDebug) DebugLog.WriteLine($"[SDPClient] ? Received: {message}");
 
             // Try to parse as JSON first (for structured messages like KeyDefined, PageDefined)
             try
@@ -1087,7 +1087,7 @@ namespace AcManager.UiObserver
                     var jsonMessage = JsonConvert.DeserializeObject<dynamic>(message);
                     string type = jsonMessage.Type;
                     
-                    if (SDPVerboseDebug) Debug.WriteLine($"[SDPClient] Message type: {type}");
+                    if (SDPVerboseDebug) DebugLog.WriteLine($"[SDPClient] Message type: {type}");
                     
                     switch (type)
                     {
@@ -1113,8 +1113,8 @@ namespace AcManager.UiObserver
                             break;
                             
                         default:
-                            Debug.WriteLine($"[SDPClient] ? Unknown message type: {type}");
-                            Debug.WriteLine($"[SDPClient]    JSON: {message}");
+                            DebugLog.WriteLine($"[SDPClient] ? Unknown message type: {type}");
+                            DebugLog.WriteLine($"[SDPClient]    JSON: {message}");
                             break;
                     }
                     
@@ -1138,7 +1138,7 @@ namespace AcManager.UiObserver
             }
             else if (SDPVerboseDebug)
             {
-                Debug.WriteLine($"[SDPClient] Unknown event: {eventType}");
+                DebugLog.WriteLine($"[SDPClient] Unknown event: {eventType}");
             }
         }
 
@@ -1148,13 +1148,13 @@ namespace AcManager.UiObserver
 
         protected virtual void OnConnected()
         {
-            Debug.WriteLine("[SDPClient] ? Connection established");
+            DebugLog.WriteLine("[SDPClient] ? Connection established");
             ConnectionEstablished?.Invoke(this, EventArgs.Empty);
         }
 
         protected virtual void OnDisconnected()
         {
-            Debug.WriteLine("[SDPClient] ? Connection lost");
+            DebugLog.WriteLine("[SDPClient] ? Connection lost");
             ConnectionLost?.Invoke(this, EventArgs.Empty);
             
             try
@@ -1163,24 +1163,24 @@ namespace AcManager.UiObserver
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[SDPClient] Error raising Disconnected event: {ex.Message}");
+                DebugLog.WriteLine($"[SDPClient] Error raising Disconnected event: {ex.Message}");
             }
         }
 
         protected virtual void OnKeyPressed(string keyName)
         {
-            Debug.WriteLine($"[SDPClient] OnKeyPressed: Raising KeyPressed event for '{keyName}'");
-            Debug.WriteLine($"[SDPClient] OnKeyPressed: Event has {KeyPressed?.GetInvocationList().Length ?? 0} subscribers");
+            DebugLog.WriteLine($"[SDPClient] OnKeyPressed: Raising KeyPressed event for '{keyName}'");
+            DebugLog.WriteLine($"[SDPClient] OnKeyPressed: Event has {KeyPressed?.GetInvocationList().Length ?? 0} subscribers");
             
             try
             {
                 KeyPressed?.Invoke(this, new SDPKeyPressEventArgs(keyName));
-                Debug.WriteLine($"[SDPClient] OnKeyPressed: Event raised successfully for '{keyName}'");
+                DebugLog.WriteLine($"[SDPClient] OnKeyPressed: Event raised successfully for '{keyName}'");
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[SDPClient] OnKeyPressed: Exception during event raise: {ex.Message}");
-                Debug.WriteLine($"[SDPClient] OnKeyPressed: Stack trace: {ex.StackTrace}");
+                DebugLog.WriteLine($"[SDPClient] OnKeyPressed: Exception during event raise: {ex.Message}");
+                DebugLog.WriteLine($"[SDPClient] OnKeyPressed: Stack trace: {ex.StackTrace}");
             }
         }
 
@@ -1236,7 +1236,7 @@ namespace AcManager.UiObserver
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[SDPClient] Error disposing watchdog: {ex.Message}");
+                DebugLog.WriteLine($"[SDPClient] Error disposing watchdog: {ex.Message}");
             }
             _connectionWatchdog = null;
 
@@ -1248,7 +1248,7 @@ namespace AcManager.UiObserver
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[SDPClient] Error disposing connection lock: {ex.Message}");
+                DebugLog.WriteLine($"[SDPClient] Error disposing connection lock: {ex.Message}");
             }
 
             _disposed = true;
@@ -1265,7 +1265,7 @@ namespace AcManager.UiObserver
             {
                 // Suppress all exceptions during finalization
                 // Finalizers should never throw exceptions
-                Debug.WriteLine($"[SDPClient] Exception in finalizer (suppressed): {ex.Message}");
+                DebugLog.WriteLine($"[SDPClient] Exception in finalizer (suppressed): {ex.Message}");
             }
         }
 
@@ -1294,7 +1294,7 @@ namespace AcManager.UiObserver
 
             if (!Directory.Exists(iconsDir))
             {
-                Debug.WriteLine($"[SDPIconHelper] Directory not found: {iconsDir}");
+                DebugLog.WriteLine($"[SDPIconHelper] Directory not found: {iconsDir}");
                 return icons;
             }
 
@@ -1307,11 +1307,11 @@ namespace AcManager.UiObserver
                     icons[nameWithoutExt] = file;
                 }
 
-                Debug.WriteLine($"[SDPIconHelper] Discovered {icons.Count} icons");
+                DebugLog.WriteLine($"[SDPIconHelper] Discovered {icons.Count} icons");
             }
             catch (Exception ex)
             {
-                Debug.WriteLine($"[SDPIconHelper] Error: {ex.Message}");
+                DebugLog.WriteLine($"[SDPIconHelper] Error: {ex.Message}");
             }
 
             return icons;

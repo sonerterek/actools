@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -72,10 +72,10 @@ namespace AcManager.UiObserver
 			// Toggle Observer's verbose debug (which cascades to NavNode)
 			Observer.VerboseDebug = _verboseNavigationDebug;
 			
-			Debug.WriteLine($"\n========== Verbose Debug Mode: {(_verboseNavigationDebug ? "ENABLED" : "DISABLED")} ==========");
-			Debug.WriteLine("Enabled for: Navigator (algorithm), Observer (discovery), NavNode (creation)");
-			Debug.WriteLine("Press Ctrl+Shift+F9 to toggle");
-			Debug.WriteLine("=============================================================\n");
+			DebugLog.WriteLine($"\n========== Verbose Debug Mode: {(_verboseNavigationDebug ? "ENABLED" : "DISABLED")} ==========");
+			DebugLog.WriteLine("Enabled for: Navigator (algorithm), Observer (discovery), NavNode (creation)");
+			DebugLog.WriteLine("Press Ctrl+Shift+F9 to toggle");
+			DebugLog.WriteLine("=============================================================\n");
 		}
 
 		#endregion
@@ -89,10 +89,10 @@ namespace AcManager.UiObserver
 		/// </summary>
 		private static void ValidateNodeConsistency()
 		{
-			Debug.WriteLine("\n========== NavNode Consistency Check ==========");
+			DebugLog.WriteLine("\n========== NavNode Consistency Check ==========");
 
 			var allNodes = Observer.GetAllNavNodes().ToList();
-			Debug.WriteLine($"Total nodes to validate: {allNodes.Count}");
+			DebugLog.WriteLine($"Total nodes to validate: {allNodes.Count}");
 			
 			int deadVisuals = 0;
 			int parentMismatches = 0;
@@ -106,8 +106,8 @@ namespace AcManager.UiObserver
 				if (!node.TryGetVisual(out var fe))
 				{
 					deadVisuals++;
-					Debug.WriteLine($"  ⚠ DEAD VISUAL: {node.SimpleName}");
-					Debug.WriteLine($"     Path: {node.HierarchicalPath}");
+					DebugLog.WriteLine($"  ⚠ DEAD VISUAL: {node.SimpleName}");
+					DebugLog.WriteLine($"     Path: {node.HierarchicalPath}");
 					continue;
 				}
 				
@@ -154,31 +154,31 @@ namespace AcManager.UiObserver
 					}
 					catch (Exception ex)
 					{
-						Debug.WriteLine($"  ⚠⚠  ERROR walking visual tree for {node.SimpleName}: {ex.Message}");
-						Debug.WriteLine($"     Path: {node.HierarchicalPath}");
+						DebugLog.WriteLine($"  ⚠⚠  ERROR walking visual tree for {node.SimpleName}: {ex.Message}");
+						DebugLog.WriteLine($"     Path: {node.HierarchicalPath}");
 						if (bounds.HasValue)
 						{
-							Debug.WriteLine($"     Bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
+							DebugLog.WriteLine($"     Bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
 						}
 					}
 					
 					if (actualParent == null)
 					{
 						parentMismatches++;
-						Debug.WriteLine($"  ⚠ PARENT MISMATCH: {node.SimpleName}");
-						Debug.WriteLine($"     Path: {node.HierarchicalPath}");
+						DebugLog.WriteLine($"  ⚠ PARENT MISMATCH: {node.SimpleName}");
+						DebugLog.WriteLine($"     Path: {node.HierarchicalPath}");
 						if (bounds.HasValue)
 						{
-							Debug.WriteLine($"     Bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
+							DebugLog.WriteLine($"     Bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
 						}
-						Debug.WriteLine($"     Recorded Parent: {parentNode.SimpleName}");
-						Debug.WriteLine($"     Recorded Parent Path: {parentNode.HierarchicalPath}");
-						Debug.WriteLine($"     Actual Parent: NONE (visual tree has no NavNode parent)");
+						DebugLog.WriteLine($"     Recorded Parent: {parentNode.SimpleName}");
+						DebugLog.WriteLine($"     Recorded Parent Path: {parentNode.HierarchicalPath}");
+						DebugLog.WriteLine($"     Actual Parent: NONE (visual tree has no NavNode parent)");
 
 						// ✓ NEW: Parallel walk of captured path and current visual tree
 						if (node.VisualTreePath != null && node.VisualTreePath.Count > 0)
 						{
-							Debug.WriteLine($"     Intermediate Elements ({node.VisualTreePath.Count} captured during discovery):");
+							DebugLog.WriteLine($"     Intermediate Elements ({node.VisualTreePath.Count} captured during discovery):");
 							
 							DependencyObject visualDO = fe;
 							int interIndex = 0;
@@ -190,7 +190,7 @@ namespace AcManager.UiObserver
 									// Get the captured parent at this index
 									FrameworkElement capturedParentFE = null;
 									if (!node.VisualTreePath[interIndex].TryGetTarget(out capturedParentFE)) {
-										Debug.WriteLine($"       [{interIndex}] Captured element is DEAD (garbage collected)");
+										DebugLog.WriteLine($"       [{interIndex}] Captured element is DEAD (garbage collected)");
 										break;
 									}
 									
@@ -199,10 +199,10 @@ namespace AcManager.UiObserver
 									
 									if (visualParentDO == null) {
 										// Visual tree breaks here!
-										Debug.WriteLine($"       [{interIndex}] BREAK: GetParent() returned NULL");
-										Debug.WriteLine($"       Disconnected child: {visualDO.GetType().Name}");
-										Debug.WriteLine($"       Expected parent: {capturedParentFE.GetType().Name}");
-										Debug.WriteLine($"       Checking if parent still has child in VisualChildren...");
+										DebugLog.WriteLine($"       [{interIndex}] BREAK: GetParent() returned NULL");
+										DebugLog.WriteLine($"       Disconnected child: {visualDO.GetType().Name}");
+										DebugLog.WriteLine($"       Expected parent: {capturedParentFE.GetType().Name}");
+										DebugLog.WriteLine($"       Checking if parent still has child in VisualChildren...");
 										
 										// Check if capturedParentFE still has visualDO as a visual child
 										int childCount = VisualTreeHelper.GetChildrenCount(capturedParentFE);
@@ -222,13 +222,13 @@ namespace AcManager.UiObserver
 										}
 										
 										if (foundAsChild) {
-											Debug.WriteLine($"       ⚠⚠  INCONSISTENCY DETECTED!");
-											Debug.WriteLine($"       Parent ({capturedParentFE.GetType().Name}) STILL has child in VisualChildren");
-											Debug.WriteLine($"       But GetParent(child) returns NULL!");
-											Debug.WriteLine($"       This is a WPF visual tree corruption!");
+											DebugLog.WriteLine($"       ⚠⚠  INCONSISTENCY DETECTED!");
+											DebugLog.WriteLine($"       Parent ({capturedParentFE.GetType().Name}) STILL has child in VisualChildren");
+											DebugLog.WriteLine($"       But GetParent(child) returns NULL!");
+											DebugLog.WriteLine($"       This is a WPF visual tree corruption!");
 										} else {
-											Debug.WriteLine($"       Parent ({capturedParentFE.GetType().Name}) does NOT have child in VisualChildren");
-											Debug.WriteLine($"       Visual tree disconnect is consistent on both sides.");
+											DebugLog.WriteLine($"       Parent ({capturedParentFE.GetType().Name}) does NOT have child in VisualChildren");
+											DebugLog.WriteLine($"       Visual tree disconnect is consistent on both sides.");
 										}
 										break;
 									}
@@ -237,53 +237,53 @@ namespace AcManager.UiObserver
 									if (visualParentDO is FrameworkElement visualParentFE && 
 										Observer.TryGetNavNode(visualParentFE, out var visualParentNode) &&
 										ReferenceEquals(visualParentNode, parentNode)) {
-										Debug.WriteLine($"       [{interIndex}] ✓ Reached recorded parent NavNode: {parentNode.SimpleName}");
+										DebugLog.WriteLine($"       [{interIndex}] ✓ Reached recorded parent NavNode: {parentNode.SimpleName}");
 										reachedRecordedParent = true;
 										break;
 									}
 									
 									// Compare current visual parent with captured parent
 									if (!ReferenceEquals(visualParentDO, capturedParentFE)) {
-										Debug.WriteLine($"       [{interIndex}] MISMATCH:");
-										Debug.WriteLine($"         Captured: {capturedParentFE.GetType().Name}");
-										Debug.WriteLine($"         Current:  {visualParentDO.GetType().Name}");
-										Debug.WriteLine($"         Visual tree structure has changed!");
+										DebugLog.WriteLine($"       [{interIndex}] MISMATCH:");
+										DebugLog.WriteLine($"         Captured: {capturedParentFE.GetType().Name}");
+										DebugLog.WriteLine($"         Current:  {visualParentDO.GetType().Name}");
+										DebugLog.WriteLine($"         Visual tree structure has changed!");
 										break;
 									}
 						
 									// Match! Continue to next level
-									Debug.WriteLine($"       [{interIndex}] ✓ Match: {capturedParentFE.GetType().Name}");
+									DebugLog.WriteLine($"       [{interIndex}] ✓ Match: {capturedParentFE.GetType().Name}");
 									visualDO = visualParentDO;
 									interIndex++;
 	
 								} catch (Exception ex) {
-									Debug.WriteLine($"       Exception at index {interIndex}: {ex.Message}");
+									DebugLog.WriteLine($"       Exception at index {interIndex}: {ex.Message}");
 									break;
 								}
 							}
 							
 							if (reachedRecordedParent) {
-								Debug.WriteLine($"     ✓ Visual tree path is consistent - reached recorded parent successfully");
+								DebugLog.WriteLine($"     ✓ Visual tree path is consistent - reached recorded parent successfully");
 							}
 						}
 						else
 						{
-							Debug.WriteLine($"     (No intermediate elements were captured - direct parent or root node)");
+							DebugLog.WriteLine($"     (No intermediate elements were captured - direct parent or root node)");
 						}
 					}
 					else if (!ReferenceEquals(actualParent, parentNode))
 					{
 						parentMismatches++;
-						Debug.WriteLine($"  ⚠ PARENT MISMATCH: {node.SimpleName}");
-						Debug.WriteLine($"     Path: {node.HierarchicalPath}");
+						DebugLog.WriteLine($"  ⚠ PARENT MISMATCH: {node.SimpleName}");
+						DebugLog.WriteLine($"     Path: {node.HierarchicalPath}");
 						if (bounds.HasValue)
 						{
-							Debug.WriteLine($"     Bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
+							DebugLog.WriteLine($"     Bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
 						}
-						Debug.WriteLine($"     Recorded Parent: {parentNode.SimpleName}");
-						Debug.WriteLine($"     Recorded Parent Path: {parentNode.HierarchicalPath}");
-						Debug.WriteLine($"     Actual Parent: {actualParent.SimpleName}");
-						Debug.WriteLine($"     Actual Parent Path: {actualParent.HierarchicalPath}");
+						DebugLog.WriteLine($"     Recorded Parent: {parentNode.SimpleName}");
+						DebugLog.WriteLine($"     Recorded Parent Path: {parentNode.HierarchicalPath}");
+						DebugLog.WriteLine($"     Actual Parent: {actualParent.SimpleName}");
+						DebugLog.WriteLine($"     Actual Parent Path: {actualParent.HierarchicalPath}");
 					}
 				}
 				
@@ -304,14 +304,14 @@ namespace AcManager.UiObserver
 					if (seenChildren.Contains(child))
 					{
 						childConsistencyErrors++;
-						Debug.WriteLine($"  ⚠ DUPLICATE CHILD: {node.SimpleName}");
-						Debug.WriteLine($"     Path: {node.HierarchicalPath}");
+						DebugLog.WriteLine($"  ⚠ DUPLICATE CHILD: {node.SimpleName}");
+						DebugLog.WriteLine($"     Path: {node.HierarchicalPath}");
 						if (bounds.HasValue)
 						{
-							Debug.WriteLine($"     Bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
+							DebugLog.WriteLine($"     Bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
 						}
-						Debug.WriteLine($"     Duplicate child: {child.SimpleName}");
-						Debug.WriteLine($"     Duplicate child path: {child.HierarchicalPath}");
+						DebugLog.WriteLine($"     Duplicate child: {child.SimpleName}");
+						DebugLog.WriteLine($"     Duplicate child path: {child.HierarchicalPath}");
 						continue;
 					}
 					
@@ -322,26 +322,26 @@ namespace AcManager.UiObserver
 					if (child.Parent == null || !child.Parent.TryGetTarget(out var childParent) || !ReferenceEquals(childParent, node))
 					{
 						childConsistencyErrors++;
-						Debug.WriteLine($"  ⚠ CHILD PARENT MISMATCH: {node.SimpleName}");
-						Debug.WriteLine($"     Path: {node.HierarchicalPath}");
+						DebugLog.WriteLine($"  ⚠ CHILD PARENT MISMATCH: {node.SimpleName}");
+						DebugLog.WriteLine($"     Path: {node.HierarchicalPath}");
 						if (bounds.HasValue)
 						{
-							Debug.WriteLine($"     Bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
+							DebugLog.WriteLine($"     Bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
 						}
-						Debug.WriteLine($"     Child: {child.SimpleName}");
-						Debug.WriteLine($"     Child path: {child.HierarchicalPath}");
+						DebugLog.WriteLine($"     Child: {child.SimpleName}");
+						DebugLog.WriteLine($"     Child path: {child.HierarchicalPath}");
 						if (child.Parent == null)
 						{
-							Debug.WriteLine($"     Child's Parent: NULL");
+							DebugLog.WriteLine($"     Child's Parent: NULL");
 						}
 						else if (!child.Parent.TryGetTarget(out var cp))
 						{
-							Debug.WriteLine($"     Child's Parent: DEAD REFERENCE");
+							DebugLog.WriteLine($"     Child's Parent: DEAD REFERENCE");
 						}
 						else
 						{
-							Debug.WriteLine($"     Child's Parent: {cp.SimpleName}");
-							Debug.WriteLine($"     Child's Parent path: {cp.HierarchicalPath}");
+							DebugLog.WriteLine($"     Child's Parent: {cp.SimpleName}");
+							DebugLog.WriteLine($"     Child's Parent path: {cp.HierarchicalPath}");
 						}
 					}
 				}
@@ -349,13 +349,13 @@ namespace AcManager.UiObserver
 				if (deadChildRefs > 0)
 				{
 					childConsistencyErrors++;
-					Debug.WriteLine($"  ⚠ DEAD CHILD REFERENCES: {node.SimpleName}");
-					Debug.WriteLine($"     Path: {node.HierarchicalPath}");
+					DebugLog.WriteLine($"  ⚠ DEAD CHILD REFERENCES: {node.SimpleName}");
+					DebugLog.WriteLine($"     Path: {node.HierarchicalPath}");
 					if (bounds.HasValue)
 					{
-						Debug.WriteLine($"     Bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
+						DebugLog.WriteLine($"     Bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
 					}
-					Debug.WriteLine($"     Dead references: {deadChildRefs}");
+					DebugLog.WriteLine($"     Dead references: {deadChildRefs}");
 				}
 				
 				// Check 4: Cross-check with visual tree - find all NavNode descendants
@@ -394,11 +394,11 @@ namespace AcManager.UiObserver
 				}
 				catch (Exception ex)
 				{
-					Debug.WriteLine($"  ⚠⚠  ERROR walking visual tree descendants for {node.SimpleName}: {ex.Message}");
-					Debug.WriteLine($"     Path: {node.HierarchicalPath}");
+					DebugLog.WriteLine($"  ⚠⚠  ERROR walking visual tree descendants for {node.SimpleName}: {ex.Message}");
+					DebugLog.WriteLine($"     Path: {node.HierarchicalPath}");
 					if (bounds.HasValue)
 					{
-						Debug.WriteLine($"     Bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
+						DebugLog.WriteLine($"     Bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
 					}
 				}
 				
@@ -421,15 +421,15 @@ namespace AcManager.UiObserver
 					if (!reachable)
 					{
 						orphanedNodes++;
-						Debug.WriteLine($"  ⚠ ORPHANED NODE IN VISUAL TREE: {visualNode.SimpleName}");
-						Debug.WriteLine($"     Path: {visualNode.HierarchicalPath}");
-						Debug.WriteLine($"     Found in visual subtree of: {node.SimpleName}");
-						Debug.WriteLine($"     Parent node path: {node.HierarchicalPath}");
+						DebugLog.WriteLine($"  ⚠ ORPHANED NODE IN VISUAL TREE: {visualNode.SimpleName}");
+						DebugLog.WriteLine($"     Path: {visualNode.HierarchicalPath}");
+						DebugLog.WriteLine($"     Found in visual subtree of: {node.SimpleName}");
+						DebugLog.WriteLine($"     Parent node path: {node.HierarchicalPath}");
 						if (bounds.HasValue)
 						{
-							Debug.WriteLine($"     Parent node bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
+							DebugLog.WriteLine($"     Parent node bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
 						}
-						Debug.WriteLine($"     But NOT reachable through Parent chain from this node!");
+						DebugLog.WriteLine($"     But NOT reachable through Parent chain from this node!");
 					}
 				}
 				
@@ -441,14 +441,14 @@ namespace AcManager.UiObserver
 					if (visited.Contains(ancestor))
 					{
 						circularRefs++;
-						Debug.WriteLine($"  ⚠ CIRCULAR REFERENCE: {node.SimpleName} has circular parent chain!");
-						Debug.WriteLine($"     Path: {node.HierarchicalPath}");
+						DebugLog.WriteLine($"  ⚠ CIRCULAR REFERENCE: {node.SimpleName} has circular parent chain!");
+						DebugLog.WriteLine($"     Path: {node.HierarchicalPath}");
 						if (bounds.HasValue)
 						{
-							Debug.WriteLine($"     Bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
+							DebugLog.WriteLine($"     Bounds: ({bounds.Value.Left:F1}, {bounds.Value.Top:F1}) {bounds.Value.Width:F1}x{bounds.Value.Height:F1}");
 						}
-						Debug.WriteLine($"     Circular ancestor: {ancestor.SimpleName}");
-						Debug.WriteLine($"     Circular ancestor path: {ancestor.HierarchicalPath}");
+						DebugLog.WriteLine($"     Circular ancestor: {ancestor.SimpleName}");
+						DebugLog.WriteLine($"     Circular ancestor path: {ancestor.HierarchicalPath}");
 						break;
 					}
 					visited.Add(ancestor);
@@ -456,24 +456,24 @@ namespace AcManager.UiObserver
 				}
 			}
 			
-			Debug.WriteLine($"\n========== Consistency Check Results ==========");
-			Debug.WriteLine($"Total nodes: {allNodes.Count}");
-			Debug.WriteLine($"Dead visuals: {deadVisuals}");
-			Debug.WriteLine($"Parent mismatches: {parentMismatches}");
-			Debug.WriteLine($"Child consistency errors: {childConsistencyErrors} (duplicates, dead refs, back-link errors)");
-			Debug.WriteLine($"Orphaned nodes: {orphanedNodes} (in visual tree but not reachable through Parent chain)");
-			Debug.WriteLine($"Circular references: {circularRefs}");
+			DebugLog.WriteLine($"\n========== Consistency Check Results ==========");
+			DebugLog.WriteLine($"Total nodes: {allNodes.Count}");
+			DebugLog.WriteLine($"Dead visuals: {deadVisuals}");
+			DebugLog.WriteLine($"Parent mismatches: {parentMismatches}");
+			DebugLog.WriteLine($"Child consistency errors: {childConsistencyErrors} (duplicates, dead refs, back-link errors)");
+			DebugLog.WriteLine($"Orphaned nodes: {orphanedNodes} (in visual tree but not reachable through Parent chain)");
+			DebugLog.WriteLine($"Circular references: {circularRefs}");
 			
 			if (deadVisuals == 0 && parentMismatches == 0 && childConsistencyErrors == 0 && orphanedNodes == 0 && circularRefs == 0)
 			{
-				Debug.WriteLine("✓ All nodes are CONSISTENT with visual tree!");
+				DebugLog.WriteLine("✓ All nodes are CONSISTENT with visual tree!");
 			}
 			else
 			{
-				Debug.WriteLine("⚠⚠  INCONSISTENCIES DETECTED - see details above");
+				DebugLog.WriteLine("⚠⚠  INCONSISTENCIES DETECTED - see details above");
 			}
 			
-			Debug.WriteLine("================================================\n");
+			DebugLog.WriteLine("================================================\n");
 		}
 #endif
 
@@ -548,11 +548,11 @@ namespace AcManager.UiObserver
 				//         _overlay.Hide();
 				//     }
 				// } catch (Exception ex) {
-				//     Debug.WriteLine($"[Navigator] Hide error: {ex.Message}");
+				//     DebugLog.WriteLine($"[Navigator] Hide error: {ex.Message}");
 				// }
 
 				long memAfter = GC.GetTotalMemory(forceFullCollection: false);
-				Debug.WriteLine($"[Navigator] Memory: Before={memBefore:N0}, After={memAfter:N0}, Delta={memAfter - memBefore:N0} bytes");
+				DebugLog.WriteLine($"[Navigator] Memory: Before={memBefore:N0}, After={memAfter:N0}, Delta={memAfter - memBefore:N0} bytes");
 
 				return;
 			}
@@ -562,25 +562,25 @@ namespace AcManager.UiObserver
 #endif
 
 			if (filterByModalScope) {
-				Debug.WriteLine("\n========== NavMapper: Highlight Rectangles (Active Modal Scope ONLY) ==========");
+				DebugLog.WriteLine("\n========== NavMapper: Highlight Rectangles (Active Modal Scope ONLY) ==========");
 			} else {
-				Debug.WriteLine("\n========== NavMapper: Highlight Rectangles (ALL NODES - Unfiltered) ==========");
+				DebugLog.WriteLine("\n========== NavMapper: Highlight Rectangles (ALL NODES - Unfiltered) ==========");
 			}
 			
 			// Show context stack
 			if (_contextStack.Count > 0) {
-				Debug.WriteLine($"Context Stack ({_contextStack.Count} contexts):");
+				DebugLog.WriteLine($"Context Stack ({_contextStack.Count} contexts):");
 				for (int i = 0; i < _contextStack.Count; i++) {
 					var ctx = _contextStack[i];
 					var focusInfo = ctx.FocusedNode != null 
 						? $" [focused: {ctx.FocusedNode.SimpleName}]" 
 						: " [no focus]";
-					Debug.WriteLine($"  [{i}] {ctx.ScopeNode.HierarchicalPath}{focusInfo}");
+					DebugLog.WriteLine($"  [{i}] {ctx.ScopeNode.HierarchicalPath}{focusInfo}");
 				}
 			} else {
-				Debug.WriteLine("Context Stack: (empty - waiting for root context)");
+				DebugLog.WriteLine("Context Stack: (empty - waiting for root context)");
 			}
-			Debug.WriteLine("");
+			DebugLog.WriteLine("");
 
 			// ✓ Pre-allocate with capacity hints
 			var debugRects = new List<IDebugRect>(256);
@@ -592,17 +592,17 @@ namespace AcManager.UiObserver
 				nodesToShow = Observer.GetAllNavNodes()
 					.Where(n => IsInActiveModalScope(n))
 					.ToList();
-				Debug.WriteLine($"Nodes in current modal scope: {nodesToShow.Count}");
+				DebugLog.WriteLine($"Nodes in current modal scope: {nodesToShow.Count}");
 			} else {
 				// Unfiltered: Show ALL discovered nodes (including groups!)
 				nodesToShow = Observer.GetAllNavNodes().ToList();
-			 Debug.WriteLine($"All discovered nodes: {nodesToShow.Count}");
+			 DebugLog.WriteLine($"All discovered nodes: {nodesToShow.Count}");
 			}
 			
 			// ✓ Limit processing to prevent OOM
 			const int MAX_NODES_TO_PROCESS = 1000;
 			if (nodesToShow.Count > MAX_NODES_TO_PROCESS) {
-				Debug.WriteLine($"[NavMapper] WARNING: {nodesToShow.Count} nodes exceeds limit {MAX_NODES_TO_PROCESS}. Truncating.");
+				DebugLog.WriteLine($"[NavMapper] WARNING: {nodesToShow.Count} nodes exceeds limit {MAX_NODES_TO_PROCESS}. Truncating.");
 				nodesToShow = nodesToShow.Take(MAX_NODES_TO_PROCESS).ToList();
 			}
 			
@@ -670,7 +670,7 @@ namespace AcManager.UiObserver
 					}
 
 				} catch (Exception ex) {
-					Debug.WriteLine($"  ERROR processing {node.HierarchicalPath}: {ex.Message}");
+					DebugLog.WriteLine($"  ERROR processing {node.HierarchicalPath}: {ex.Message}");
 				}
 			}
 
@@ -678,7 +678,7 @@ namespace AcManager.UiObserver
 			allDebugInfo.Sort((a, b) => string.Compare(a.HierarchicalPath, b.HierarchicalPath, StringComparison.Ordinal));
 
 			// Output sorted rectangles
-			Debug.WriteLine("");
+			DebugLog.WriteLine("");
 			int leafCount = 0;
 			int groupCount = 0;
 			
@@ -690,24 +690,24 @@ namespace AcManager.UiObserver
 				} else {
 					leafCount++;
 				}
-				Debug.WriteLine($"{prefix} #{i + 1,-3} | {info.DebugLine}");
+				DebugLog.WriteLine($"{prefix} #{i + 1,-3} | {info.DebugLine}");
 			}
 
-			Debug.WriteLine($"\n========== Summary: {leafCount} leaves, {groupCount} groups ==========");
+			DebugLog.WriteLine($"\n========== Summary: {leafCount} leaves, {groupCount} groups ==========");
 			if (filterByModalScope) {
-				Debug.WriteLine("Mode: FILTERED (Ctrl+Shift+F12) - showing only nodes in active modal scope");
+				DebugLog.WriteLine("Mode: FILTERED (Ctrl+Shift+F12) - showing only nodes in active modal scope");
 			} else {
-				Debug.WriteLine("Mode: UNFILTERED (Ctrl+Shift+F11) - showing ALL discovered nodes");
+				DebugLog.WriteLine("Mode: UNFILTERED (Ctrl+Shift+F11) - showing ALL discovered nodes");
 			}
-			Debug.WriteLine("Color Legend: Orange = Navigable leaves | Dark Red = Non-navigable leaves | Gray = Groups");
-			Debug.WriteLine("=============================================================\n");
+			DebugLog.WriteLine("Color Legend: Orange = Navigable leaves | Dark Red = Non-navigable leaves | Gray = Groups");
+			DebugLog.WriteLine("=============================================================\n");
 
 			try {
 				EnsureOverlay();  // ✓ Reuses existing overlay if it exists
 				_overlay?.ShowDebugRects(debugRects);
 				_debugMode = true;
 			} catch (Exception ex) {
-				Debug.WriteLine($"[Navigator] Overlay error: {ex.Message}");
+				DebugLog.WriteLine($"[Navigator] Overlay error: {ex.Message}");
 			}
 			
 			// ✓ Clear local collections to hint GC
