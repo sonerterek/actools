@@ -1965,6 +1965,7 @@
     <Content Include="UiObserver\NWRS Navigation.cfg">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>
+    <None Include="UiObserver\MULTI_DEVICE_IMPLEMENTATION_COMPLETE.md" />
     <None Include="UiObserver\REFACTORING_STATUS.md" />
     <None Include="UiObserver\StreamDeck Integration Design.md" />
     <None Include="UiObserver\UNIFIED_RULES.md" />

@@ -28,19 +28,30 @@ namespace AcManager.UiObserver
 		#region Fields
 
 		private static DirectInputScanner.Watcher _wheelWatcher;
-		private static DirectInputDevice _navigationWheel;
-		private static int[] _wheelButtonMapping = new int[6]; // Map to physical button indices
-		private static bool[] _lastButtonStates = new bool[6];
+
+		// Multi-device support: Each button can be from a different device
+		private static Dictionary<string, DirectInputDevice> _navigationDevices = 
+			new Dictionary<string, DirectInputDevice>();  // Key: Full ProductId (36 chars), Value: Device
+
+		private static Dictionary<string, ButtonBinding> _buttonBindings = 
+			new Dictionary<string, ButtonBinding>();  // Key: NavKey ("UP", "DOWN", etc.)
+
+		// Tracks attached event handlers for cleanup (lambda-based approach)
+		private static List<AttachedHandler> _attachedHandlers = 
+			new List<AttachedHandler>();
+
 		private static bool _wheelNavigationEnabled;
-		private static System.Threading.Timer _wheelPollTimer;  // ✅ Background thread timer (not DispatcherTimer)
-		private static readonly object _wheelStateLock = new object();  // ✅ Thread-safety for shared state
+		private static System.Threading.Timer _wheelPollTimer;  // Background thread timer (not DispatcherTimer)
+		private static readonly object _wheelStateLock = new object();  // Thread-safety for shared state
 
 		// Button names for debug output
 		private static readonly string[] _stepNames = { "UP", "DOWN", "LEFT", "RIGHT", "SELECT", "BACK" };
 
+
 		/// <summary>
-		/// Default button mappings for common wheels (ProductId prefix → button array).
-		/// Key format: First 9 chars of ProductId (VID-PID).
+		/// Default button mappings for common wheels.
+		/// Key format: VID-PID prefix (9 chars, e.g., "046D-C24F") - used for DefaultMappings lookup only.
+		/// Note: Actual device identification uses full 36-char ProductId for exact matching.
 		/// Value: [Up, Down, Left, Right, Select, Back] button indices.
 		/// </summary>
 		private static readonly Dictionary<string, WheelMapping> DefaultMappings = 
@@ -107,7 +118,7 @@ namespace AcManager.UiObserver
 		/// <summary>
 		/// Initializes wheel button navigation subsystem.
 		/// Called during Navigator initialization (same as StreamDeck).
-		/// ✅ HYBRID APPROACH: Device creation on UI thread, polling on background thread.
+		/// HYBRID APPROACH: Device creation on UI thread, polling on background thread.
 		/// </summary>
 		private static void InitializeWheelNavigation()
 		{
@@ -118,30 +129,25 @@ namespace AcManager.UiObserver
 			GameWrapper.Ended += OnGameEnded_Wheel;
 
 			// ✅ CRITICAL: Read config from ValuesStorage on UI thread FIRST
-			// ValuesStorage has WPF thread affinity!
-			bool enabled;
-			string deviceId;
-			string mappingString;
+				// ValuesStorage has WPF thread affinity!
+				bool enabled;
 
-			try
-			{
-				enabled = ValuesStorage.Get("WheelNav_Enabled", false);
-				deviceId = ValuesStorage.Get<string>("WheelNav_DeviceId");
-				mappingString = ValuesStorage.Get<string>("WheelNav_ButtonMapping");
+				try
+				{
+					enabled = ValuesStorage.Get("WheelNav_Enabled", false);
+					DebugLog.WriteLine($"[Navigator.Wheel] Config read from UI thread: enabled={enabled}");
+				}
+				catch (Exception ex)
+				{
+					DebugLog.WriteLine($"[Navigator.Wheel] Failed to read config from ValuesStorage: {ex.Message}");
+					return;
+				}
 
-				DebugLog.WriteLine($"[Navigator.Wheel] Config read from UI thread: enabled={enabled}, deviceId={deviceId}");
-			}
-			catch (Exception ex)
-			{
-				DebugLog.WriteLine($"[Navigator.Wheel] Failed to read config from ValuesStorage: {ex.Message}");
-				return;
-			}
-
-			if (!enabled)
-			{
-				DebugLog.WriteLine("[Navigator.Wheel] Wheel navigation disabled in config");
-				return;
-			}
+				if (!enabled)
+				{
+					DebugLog.WriteLine("[Navigator.Wheel] Wheel navigation disabled in config");
+					return;
+				}
 
 			// ✅ Fire-and-forget UI thread initialization (MUST create device on UI thread!)
 			Application.Current?.Dispatcher.BeginInvoke(
@@ -153,9 +159,11 @@ namespace AcManager.UiObserver
 						DebugLog.WriteLine("[Navigator.Wheel] UI thread initialization started...");
 
 						// Create device on UI thread (DirectInputDevice has WPF dispatcher affinity!)
-						if (await LoadWheelButtonConfigAsync(enabled, deviceId, mappingString))
+						if (await LoadWheelButtonConfigAsync(enabled))
 						{
-							DebugLog.WriteLine($"[Navigator.Wheel] ✅ Device created: {_navigationWheel?.DisplayName ?? "unknown"}");
+							var deviceCount = _navigationDevices.Count;
+							var deviceNames = string.Join(", ", _navigationDevices.Values.Select(d => d.DisplayName));
+							DebugLog.WriteLine($"[Navigator.Wheel] ✅ Device(s) created: {deviceNames}");
 
 							// Now start background thread polling
 							EnableWheelPolling();
@@ -195,12 +203,50 @@ namespace AcManager.UiObserver
 		#region Configuration
 
 		/// <summary>
+		/// Parses button configuration string into ButtonBinding dictionary.
+		/// Format: "UP:046D-C24F-0000-0000-504944564944:13,DOWN:046D-C260-0000-0000-504944564944:11,..."
+		/// </summary>
+		private static Dictionary<string, ButtonBinding> ParseButtonConfig(string configStr)
+		{
+			var bindings = new Dictionary<string, ButtonBinding>();
+
+			if (string.IsNullOrEmpty(configStr))
+			{
+				DebugLog.WriteLine("[Navigator.Wheel] Empty config string");
+				return bindings;
+			}
+
+			try
+			{
+				var bindingStrings = configStr.Split(',');
+
+				foreach (var bindingStr in bindingStrings)
+				{
+					var binding = ButtonBinding.Parse(bindingStr.Trim());
+					if (binding != null && !string.IsNullOrEmpty(binding.NavKey))
+					{
+						bindings[binding.NavKey] = binding;
+					}
+				}
+
+				DebugLog.WriteLine($"[Navigator.Wheel] Parsed {bindings.Count} button bindings");
+			}
+			catch (Exception ex)
+			{
+				DebugLog.WriteLine($"[Navigator.Wheel] Error parsing config: {ex.Message}");
+			}
+
+			return bindings;
+		}
+
+		/// <summary>
 		/// Loads wheel button configuration from ValuesStorage (ASYNC VERSION).
 		/// Returns true if valid configuration loaded and device found.
 		/// Waits for DirectInput scan to complete before checking devices.
 		/// ✅ MUST RUN ON UI THREAD: DirectInputDevice.Create() requires UI thread (WPF dispatcher affinity).
+		/// ✅ Multi-device support: Each button can be from a different device.
 		/// </summary>
-		private static async Task<bool> LoadWheelButtonConfigAsync(bool enabled, string deviceId, string mappingString)
+		private static async Task<bool> LoadWheelButtonConfigAsync(bool enabled)
 		{
 			try
 			{
@@ -210,15 +256,35 @@ namespace AcManager.UiObserver
 					return false;
 				}
 
-				if (string.IsNullOrEmpty(deviceId))
+				// Load multi-device config format
+				var buttonConfigString = ValuesStorage.Get<string>("WheelNav_ButtonConfig");
+
+				if (string.IsNullOrEmpty(buttonConfigString))
 				{
-					DebugLog.WriteLine("[Navigator.Wheel] No device configured");
+					DebugLog.WriteLine("[Navigator.Wheel] No button configuration found");
 					return false;
 				}
 
-				// Use GetAsync() to wait for DirectInput scan to complete
-				// We're on UI thread now - DirectInputDevice.Create() will work correctly
-				DebugLog.WriteLine($"[Navigator.Wheel] Looking for device: {deviceId}");
+				DebugLog.WriteLine($"[Navigator.Wheel] Loading config: {buttonConfigString}");
+
+				// Parse button configuration
+				var bindings = ParseButtonConfig(buttonConfigString);
+
+				if (bindings.Count == 0)
+				{
+					DebugLog.WriteLine("[Navigator.Wheel] No valid bindings found in config");
+					return false;
+				}
+
+				// Extract unique device IDs from bindings
+				var requiredDeviceIds = bindings.Values
+					.Select(b => b.DeviceId)
+					.Distinct()
+					.ToList();
+
+				DebugLog.WriteLine($"[Navigator.Wheel] Config requires {requiredDeviceIds.Count} device(s)");
+
+				// Wait for DirectInput scan to complete
 				var joysticks = await DirectInputScanner.GetAsync();
 				DebugLog.WriteLine($"[Navigator.Wheel] GetAsync() returned: {(joysticks == null ? "NULL" : $"{joysticks.Count} devices")}");
 
@@ -228,128 +294,86 @@ namespace AcManager.UiObserver
 					return false;
 				}
 
-				if (joysticks != null)
+				// Find and create ALL required devices
+				var foundDevices = new Dictionary<string, DirectInputDevice>();
+
+				foreach (var joystick in joysticks)
 				{
-					foreach (var joystick in joysticks)
+					// ✅ CRITICAL: Create on UI thread (DirectInputDevice has WPF dispatcher affinity)
+					var device = DirectInputDevice.Create(joystick, -1);
+					if (device == null) continue;
+
+					// ✅ Exact ProductId match only
+					foreach (var deviceId in requiredDeviceIds)
 					{
-						// ✅ CRITICAL: Create on UI thread (DirectInputDevice has WPF dispatcher affinity)
-						var device = DirectInputDevice.Create(joystick, -1);
-						if (device != null && device.ProductId == deviceId)
+						if (device.ProductId == deviceId)
 						{
-							_navigationWheel = device;
-							DebugLog.WriteLine($"[Navigator.Wheel] ✅ Found device: {device.DisplayName}");
-							break;
+							if (!foundDevices.ContainsKey(deviceId))
+							{
+								foundDevices[deviceId] = device;
+								DebugLog.WriteLine($"[Navigator.Wheel] ✅ Found device: {device.DisplayName} (ID: {device.ProductId})");
+
+								// Update binding with full device name
+								foreach (var binding in bindings.Values.Where(b => b.DeviceId == deviceId))
+								{
+									binding.DeviceName = device.DisplayName;
+								}
+							}
+							break; // Found match, no need to check other requiredDeviceIds
 						}
 					}
 				}
 
-				if (_navigationWheel == null)
+				// Check if all required devices were found
+				var missingDevices = requiredDeviceIds.Except(foundDevices.Keys).ToList();
+				if (missingDevices.Count > 0)
 				{
-					DebugLog.WriteLine($"[Navigator.Wheel] Device {deviceId} not found (unplugged?)");
-					return false;
+					DebugLog.WriteLine($"[Navigator.Wheel] ⚠ Missing {missingDevices.Count} required device(s):");
+					foreach (var deviceId in missingDevices)
+					{
+						DebugLog.WriteLine($"[Navigator.Wheel]   - {deviceId}");
+					}
+
+					// ✅ Show Toast warning but continue with available devices
+					var missingCount = missingDevices.Count;
+					var totalCount = requiredDeviceIds.Count;
+
+					ActionExtension.InvokeInMainThreadAsync(() =>
+					{
+						FirstFloor.ModernUI.Windows.Toast.Show(
+							"Wheel Navigation - Device Missing",
+							$"{missingCount} of {totalCount} configured device(s) not found.\nNavigation may be partially functional."
+						);
+					});
+
+					// Continue with available devices instead of failing
+					DebugLog.WriteLine($"[Navigator.Wheel] Continuing with {foundDevices.Count} available device(s)");
 				}
 
-				DebugLog.WriteLine($"[Navigator.Wheel] Found device: {_navigationWheel.DisplayName}");
-				DebugLog.WriteLine($"[Navigator.Wheel] Device has {_navigationWheel.Buttons.Length} buttons");
-
-				// Parse button mapping from string (already read from ValuesStorage on UI thread)
-				int[] mapping = null;
-
-				if (!string.IsNullOrEmpty(mappingString))
+				// Skip validation for missing devices - only validate connected ones
+				foreach (var binding in bindings.Values.Where(b => foundDevices.ContainsKey(b.DeviceId)))
 				{
-					try
+					var device = foundDevices[binding.DeviceId];
+					if (binding.ButtonIndex < 0 || binding.ButtonIndex >= device.Buttons.Length)
 					{
-						mapping = mappingString.Split(',').Select(int.Parse).ToArray();
-						DebugLog.WriteLine($"[Navigator.Wheel] Loaded mapping: [{string.Join(", ", mapping)}]");
-					}
-					catch (Exception parseEx)
-					{
-						DebugLog.WriteLine($"[Navigator.Wheel] Failed to parse button mapping: {parseEx.Message}");
+						DebugLog.WriteLine($"[Navigator.Wheel] Invalid button index for {binding.NavKey}: {binding.ButtonIndex} (device has {device.Buttons.Length} buttons)");
 						return false;
 					}
 				}
-				else
+
+				// ✅ SUCCESS: Store devices and bindings
+				_navigationDevices = foundDevices;
+				_buttonBindings = bindings;
+
+				DebugLog.WriteLine($"[Navigator.Wheel] ✅ Configuration loaded: {bindings.Count} bindings across {foundDevices.Count} device(s)");
+
+				foreach (var kvp in bindings)
 				{
-					DebugLog.WriteLine("[Navigator.Wheel] No button mapping configured");
-					return false;
+					var binding = kvp.Value;
+					DebugLog.WriteLine($"[Navigator.Wheel]   {binding.NavKey}: {binding.DeviceName} Button {binding.ButtonIndex}");
 				}
 
-				if (mapping.Length != 6)
-				{
-					DebugLog.WriteLine($"[Navigator.Wheel] Invalid button mapping length: {mapping.Length} (expected 6)");
-					return false;
-				}
-
-						_wheelButtonMapping = mapping;
-						DebugLog.WriteLine("[Navigator.Wheel] Configuration loaded successfully");
-						return true;
-					}
-					catch (Exception ex)
-					{
-						DebugLog.WriteLine($"[Navigator.Wheel] Error loading config: {ex.Message}");
-						return false;
-					}
-				}
-
-				/// <summary>
-				/// Loads wheel button configuration from ValuesStorage (SYNCHRONOUS - for game lifecycle).
-				/// This version is kept for OnGameEnded where we can't use async easily.
-				/// Creates a temporary watcher and checks immediately (may fail if scan not complete).
-				/// </summary>
-		private static bool LoadWheelButtonConfig()
-		{
-			try
-			{
-				var enabled = ValuesStorage.Get("WheelNav_Enabled", false);
-				if (!enabled)
-				{
-					DebugLog.WriteLine("[Navigator.Wheel] Wheel navigation disabled in config");
-					return false;
-				}
-
-				var deviceId = ValuesStorage.Get<string>("WheelNav_DeviceId");
-				if (string.IsNullOrEmpty(deviceId))
-				{
-					DebugLog.WriteLine("[Navigator.Wheel] No device configured");
-					return false;
-				}
-
-				// Find device from existing watcher if available
-				if (_wheelWatcher != null)
-				{
-					_navigationWheel = FindDeviceByProductId(deviceId);
-					if (_navigationWheel != null)
-					{
-						DebugLog.WriteLine($"[Navigator.Wheel] Found device from watcher: {_navigationWheel.DisplayName}");
-
-						// ✅ FIX: Load button mapping as STRING, then parse to int[]
-						var mappingString = ValuesStorage.Get<string>("WheelNav_ButtonMapping");
-						int[] mapping = null;
-
-						if (!string.IsNullOrEmpty(mappingString))
-						{
-							try
-							{
-								mapping = mappingString.Split(',').Select(int.Parse).ToArray();
-							}
-							catch (Exception parseEx)
-							{
-								DebugLog.WriteLine($"[Navigator.Wheel] Failed to parse button mapping: {parseEx.Message}");
-								return false;
-							}
-						}
-
-						// Validate button mapping
-						if (mapping?.Length == 6 && mapping.All(b => b >= 0 && b < _navigationWheel.Buttons.Length))
-						{
-							_wheelButtonMapping = mapping;
-							return true;
-						}
-					}
-				}
-
-				DebugLog.WriteLine($"[Navigator.Wheel] Device {deviceId} not found in current watcher");
-				return false;
+				return true;
 			}
 			catch (Exception ex)
 			{
@@ -357,17 +381,53 @@ namespace AcManager.UiObserver
 				return false;
 			}
 		}
+
+				/// <summary>
+				/// Loads wheel button configuration from ValuesStorage (SYNCHRONOUS - for game lifecycle).
+				/// This version is kept for OnGameEnded where we can't use async easily.
+				/// Simplified - just checks if config exists (device loading happens async on UI thread).
+				/// </summary>
+				private static bool LoadWheelButtonConfig()
+				{
+					try
+					{
+						var enabled = ValuesStorage.Get("WheelNav_Enabled", false);
+						if (!enabled)
+						{
+							DebugLog.WriteLine("[Navigator.Wheel] Wheel navigation disabled in config");
+							return false;
+						}
+
+						var buttonConfigString = ValuesStorage.Get<string>("WheelNav_ButtonConfig");
+						if (!string.IsNullOrEmpty(buttonConfigString))
+						{
+							DebugLog.WriteLine("[Navigator.Wheel] Config exists (will load devices on UI thread)");
+							return true;
+						}
+
+						DebugLog.WriteLine("[Navigator.Wheel] No config found");
+						return false;
+					}
+					catch (Exception ex)
+					{
+						DebugLog.WriteLine($"[Navigator.Wheel] Error checking config: {ex.Message}");
+						return false;
+					}
+				}
 		
 		/// <summary>
-		/// Gets default button mapping for a wheel model.
+		/// Gets default button mapping for a wheel model by VID-PID prefix.
+		/// Note: DefaultMappings uses VID-PID (9 chars) as key for convenience,
+		/// but actual device identification uses full 36-char ProductId.
 		/// Returns null if no default available.
 		/// </summary>
 		private static WheelMapping GetDefaultMapping(DirectInputDevice device)
 		{
 			if (device == null || string.IsNullOrEmpty(device.ProductId))
 				return null;
-			
-			// Extract VID-PID from ProductGuid (first 9 chars: "046D-C24F")
+
+			// Extract VID-PID prefix from ProductId (first 9 chars: "046D-C24F")
+			// Used only for DefaultMappings lookup - NOT for device identity
 			var productKey = device.ProductId.Length >= 9 
 				? device.ProductId.Substring(0, 9) 
 				: device.ProductId;
@@ -381,23 +441,21 @@ namespace AcManager.UiObserver
 			DebugLog.WriteLine($"[Navigator.Wheel] No default mapping for ProductId: {productKey}");
 			return null;
 		}
-		
+
 		#endregion
-		
+
 		#region Enable/Disable
-		
+
 		/// <summary>
 		/// Enables wheel button polling.
 		/// Creates DirectInput watcher (wakes scanner thread) and starts polling timer.
-		/// ✅ NEW: Uses System.Threading.Timer for reliable background polling (20Hz guaranteed).
-		/// ✅ EFFICIENT: Scanner sleeps when no watchers exist.
+		/// Uses lambda handlers: Each configured button gets a specific handler that captures its NavKey.
+		/// EFFICIENT: Only attaches handlers to configured buttons (not all buttons).
 		/// </summary>
 		private static void EnableWheelPolling()
 		{
-			lock (_wheelStateLock)
-			{
-				if (_wheelWatcher != null)
-				{
+			lock (_wheelStateLock) {
+				if (_wheelWatcher != null) {
 					DebugLog.WriteLine("[Navigator.Wheel] Already enabled");
 					return;
 				}
@@ -408,44 +466,75 @@ namespace AcManager.UiObserver
 				_wheelWatcher = DirectInputScanner.Watch();
 				_wheelWatcher.Update += OnWheelDevicesUpdated;
 
-				// Refresh device reference
-				var deviceId = ValuesStorage.Get<string>("WheelNav_DeviceId");
-				_navigationWheel = FindDeviceByProductId(deviceId);
+				// Clear any previous handlers
+				_attachedHandlers.Clear();
 
-				if (_navigationWheel != null)
-				{
-					// ✅ Attach button event handlers for navigation
-					// Events will fire on background thread (polling thread)
-					foreach (var button in _navigationWheel.Buttons)
-					{
-						button.PropertyChanged += OnNavigationButtonPressed;
+				// Attach lambda handlers ONLY to configured buttons
+				int attachedCount = 0;
+				foreach (var kvp in _buttonBindings) {
+					var navKey = kvp.Key;
+					var binding = kvp.Value;
+
+					// Find the device for this binding
+					if (!_navigationDevices.TryGetValue(binding.DeviceId, out var device)) {
+						DebugLog.WriteLine($"[Navigator.Wheel] Warning: Device not found for {navKey} ({binding.DeviceId})");
+						continue;
 					}
 
-					_wheelNavigationEnabled = true;
+					// Validate button index
+					if (binding.ButtonIndex < 0 || binding.ButtonIndex >= device.Buttons.Length) {
+						DebugLog.WriteLine($"[Navigator.Wheel] Warning: Invalid button index for {navKey}: {binding.ButtonIndex}");
+						continue;
+					}
 
-					// ✅ Use System.Threading.Timer for BACKGROUND polling (not DispatcherTimer)
-					// This guarantees 20Hz polling regardless of UI thread load
-					_wheelPollTimer = new System.Threading.Timer(
-						callback: _ => OnWheelPollTick(),
-						state: null,
-						dueTime: 0,        // Start immediately
-						period: 50         // 20Hz (50ms interval)
-					);
+					// Get the specific button
+					var button = device.Buttons[binding.ButtonIndex];
 
-					DebugLog.WriteLine("[Navigator.Wheel] ✅ Polling enabled (20Hz on background thread)");
-					DebugLog.WriteLine($"[Navigator.Wheel] Monitoring {_navigationWheel.Buttons.Length} buttons on {_navigationWheel.DisplayName}");
+					// Create lambda that captures navKey (closure)
+					PropertyChangedEventHandler handler = (sender, e) => {
+						var btn = (DirectInputButton)sender;
+
+						// Only react to rising edge (button pressed, not released)
+						if (e.PropertyName == nameof(DirectInputButton.Value) && btn.Value) {
+							DebugLog.WriteLine($"[Navigator.Wheel] Button pressed: {navKey} ({device.DisplayName} Button {btn.Id})");
+
+							// Marshal to UI thread for navigation
+							Application.Current?.Dispatcher.BeginInvoke(
+								DispatcherPriority.Normal,
+								new Action(() => OnWheelButtonPressed(navKey))
+							);
+						}
+					};
+
+					// Attach handler to button
+					button.PropertyChanged += handler;
+					_attachedHandlers.Add(new AttachedHandler { Button = button, Handler = handler });
+					attachedCount++;
+
+					DebugLog.WriteLine($"[Navigator.Wheel]   {navKey}: {device.DisplayName} Button {binding.ButtonIndex}");
 				}
-				else
-				{
-					DebugLog.WriteLine("[Navigator.Wheel] ❌ Device not found, polling not started");
-				}
+
+				_wheelNavigationEnabled = true;
+
+				// Use System.Threading.Timer for BACKGROUND polling (not DispatcherTimer)
+				// This guarantees 20Hz polling regardless of UI thread load
+				_wheelPollTimer = new System.Threading.Timer(
+					callback: _ => OnWheelPollTick(),
+					state: null,
+					dueTime: 0,        // Start immediately
+					period: 50         // 20Hz (50ms interval)
+				);
+
+				DebugLog.WriteLine($"[Navigator.Wheel] ✅ Polling enabled (20Hz on background thread)");
+				DebugLog.WriteLine($"[Navigator.Wheel] Attached {attachedCount} button handler(s) across {_navigationDevices.Count} device(s)");
 			}
 		}
 		
 		/// <summary>
 		/// Disables wheel button polling.
 		/// Disposes watcher (scanner thread goes to sleep) and stops polling timer.
-		/// ✅ ZERO CPU OVERHEAD when disabled.
+		/// Detaches all lambda handlers from configured buttons.
+		/// ZERO CPU OVERHEAD when disabled.
 		/// </summary>
 		private static void DisableWheelPolling()
 		{
@@ -455,7 +544,7 @@ namespace AcManager.UiObserver
 
 				_wheelNavigationEnabled = false;
 
-				// ✅ Dispose System.Threading.Timer (not Stop like DispatcherTimer)
+				// Dispose System.Threading.Timer (not Stop like DispatcherTimer)
 				if (_wheelPollTimer != null)
 				{
 					try
@@ -469,14 +558,13 @@ namespace AcManager.UiObserver
 					_wheelPollTimer = null;
 				}
 
-				// ✅ Detach button event handlers
-				if (_navigationWheel != null)
+				// Detach all lambda handlers
+				DebugLog.WriteLine($"[Navigator.Wheel] Detaching {_attachedHandlers.Count} handler(s)...");
+				foreach (var attached in _attachedHandlers)
 				{
-					foreach (var button in _navigationWheel.Buttons)
-					{
-						button.PropertyChanged -= OnNavigationButtonPressed;
-					}
+					attached.Button.PropertyChanged -= attached.Handler;
 				}
+				_attachedHandlers.Clear();
 
 				if (_wheelWatcher != null)
 				{
@@ -488,139 +576,71 @@ namespace AcManager.UiObserver
 				DebugLog.WriteLine("[Navigator.Wheel] ✅ Polling disabled (zero CPU overhead)");
 			}
 		}
-		
+
 		#endregion
-		
+
 		#region Polling & Event Handling
-		
+
 		/// <summary>
 		/// Polls wheel buttons and detects presses.
-		/// ✅ NEW: Runs on BACKGROUND THREAD (System.Threading.Timer callback thread).
+		/// Runs on BACKGROUND THREAD (System.Threading.Timer callback thread).
 		/// This updates button states, which triggers PropertyChanged events on THIS background thread.
 		/// Guaranteed 20Hz polling regardless of UI thread load - NO MISSED BUTTON PRESSES.
 		/// </summary>
 		private static void OnWheelPollTick()
 		{
-			// ✅ Thread-safe read of shared state
-			DirectInputDevice device;
+			// Thread-safe read of shared state
+			Dictionary<string, DirectInputDevice> devices;
 			bool enabled;
 
-			lock (_wheelStateLock)
-			{
+			lock (_wheelStateLock) {
 				enabled = _wheelNavigationEnabled;
-				device = _navigationWheel;
+				devices = _navigationDevices;
 			}
 
-			if (!enabled || device == null)
+			if (!enabled || devices == null || devices.Count == 0)
 				return;
 
-			try
-			{
-				// ✅ Poll device state - this updates button values and triggers PropertyChanged
+			try {
+				// Poll ALL devices - this updates button values and triggers PropertyChanged
 				// PropertyChanged events will fire on THIS background thread
-				device.OnTick();
-			}
-			catch (Exception ex)
-			{
+				foreach (var device in devices.Values) {
+					device.OnTick();
+				}
+			} catch (Exception ex) {
 				DebugLog.WriteLine($"[Navigator.Wheel] Polling error: {ex.Message}");
 			}
 		}
 
 		/// <summary>
-		/// Handles button presses for NAVIGATION (not wizard).
-		/// ✅ NEW: Triggered on BACKGROUND THREAD (PropertyChanged fires on polling thread).
-		/// Maps physical button presses to navigation commands.
-		/// Marshals UI interactions to UI thread (SAME PATTERN as StreamDeck).
-		/// </summary>
-		private static void OnNavigationButtonPressed(object sender, PropertyChangedEventArgs e)
-		{
-			// ✅ We're on BACKGROUND THREAD here (polling thread)
-			var button = (DirectInputButton)sender;
-
-			// Only react to rising edge (button just pressed, not held)
-			if (e.PropertyName == nameof(DirectInputButton.Value) && button.Value)
-			{
-				// Find which navigation function this button is mapped to
-				int navIndex = -1;
-				for (int i = 0; i < 6; i++)
-				{
-					if (_wheelButtonMapping[i] == button.Id)
-					{
-						navIndex = i;
-						break;
-					}
-				}
-
-				if (navIndex >= 0)
-				{
-					// Track button state for rising edge detection
-					if (_lastButtonStates[navIndex])
-					{
-						// Button is being held, ignore (we only want press, not hold)
-						return;
-					}
-
-					_lastButtonStates[navIndex] = true;
-
-					// ✅ MARSHAL to UI thread for UI interactions (SAME PATTERN as StreamDeck)
-					// This is the CRITICAL difference from old implementation
-					Application.Current?.Dispatcher.BeginInvoke(
-						DispatcherPriority.Normal,
-						new Action(() =>
-						{
-							// Now on UI thread - safe to interact with WPF UI
-							OnWheelButtonPressed(navIndex);
-						})
-					);
-				}
-			}
-			else if (e.PropertyName == nameof(DirectInputButton.Value) && !button.Value)
-			{
-				// Button released - update state
-				for (int i = 0; i < 6; i++)
-				{
-					if (_wheelButtonMapping[i] == button.Id)
-					{
-						_lastButtonStates[i] = false;
-						break;
-					}
-				}
-			}
-		}
-		
-		/// <summary>
 		/// Handles wheel button press events and executes navigation commands.
-		/// ✅ NEW: Always runs on UI THREAD (marshaled from background thread in OnNavigationButtonPressed).
-		/// Maps button index to navigation command and interacts with WPF UI safely.
+		/// Always runs on UI THREAD (marshaled from lambda handlers on background thread).
+		/// Takes navKey parameter directly from lambda closure - no lookup needed.
 		/// </summary>
-		private static void OnWheelButtonPressed(int navButtonIndex)
+		private static void OnWheelButtonPressed(string navKey)
 		{
-			var buttonName = navButtonIndex >= 0 && navButtonIndex < _stepNames.Length 
-				? _stepNames[navButtonIndex] 
-				: navButtonIndex.ToString();
-
-			DebugLog.WriteLine($"[Navigator.Wheel] Button pressed: {buttonName} ({GetActionDescription(navButtonIndex)})");
+			DebugLog.WriteLine($"[Navigator.Wheel] Executing: {navKey} ({GetActionDescription(navKey)})");
 
 			try
 			{
-				switch (navButtonIndex)
+				switch (navKey)
 				{
-					case 0: // Up
+					case "UP":
 						MoveInDirection(NavDirection.Up);
 						break;
-					case 1: // Down
+					case "DOWN":
 						MoveInDirection(NavDirection.Down);
 						break;
-					case 2: // Left
+					case "LEFT":
 						MoveInDirection(NavDirection.Left);
 						break;
-					case 3: // Right
+					case "RIGHT":
 						MoveInDirection(NavDirection.Right);
 						break;
-					case 4: // Select
+					case "SELECT":
 						ActivateFocusedNode();
 						break;
-					case 5: // Back
+					case "BACK":
 						// Check if we're exiting the application - require confirmation
 						if (CurrentContext?.ScopeNode?.TryGetVisual(out var scopeElement) == true
 							&& scopeElement is Window window
@@ -652,49 +672,122 @@ namespace AcManager.UiObserver
 			}
 			catch (Exception ex)
 			{
-				DebugLog.WriteLine($"[Navigator.Wheel] Error handling button {navButtonIndex}: {ex.Message}");
+				DebugLog.WriteLine($"[Navigator.Wheel] Error handling button {navKey}: {ex.Message}");
 			}
 		}
 
 		/// <summary>
 		/// Gets a human-readable description of what a button does.
 		/// </summary>
-		private static string GetActionDescription(int navButtonIndex)
+		private static string GetActionDescription(string navKey)
 		{
-			switch (navButtonIndex)
+			switch (navKey)
 			{
-				case 0: return "Move focus UP";
-				case 1: return "Move focus DOWN";
-				case 2: return "Move focus LEFT";
-				case 3: return "Move focus RIGHT";
-				case 4: return "ACTIVATE focused item (click)";
-				case 5: return "Go BACK / Exit group";
+				case "UP": return "Move focus UP";
+				case "DOWN": return "Move focus DOWN";
+				case "LEFT": return "Move focus LEFT";
+				case "RIGHT": return "Move focus RIGHT";
+				case "SELECT": return "ACTIVATE focused item (click)";
+				case "BACK": return "Go BACK / Exit group";
 				default: return "Unknown action";
 			}
 		}
 		
 		/// <summary>
 		/// Handles DirectInput device list changes (plug/unplug).
-		/// Updates device reference if wheel is reconnected.
-		/// ✅ Thread-safe: Uses lock for shared state access.
+		/// Updates device references when devices reconnect and recreates lambda handlers.
+		/// Thread-safe: Uses lock for shared state access.
 		/// </summary>
 		private static void OnWheelDevicesUpdated(object sender, EventArgs e)
 		{
-			var deviceId = ValuesStorage.Get<string>("WheelNav_DeviceId");
-			var device = FindDeviceByProductId(deviceId);
-
 			lock (_wheelStateLock)
 			{
-				if (device == null && _navigationWheel != null)
+				// Get required device IDs from current bindings
+				var requiredDeviceIds = _buttonBindings.Values
+					.Select(b => b.DeviceId)
+					.Distinct()
+					.ToList();
+
+				bool allDevicesPresent = true;
+				bool devicesChanged = false;
+
+				foreach (var deviceIdRequired in requiredDeviceIds)
 				{
-					DebugLog.WriteLine("[Navigator.Wheel] ⚠ Device disconnected");
-					_navigationWheel = null;
-					_wheelNavigationEnabled = false;
+					var deviceFound = FindDeviceByProductId(deviceIdRequired);
+
+					if (deviceFound == null && _navigationDevices.ContainsKey(deviceIdRequired))
+					{
+						// Device disconnected
+						DebugLog.WriteLine($"[Navigator.Wheel] ⚠ Device disconnected: {deviceIdRequired}");
+
+						// Detach handlers for this device's buttons
+						var disconnectedDevice = _navigationDevices[deviceIdRequired];
+						var handlersToRemove = _attachedHandlers
+							.Where(h => disconnectedDevice.Buttons.Contains(h.Button))
+							.ToList();
+
+						foreach (var attached in handlersToRemove)
+						{
+							attached.Button.PropertyChanged -= attached.Handler;
+							_attachedHandlers.Remove(attached);
+						}
+
+						_navigationDevices.Remove(deviceIdRequired);
+						allDevicesPresent = false;
+						devicesChanged = true;
+					}
+					else if (deviceFound != null && !_navigationDevices.ContainsKey(deviceIdRequired))
+					{
+						// Device reconnected
+						DebugLog.WriteLine($"[Navigator.Wheel] ✅ Device reconnected: {deviceFound.DisplayName}");
+						_navigationDevices[deviceIdRequired] = deviceFound;
+
+						// Recreate lambda handlers for this device's bindings
+						foreach (var kvp in _buttonBindings.Where(b => b.Value.DeviceId == deviceIdRequired))
+						{
+							var navKey = kvp.Key;
+							var binding = kvp.Value;
+
+							if (binding.ButtonIndex >= 0 && binding.ButtonIndex < deviceFound.Buttons.Length)
+							{
+								var button = deviceFound.Buttons[binding.ButtonIndex];
+
+								// Create lambda that captures navKey
+								PropertyChangedEventHandler handler = (s, ev) => {
+									var btn = (DirectInputButton)s;
+									if (ev.PropertyName == nameof(DirectInputButton.Value) && btn.Value)
+									{
+										DebugLog.WriteLine($"[Navigator.Wheel] Button pressed: {navKey} ({deviceFound.DisplayName} Button {btn.Id})");
+										Application.Current?.Dispatcher.BeginInvoke(
+											DispatcherPriority.Normal,
+											new Action(() => OnWheelButtonPressed(navKey))
+										);
+									}
+								};
+
+								button.PropertyChanged += handler;
+								_attachedHandlers.Add(new AttachedHandler { Button = button, Handler = handler });
+
+								DebugLog.WriteLine($"[Navigator.Wheel]   Reattached handler for {navKey}");
+							}
+						}
+
+						devicesChanged = true;
+					}
 				}
-				else if (device != null && _navigationWheel == null)
+
+				// Update enabled state based on device presence
+				if (!allDevicesPresent || _navigationDevices.Count < requiredDeviceIds.Count)
 				{
-					DebugLog.WriteLine("[Navigator.Wheel] ✅ Device reconnected");
-					_navigationWheel = device;
+					if (_wheelNavigationEnabled)
+					{
+						DebugLog.WriteLine("[Navigator.Wheel] ⚠ Disabling navigation (device missing)");
+						_wheelNavigationEnabled = false;
+					}
+				}
+				else if (!_wheelNavigationEnabled && _navigationDevices.Count == requiredDeviceIds.Count && devicesChanged)
+				{
+					DebugLog.WriteLine("[Navigator.Wheel] ✅ Re-enabling navigation (all devices present)");
 					_wheelNavigationEnabled = true;
 				}
 			}
@@ -809,42 +902,79 @@ namespace AcManager.UiObserver
 		}
 
 		/// <summary>
-		/// Saves wheel navigation configuration.
-		/// Called by configuration wizard after user presses all 6 buttons.
+		/// Saves multi-device wheel navigation configuration.
+		/// Called by wizard after user configures all 6 buttons.
 		/// </summary>
-		public static void SaveWheelConfig(string deviceId, string deviceName, int[] buttonMapping)
+		/// <param name="bindings">Dictionary of NavKey → ButtonBinding</param>
+		public static void SaveWheelConfig(Dictionary<string, ButtonBinding> bindings)
 		{
-			if (buttonMapping?.Length != 6)
-				throw new ArgumentException("Button mapping must contain exactly 6 buttons", nameof(buttonMapping));
+			if (bindings == null || bindings.Count != 6)
+				throw new ArgumentException("Configuration must contain exactly 6 button bindings", nameof(bindings));
 
-			if (buttonMapping.Any(b => b < 0))
-				throw new ArgumentException("Button mapping contains invalid indices", nameof(buttonMapping));
+			// Validate all nav keys are present
+			string[] requiredKeys = { "UP", "DOWN", "LEFT", "RIGHT", "SELECT", "BACK" };
+			foreach (var key in requiredKeys)
+			{
+				if (!bindings.ContainsKey(key))
+					throw new ArgumentException($"Missing required navigation key: {key}", nameof(bindings));
+			}
 
-			// Store array as comma-separated string (ValuesStorage doesn't support int[])
-			var buttonMappingString = string.Join(",", buttonMapping);
+			// Validate ProductId lengths and button indices
+			foreach (var binding in bindings.Values)
+			{
+				if (binding.DeviceId.Length != 36)
+					throw new ArgumentException($"Invalid ProductId length for {binding.NavKey}: {binding.DeviceId.Length} (expected 36)", nameof(bindings));
 
-			DebugLog.WriteLine($"[Navigator.Wheel] Saving configuration:");
-			DebugLog.WriteLine($"[Navigator.Wheel]   Device: {deviceName}");
-			DebugLog.WriteLine($"[Navigator.Wheel]   ProductId: {deviceId}");
-			DebugLog.WriteLine($"[Navigator.Wheel]   Buttons: [{string.Join(", ", buttonMapping)}]");
+				if (binding.ButtonIndex < 0)
+					throw new ArgumentException($"Invalid button index for {binding.NavKey}: {binding.ButtonIndex}", nameof(bindings));
+			}
 
+			// Convert bindings to config string
+			var configString = string.Join(",", bindings.Values.Select(b => b.ToString()));
+
+			DebugLog.WriteLine($"[Navigator.Wheel] Saving multi-device configuration:");
+			DebugLog.WriteLine($"[Navigator.Wheel]   Config: {configString}");
+
+			foreach (var kvp in bindings)
+			{
+				var b = kvp.Value;
+				DebugLog.WriteLine($"[Navigator.Wheel]   {b.NavKey}: {b.DeviceName} ({b.DeviceId}) Button {b.ButtonIndex}");
+			}
+
+			// Save to storage
 			ValuesStorage.Set("WheelNav_Enabled", true);
-			ValuesStorage.Set("WheelNav_DeviceId", deviceId);
-			ValuesStorage.Set("WheelNav_DeviceName", deviceName);
-			ValuesStorage.Set("WheelNav_ButtonMapping", buttonMappingString);
+			ValuesStorage.Set("WheelNav_ButtonConfig", configString);
 
 			DebugLog.WriteLine($"[Navigator.Wheel] ✅ Configuration saved successfully");
 
-			// Reload and enable (may fail if watcher not created yet - that's OK)
-			if (LoadWheelButtonConfig())
-			{
-				EnableWheelPolling();
-				DebugLog.WriteLine("[Navigator.Wheel] Configuration activated immediately");
-			}
-			else
-			{
-				DebugLog.WriteLine("[Navigator.Wheel] Configuration will be loaded on next startup");
-			}
+			// Stop old polling before reloading (critical for wizard completion)
+			DisableWheelPolling();
+			DebugLog.WriteLine("[Navigator.Wheel] Stopped old polling to reload new config");
+
+			// Reload and enable immediately
+			Application.Current?.Dispatcher.BeginInvoke(
+				DispatcherPriority.ApplicationIdle,
+				new Action(async () =>
+				{
+					try
+					{
+						DebugLog.WriteLine("[Navigator.Wheel] Reloading configuration...");
+						if (await LoadWheelButtonConfigAsync(true))
+						{
+							EnableWheelPolling();
+							DebugLog.WriteLine("[Navigator.Wheel] ✅ Configuration activated immediately");
+						}
+						else
+						{
+							DebugLog.WriteLine("[Navigator.Wheel] ⚠ Failed to load new configuration");
+						}
+					}
+					catch (Exception ex)
+					{
+						DebugLog.WriteLine($"[Navigator.Wheel] ❌ Failed to activate config: {ex.Message}");
+					}
+				})
+			);
 		}
 
 		/// <summary>
@@ -863,37 +993,50 @@ namespace AcManager.UiObserver
 		public static WheelConfigStatus GetWheelConfigStatus()
 		{
 			var enabled = ValuesStorage.Get("WheelNav_Enabled", false);
-			var deviceName = ValuesStorage.Get<string>("WheelNav_DeviceName");
-			var deviceId = ValuesStorage.Get<string>("WheelNav_DeviceId");
 
-			// ✅ FIX: Load button mapping as STRING, then parse to int[]
-			var mappingString = ValuesStorage.Get<string>("WheelNav_ButtonMapping");
-			int[] mapping = null;
+			// Get multi-device info from configuration
+			var buttonConfig = ValuesStorage.Get<string>("WheelNav_ButtonConfig");
+			int deviceCount = 0;
+			List<string> deviceNames = new List<string>();
 
-			if (!string.IsNullOrEmpty(mappingString))
+			if (!string.IsNullOrEmpty(buttonConfig))
 			{
-				try
+				var bindings = ParseButtonConfig(buttonConfig);
+				deviceCount = bindings.Values.Select(b => b.DeviceId).Distinct().Count();
+
+				lock (_wheelStateLock)
 				{
-					mapping = mappingString.Split(',').Select(int.Parse).ToArray();
+					deviceNames = _navigationDevices.Values.Select(d => d.DisplayName).ToList();
 				}
-				catch { }
 			}
 
 			return new WheelConfigStatus
 			{
 				Enabled = enabled,
-				DeviceName = deviceName ?? "Not configured",
-				DeviceId = deviceId,
-				ButtonMapping = mapping,
-				IsConnected = _navigationWheel != null,
-				IsPolling = _wheelNavigationEnabled
+				DeviceName = deviceNames.FirstOrDefault() ?? "Not configured",
+				DeviceId = null,  // Legacy field, not used in multi-device
+				ButtonMapping = null,  // Legacy field, not used in multi-device
+				IsConnected = _navigationDevices.Count > 0,
+				IsPolling = _wheelNavigationEnabled,
+				DeviceCount = deviceCount,
+				DeviceNames = deviceNames
 			};
 		}
 
 		#endregion
 		
 		#region Helper Classes
-		
+
+		/// <summary>
+		/// Tracks an attached event handler for proper cleanup.
+		/// Used to detach lambda handlers when disabling polling.
+		/// </summary>
+		private class AttachedHandler
+		{
+			public DirectInputButton Button { get; set; }
+			public PropertyChangedEventHandler Handler { get; set; }
+		}
+
 		/// <summary>
 		/// Represents a default button mapping for a specific wheel model.
 		/// </summary>
@@ -904,10 +1047,70 @@ namespace AcManager.UiObserver
 			public string Notes { get; set; }
 			public bool IsModularBase { get; set; }
 		}
-		
+
+		/// <summary>
+		/// Represents a binding between a navigation key and a physical button on a device.
+		/// Multi-device support: Each navigation key can be bound to a button from a different device.
+		/// Uses full 36-character ProductId for device identification.
+		/// </summary>
+		public class ButtonBinding
+		{
+			public string NavKey { get; set; }        // "UP", "DOWN", "LEFT", "RIGHT", "SELECT", "BACK"
+			public string DeviceId { get; set; }      // ProductId: "046D-C24F-0000-0000-504944564944"
+			public int ButtonIndex { get; set; }      // Physical button ID on the device
+			public string DeviceName { get; set; }    // "Logitech G29" (for display/debugging)
+
+			/// <summary>
+			/// Parses a binding from string format: "UP:046D-C24F-0000-0000-504944564944:13"
+			/// </summary>
+			public static ButtonBinding Parse(string bindingStr)
+			{
+				try
+				{
+					var parts = bindingStr.Split(':');
+					if (parts.Length != 3)
+					{
+						DebugLog.WriteLine($"[Navigator.Wheel] Invalid binding format: {bindingStr}");
+						return null;
+					}
+
+					var deviceId = parts[1].Trim();
+
+					// Validate ProductId length (should be 36 characters)
+					if (deviceId.Length != 36)
+					{
+						DebugLog.WriteLine($"[Navigator.Wheel] Invalid ProductId length: {deviceId.Length} (expected 36)");
+						return null;
+					}
+
+					return new ButtonBinding
+					{
+						NavKey = parts[0].Trim(),
+						DeviceId = deviceId,
+						ButtonIndex = int.Parse(parts[2].Trim()),
+						DeviceName = ""  // Will be populated when device is found
+					};
+				}
+				catch (Exception ex)
+				{
+					DebugLog.WriteLine($"[Navigator.Wheel] Error parsing binding '{bindingStr}': {ex.Message}");
+					return null;
+				}
+			}
+
+			/// <summary>
+			/// Converts binding to string format: "UP:046D-C24F-0000-0000-504944564944:13"
+			/// </summary>
+			public override string ToString()
+			{
+				return $"{NavKey}:{DeviceId}:{ButtonIndex}";
+			}
+		}
+
 		/// <summary>
 		/// Represents the current wheel navigation configuration status.
 		/// Used for UI display.
+		/// Supports both single-device and multi-device configurations.
 		/// </summary>
 		public class WheelConfigStatus
 		{
@@ -917,14 +1120,27 @@ namespace AcManager.UiObserver
 			public int[] ButtonMapping { get; set; }
 			public bool IsConnected { get; set; }
 			public bool IsPolling { get; set; }
-			
+
+			// Multi-device support
+			public int DeviceCount { get; set; }
+			public List<string> DeviceNames { get; set; }
+
 			public override string ToString()
 			{
 				if (!Enabled)
 					return "Wheel navigation: Disabled";
-				
+
 				var status = IsConnected ? (IsPolling ? "Active" : "Paused") : "Disconnected";
-				return $"Wheel navigation: {status} ({DeviceName})";
+
+				// Show device count if multi-device
+				if (DeviceCount > 1)
+				{
+					return $"Wheel navigation: {status} ({DeviceCount} devices)";
+				}
+				else
+				{
+					return $"Wheel navigation: {status} ({DeviceName})";
+				}
 			}
 		}
 		

@@ -21,15 +21,26 @@ namespace AcManager.UiObserver
 		#region Fields
 
 		private readonly string[] _stepNames = { "UP", "DOWN", "LEFT", "RIGHT", "SELECT", "BACK" };
-		private readonly int[] _capturedButtons = new int[6];
+		private readonly Dictionary<string, CapturedBinding> _capturedBindings = 
+			new Dictionary<string, CapturedBinding>();
 		private int _currentStep = 0;
 
 		private DirectInputScanner.Watcher _watcher;
-		private DirectInputDevice _selectedDevice;
 		private List<DirectInputDevice> _availableDevices;
+		private List<DirectInputDevice> _selectedDevices;  // User-selected devices to scan
 
 		// Polling timer for button detection
 		private System.Windows.Threading.DispatcherTimer _pollTimer;
+
+		/// <summary>
+		/// Represents a captured button binding during configuration.
+		/// </summary>
+		private class CapturedBinding
+		{
+			public string DeviceId { get; set; }
+			public string DeviceName { get; set; }
+			public int ButtonIndex { get; set; }
+		}
 
 		#endregion
 		
@@ -38,27 +49,28 @@ namespace AcManager.UiObserver
 		public WheelConfigDialog()
 		{
 			InitializeComponent();
-			
+
 			// Hook cleanup event
 			Closed += OnDialogClosed;
-			
-			// Start in device selection
-			StartDeviceSelection();
+
+			// Start multi-device scan and button capture
+			StartMultiDeviceCapture();
 		}
 		
 		#endregion
 		
-		#region Device Selection
-		
+		#region Multi-Device Scanning
+
 		/// <summary>
-		/// Scans for wheels and shows device selection or auto-proceeds if only one found.
+		/// Scans for all compatible devices and shows device selection screen.
+		/// Allows user to exclude vJoy or other virtual devices.
 		/// </summary>
-		private async void StartDeviceSelection()
+		private async void StartMultiDeviceCapture()
 		{
-			Debug.WriteLine("[WheelConfig] Starting device selection...");
+			Debug.WriteLine("[WheelConfig] Starting device scan...");
 
 			// Show "Scanning..." message immediately
-			StepTitle.Text = "Detecting steering wheels...";
+			StepTitle.Text = "Detecting input devices...";
 			StepPrompt.Text = "Please wait";
 			StepProgress.Text = "";
 			ButtonCapturePanel.Visibility = Visibility.Visible;
@@ -68,97 +80,136 @@ namespace AcManager.UiObserver
 
 			if (joysticks == null || joysticks.Count == 0)
 			{
-				ShowError("No steering wheels found.\n\nPlease connect a wheel and try again.");
+				ShowError("No input devices found.\n\nPlease connect a wheel or controller and try again.");
 				Close();
 				return;
 			}
 
-			// Convert to DirectInputDevice list (exclude Xbox controllers)
+			// Convert ALL devices to DirectInputDevice list (exclude Xbox controllers)
 			_availableDevices = new List<DirectInputDevice>();
 			foreach (var joystick in joysticks)
 			{
 				var device = DirectInputDevice.Create(joystick, -1);
-				if (device != null && !device.IsController && device.Buttons.Length >= 6)
+				if (device != null && !device.IsController && device.Buttons.Length > 0)
 				{
 					_availableDevices.Add(device);
+					Debug.WriteLine($"[WheelConfig] Found device: {device.DisplayName} ({device.Buttons.Length} buttons)");
 				}
 			}
 
 			if (_availableDevices.Count == 0)
 			{
-				ShowError("No compatible steering wheels found.\n\n" +
-						 "Wheels must have at least 6 buttons.");
+				ShowError("No compatible input devices found.\n\n" +
+						 "Devices must have at least 1 button.");
 				Close();
 				return;
 			}
 
 			Debug.WriteLine($"[WheelConfig] Found {_availableDevices.Count} compatible device(s)");
 
-			// Auto-select if only one device
-			if (_availableDevices.Count == 1)
-			{
-				_selectedDevice = _availableDevices[0];
-				Debug.WriteLine($"[WheelConfig] Auto-selected: {_selectedDevice.DisplayName}");
-
-				// Create watcher for button polling
-				_watcher = DirectInputScanner.Watch();
-
-				StartButtonCapture();
-			}
-			else
-			{
-				// Hide scanning message, show device selection UI
-				ButtonCapturePanel.Visibility = Visibility.Collapsed;
-				DeviceListBox.ItemsSource = _availableDevices;
-				DeviceSelectionPanel.Visibility = Visibility.Visible;
-			}
+			// Show device selection UI (allow user to exclude vJoy, etc.)
+			ShowDeviceSelection();
 		}
-		
-		private void OnDeviceSelected(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+
+		#endregion
+
+		#region Device Selection
+
+		/// <summary>
+		/// Shows device selection screen.
+		/// Allows user to check/uncheck devices to exclude vJoy or other virtual devices.
+		/// </summary>
+		private void ShowDeviceSelection()
 		{
-			ContinueButton.IsEnabled = DeviceListBox.SelectedItem != null;
+			Debug.WriteLine("[WheelConfig] Showing device selection screen...");
+
+			// Hide button capture, show device selection
+			ButtonCapturePanel.Visibility = Visibility.Collapsed;
+			DeviceSelectionPanel.Visibility = Visibility.Visible;
+
+			// Populate device list with checkboxes (all checked by default)
+			DeviceListBox.ItemsSource = _availableDevices.Select(d => new DeviceCheckItem
+			{
+				Device = d,
+				IsSelected = true,
+				DisplayText = $"{d.DisplayName} ({d.Buttons.Length} buttons)"
+			}).ToList();
+
+			// Enable continue button
+			ContinueButton.IsEnabled = true;
+
+			Debug.WriteLine($"[WheelConfig] Device selection ready - {_availableDevices.Count} device(s) available");
 		}
-		
+
+		/// <summary>
+		/// Device selection item with checkbox state.
+		/// </summary>
+		private class DeviceCheckItem
+		{
+			public DirectInputDevice Device { get; set; }
+			public bool IsSelected { get; set; }
+			public string DisplayText { get; set; }
+		}
+
 		private void OnContinueClicked(object sender, RoutedEventArgs e)
 		{
-			_selectedDevice = DeviceListBox.SelectedItem as DirectInputDevice;
-			if (_selectedDevice == null) return;
+			// Get selected devices from checked items
+			_selectedDevices = DeviceListBox.ItemsSource
+				.Cast<DeviceCheckItem>()
+				.Where(item => item.IsSelected)
+				.Select(item => item.Device)
+				.ToList();
 
-			Debug.WriteLine($"[WheelConfig] User selected: {_selectedDevice.DisplayName}");
+			if (_selectedDevices.Count == 0)
+			{
+				ShowError("Please select at least one device to configure.");
+				return;
+			}
+
+			Debug.WriteLine($"[WheelConfig] User selected {_selectedDevices.Count} device(s):");
+			foreach (var device in _selectedDevices)
+			{
+				Debug.WriteLine($"[WheelConfig]   - {device.DisplayName}");
+			}
 
 			// Create watcher for button polling
 			_watcher = DirectInputScanner.Watch();
 
+			// Start button capture with selected devices only
 			StartButtonCapture();
 		}
-		
+
 		#endregion
-		
+
 		#region Button Capture
 		
 		/// <summary>
 		/// Starts sequential button capture process.
+		/// Polls ONLY user-selected devices - excludes vJoy and other unwanted devices.
 		/// </summary>
 		private void StartButtonCapture()
 		{
 			Debug.WriteLine("[WheelConfig] Starting button capture...");
 
-			// Hide device selection, show capture UI
+			// Ensure button capture UI is visible
 			DeviceSelectionPanel.Visibility = Visibility.Collapsed;
 			ButtonCapturePanel.Visibility = Visibility.Visible;
 
 			// Reset state
 			_currentStep = 0;
-			Array.Clear(_capturedButtons, 0, _capturedButtons.Length);
+			_capturedBindings.Clear();
 
-			// Attach handlers to ALL buttons
-			foreach (var button in _selectedDevice.Buttons)
+			// Attach handlers to ALL buttons on SELECTED devices only
+			foreach (var device in _selectedDevices)
 			{
-				button.PropertyChanged += OnButtonPressedDuringConfig;
+				foreach (var button in device.Buttons)
+				{
+					button.PropertyChanged += OnButtonPressedDuringConfig;
+				}
+				Debug.WriteLine($"[WheelConfig] Attached handlers to {device.DisplayName} ({device.Buttons.Length} buttons)");
 			}
 
-			// ✅ CRITICAL: Start polling timer to detect button presses
-			// Without this, PropertyChanged events will never fire!
+			// Start polling timer to detect button presses
 			_pollTimer = new System.Windows.Threading.DispatcherTimer
 			{
 				Interval = TimeSpan.FromMilliseconds(20) // 50Hz polling
@@ -166,7 +217,7 @@ namespace AcManager.UiObserver
 			_pollTimer.Tick += OnPollTick;
 			_pollTimer.Start();
 
-			Debug.WriteLine("[WheelConfig] Polling started at 50Hz");
+			Debug.WriteLine($"[WheelConfig] Polling started at 50Hz for {_selectedDevices.Count} selected device(s)");
 
 			// Update prompt for first step
 			UpdatePrompt();
@@ -174,17 +225,22 @@ namespace AcManager.UiObserver
 		}
 
 		/// <summary>
-		/// Polls the device to update button states.
+		/// Polls SELECTED devices to update button states.
 		/// This MUST run for PropertyChanged events to fire!
 		/// </summary>
 		private void OnPollTick(object sender, EventArgs e)
 		{
-			_selectedDevice?.OnTick();
+			// Poll only user-selected devices (excludes vJoy, etc.)
+			foreach (var device in _selectedDevices)
+			{
+				device.OnTick();
+			}
 		}
 		
 		/// <summary>
 		/// Handles button presses during configuration.
-		/// Captures button IDs sequentially.
+		/// Captures button IDs sequentially from ANY selected device.
+		/// Tracks which device each button came from.
 		/// </summary>
 		private void OnButtonPressedDuringConfig(object sender, PropertyChangedEventArgs e)
 		{
@@ -193,10 +249,33 @@ namespace AcManager.UiObserver
 			// Only react to rising edge (button pressed, not released)
 			if (e.PropertyName == nameof(DirectInputButton.Value) && button.Value)
 			{
-				// Capture this button
-				_capturedButtons[_currentStep] = button.Id;
+				// Find which device this button belongs to (from selected devices only)
+				DirectInputDevice sourceDevice = null;
+				foreach (var device in _selectedDevices)
+				{
+					if (device.Buttons.Contains(button))
+					{
+						sourceDevice = device;
+						break;
+					}
+				}
 
-				Debug.WriteLine($"[WheelConfig] Step {_currentStep} ({_stepNames[_currentStep]}): Button {button.Id} captured");
+				if (sourceDevice == null)
+				{
+					Debug.WriteLine("[WheelConfig] Button press from unknown device - ignoring");
+					return;
+				}
+
+				// Capture this button with device info
+				var navKey = _stepNames[_currentStep];
+				_capturedBindings[navKey] = new CapturedBinding
+				{
+					DeviceId = sourceDevice.ProductId,
+					DeviceName = sourceDevice.DisplayName,
+					ButtonIndex = button.Id
+				};
+
+				Debug.WriteLine($"[WheelConfig] Step {_currentStep} ({navKey}): {sourceDevice.DisplayName} Button {button.Id} captured");
 
 				_currentStep++;
 				ResetButton.IsEnabled = true;
@@ -216,31 +295,41 @@ namespace AcManager.UiObserver
 		
 		/// <summary>
 		/// Updates prompt text for current step.
+		/// Shows which device(s) buttons were captured from.
 		/// </summary>
 		private void UpdatePrompt()
 		{
 			StepTitle.Text = $"Press button for {_stepNames[_currentStep]} navigation";
 			StepProgress.Text = $"Step {_currentStep + 1} of 6";
-			
-			// Show captured buttons so far
+
+			// Show captured bindings so far (with device names)
 			if (_currentStep > 0)
 			{
-				var captured = string.Join(", ", _capturedButtons.Take(_currentStep));
-				StepPrompt.Text = $"Captured: [{captured}]";
+				var capturedInfo = new List<string>();
+				for (int i = 0; i < _currentStep; i++)
+				{
+					var navKey = _stepNames[i];
+					if (_capturedBindings.ContainsKey(navKey))
+					{
+						var binding = _capturedBindings[navKey];
+						capturedInfo.Add($"{navKey}: {binding.DeviceName} Btn{binding.ButtonIndex}");
+					}
+				}
+				StepPrompt.Text = string.Join("\n", capturedInfo);
 			}
-			else
-			{
-				StepPrompt.Text = "Press any button on your wheel";
+				else
+				{
+					StepPrompt.Text = $"Press any button on selected device(s)\n{_selectedDevices.Count} device(s) active";
+				}
 			}
-		}
 		
 		private void OnResetClicked(object sender, RoutedEventArgs e)
 		{
 			Debug.WriteLine("[WheelConfig] User reset configuration");
-			
+
 			// Reset to first step
 			_currentStep = 0;
-			Array.Clear(_capturedButtons, 0, _capturedButtons.Length);
+			_capturedBindings.Clear();
 			UpdatePrompt();
 			ResetButton.IsEnabled = false;
 		}
@@ -250,24 +339,34 @@ namespace AcManager.UiObserver
 		#region Completion
 		
 		/// <summary>
-		/// Validates and saves configuration.
+		/// Validates and saves multi-device configuration.
 		/// </summary>
 		private void FinishConfiguration()
 		{
-			Debug.WriteLine("[WheelConfig] Finishing configuration...");
+			Debug.WriteLine("[WheelConfig] Finishing multi-device configuration...");
 
 			// Stop polling
 			_pollTimer?.Stop();
 			_pollTimer = null;
 
-			// Detach button handlers
-			foreach (var button in _selectedDevice.Buttons)
+			// Detach button handlers from ALL devices
+			foreach (var device in _availableDevices)
 			{
-				button.PropertyChanged -= OnButtonPressedDuringConfig;
+				foreach (var button in device.Buttons)
+				{
+					button.PropertyChanged -= OnButtonPressedDuringConfig;
+				}
 			}
 
-			// Validate - check for duplicate buttons
-			if (_capturedButtons.Distinct().Count() != 6)
+			// Validate - check for duplicate button+device combinations
+			var uniqueBindings = new HashSet<string>();
+			foreach (var binding in _capturedBindings.Values)
+			{
+				var key = $"{binding.DeviceId}:{binding.ButtonIndex}";
+				uniqueBindings.Add(key);
+			}
+
+			if (uniqueBindings.Count != 6)
 			{
 				ShowError("Error: You selected the same button multiple times.\n\n" +
 						 "Each navigation function must use a different button.\n\n" +
@@ -277,25 +376,31 @@ namespace AcManager.UiObserver
 				return;
 			}
 
-			// ✅ DIAGNOSTIC: Show device details BEFORE saving
-			MessageBox.Show(
-				$"🎮 Selected Device Details:\n\n" +
-				$"Display Name: {_selectedDevice.DisplayName}\n" +
-				$"ProductId: {_selectedDevice.ProductId}\n\n" +
-				$"⚠️ USING ProductId (NOT InstanceId)\n" +
-				$"ProductId persists across reboots and USB ports.\n\n" +
-				$"Button Mapping: [{string.Join(", ", _capturedButtons)}]\n\n" +
-				$"About to save this configuration...",
-				"DEBUG - Device Info",
-				MessageBoxButton.OK
-			);
+			// Convert to Navigator.ButtonBinding format
+			var bindings = new Dictionary<string, Navigator.ButtonBinding>();
+			foreach (var kvp in _capturedBindings)
+			{
+				var navKey = kvp.Key;
+				var binding = kvp.Value;
 
-			// Save configuration via Navigator API
-			Navigator.SaveWheelConfig(
-				deviceId: _selectedDevice.ProductId,
-				deviceName: _selectedDevice.DisplayName,
-				buttonMapping: _capturedButtons
-			);
+				bindings[navKey] = new Navigator.ButtonBinding
+				{
+					NavKey = navKey,
+					DeviceId = binding.DeviceId,
+					DeviceName = binding.DeviceName,
+					ButtonIndex = binding.ButtonIndex
+				};
+			}
+
+			Debug.WriteLine("[WheelConfig] Multi-device configuration:");
+			foreach (var kvp in bindings)
+			{
+				var b = kvp.Value;
+				Debug.WriteLine($"[WheelConfig]   {b.NavKey}: {b.DeviceName} ({b.DeviceId}) Button {b.ButtonIndex}");
+			}
+
+			// Save configuration via Navigator API (multi-device format)
+			Navigator.SaveWheelConfig(bindings);
 
 			Debug.WriteLine("[WheelConfig] ✅ Configuration saved successfully");
 
@@ -304,42 +409,58 @@ namespace AcManager.UiObserver
 		}
 		
 		/// <summary>
-		/// Shows completion summary.
+		/// Shows completion summary with multi-device info.
 		/// </summary>
 		private void ShowCompletion()
 		{
 			ButtonCapturePanel.Visibility = Visibility.Collapsed;
 			CompletionPanel.Visibility = Visibility.Visible;
-			
-			// Build summary text
-			var summary = $"Device: {_selectedDevice.DisplayName}\n\n" +
-			             $"Button Mapping:\n" +
-			             $"  UP:     Button {_capturedButtons[0]}\n" +
-			             $"  DOWN:   Button {_capturedButtons[1]}\n" +
-			             $"  LEFT:   Button {_capturedButtons[2]}\n" +
-			             $"  RIGHT:  Button {_capturedButtons[3]}\n" +
-			             $"  SELECT: Button {_capturedButtons[4]}\n" +
-			             $"  BACK:   Button {_capturedButtons[5]}\n\n";
-			
-			// Add note for modular bases
-			var productKey = _selectedDevice.ProductId.Length >= 9 
-				? _selectedDevice.ProductId.Substring(0, 9) 
-				: _selectedDevice.ProductId;
-			
+
+			// Build multi-device summary
+			var deviceCount = _capturedBindings.Values.Select(b => b.DeviceId).Distinct().Count();
+			var summary = $"Configuration Complete!\n\n";
+
+			if (deviceCount == 1)
+			{
+				var deviceName = _capturedBindings.Values.First().DeviceName;
+				summary += $"Device: {deviceName}\n\n";
+			}
+			else
+			{
+				summary += $"Using {deviceCount} devices\n\n";
+			}
+
+			summary += "Button Mapping:\n";
+			foreach (var navKey in _stepNames)
+			{
+				if (_capturedBindings.ContainsKey(navKey))
+				{
+					var binding = _capturedBindings[navKey];
+					var deviceDisplay = deviceCount > 1 ? $" ({binding.DeviceName})" : "";
+					summary += $"  {navKey,-7}: Button {binding.ButtonIndex}{deviceDisplay}\n";
+				}
+			}
+
+			summary += "\n";
+
+			// Check if any device is a modular base
 			var modularBases = new[] { "346E-0006", "0EB7-6204", "3416-0301" };
-			if (modularBases.Contains(productKey))
+			var hasModularBase = _capturedBindings.Values.Any(b => 
+				b.DeviceId.Length >= 9 && modularBases.Contains(b.DeviceId.Substring(0, 9)));
+
+			if (hasModularBase)
 			{
 				summary += "📌 Note: Swappable Wheel Rims\n" +
-				          "Your wheel base supports interchangeable rims. If you swap rims, " +
-				          "ensure your wheel's control panel software maps the same physical " +
-				          "buttons to the same button numbers across all rims.";
+						  "One or more devices support interchangeable rims. If you swap rims, " +
+						  "ensure your wheel's control panel software maps the same physical " +
+						  "buttons to the same button numbers across all rims.";
 			}
 			else
 			{
 				summary += "Wheel navigation is now active!\n" +
-				          "Use your configured buttons to navigate the launcher.";
+						  "Use your configured buttons to navigate the launcher.";
 			}
-			
+
 			CompletionSummary.Text = summary;
 		}
 		
@@ -370,12 +491,15 @@ namespace AcManager.UiObserver
 			_pollTimer?.Stop();
 			_pollTimer = null;
 
-			// Cleanup - detach handlers and dispose watcher
-			if (_selectedDevice != null)
+			// Cleanup - detach handlers from selected devices
+			if (_selectedDevices != null)
 			{
-				foreach (var button in _selectedDevice.Buttons)
+				foreach (var device in _selectedDevices)
 				{
-					button.PropertyChanged -= OnButtonPressedDuringConfig;
+					foreach (var button in device.Buttons)
+					{
+						button.PropertyChanged -= OnButtonPressedDuringConfig;
+					}
 				}
 			}
 

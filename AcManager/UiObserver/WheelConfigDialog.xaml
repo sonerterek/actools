@@ -11,18 +11,24 @@
     <Grid Margin="20">
         <!-- Device Selection Panel -->
         <StackPanel x:Name="DeviceSelectionPanel" Visibility="Collapsed">
-            <TextBlock Text="Select Your Wheel" FontSize="20" FontWeight="Bold" Margin="0,0,0,20"/>
-            <TextBlock Text="Multiple wheels detected. Select the one you want to use for navigation:" 
-                       TextWrapping="Wrap" Margin="0,0,0,10"/>
-            <ListBox x:Name="DeviceListBox" Height="200" Margin="0,0,0,20"
-                     SelectionChanged="OnDeviceSelected">
+            <TextBlock Text="Select Devices to Use" FontSize="20" FontWeight="Bold" Margin="0,0,0,20"/>
+            <TextBlock TextWrapping="Wrap" Margin="0,0,0,10">
+                <Run Text="Check the devices you want to use for navigation."/>
+                <LineBreak/>
+                <Run Text="Uncheck vJoy or other virtual devices to avoid duplicate button presses." FontStyle="Italic" Foreground="Gray"/>
+            </TextBlock>
+            <ListBox x:Name="DeviceListBox" Height="200" Margin="0,0,0,20">
                 <ListBox.ItemTemplate>
                     <DataTemplate>
-                        <TextBlock Text="{Binding DisplayName}" FontSize="14" Padding="5"/>
+                        <CheckBox IsChecked="{Binding IsSelected}" 
+                                 Content="{Binding DisplayText}" 
+                                 FontSize="14" 
+                                 Padding="5"/>
                     </DataTemplate>
                 </ListBox.ItemTemplate>
             </ListBox>
-            <Button Content="Continue" Click="OnContinueClicked" 
+            <Button Content="Continue" 
+                    Click="OnContinueClicked"
                     IsEnabled="False" x:Name="ContinueButton"
                     Padding="20,10" HorizontalAlignment="Right"/>
         </StackPanel>
