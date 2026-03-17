@@ -331,8 +331,9 @@ namespace AcManager.UiObserver
 		/// <summary>
 		/// Executes a shortcut key using its bound node.
 		/// Handles confirmation, TargetType (Element vs Group), and NoAutoClick.
+		/// Internal - can be called by both StreamDeck and Wheel navigation.
 		/// </summary>
-		private static void ExecuteShortcutKey(string keyName)
+		internal static void ExecuteShortcutKey(string keyName, bool skipConfirmation = false)
 		{
 			if (!_shortcutKeysByKeyName.TryGetValue(keyName, out var shortcut))
 			{
@@ -349,13 +350,13 @@ namespace AcManager.UiObserver
 
 			DebugLog.WriteLine($"[Navigator] Executing shortcut: {shortcut}");
 
-			// Handle confirmation
-			if (shortcut.RequireConfirmation)
+			// Handle confirmation (skip if skipConfirmation == true)
+			if (shortcut.RequireConfirmation && !skipConfirmation)
 			{
 				var confirmMessage = string.IsNullOrEmpty(shortcut.ConfirmationMessage)
 					? $"Execute {keyName}"
 					: shortcut.ConfirmationMessage;
-				
+
 				RequestConfirmation(
 					description: confirmMessage,
 					onConfirm: () => ExecuteShortcutOnNode(shortcut.BoundNode, shortcut),
@@ -364,7 +365,11 @@ namespace AcManager.UiObserver
 				return;
 			}
 
-			// Direct execution
+			// Direct execution (confirmation bypassed or not required)
+			if (skipConfirmation && shortcut.RequireConfirmation)
+			{
+				DebugLog.WriteLine($"[Navigator] Confirmation bypassed (wheel has no visual display)");
+			}
 			ExecuteShortcutOnNode(shortcut.BoundNode, shortcut);
 		}
 

@@ -44,8 +44,18 @@ namespace AcManager.UiObserver
 		private static System.Threading.Timer _wheelPollTimer;  // Background thread timer (not DispatcherTimer)
 		private static readonly object _wheelStateLock = new object();  // Thread-safety for shared state
 
-		// Button names for debug output
-		private static readonly string[] _stepNames = { "UP", "DOWN", "LEFT", "RIGHT", "SELECT", "BACK" };
+		// Button names for navigation and shortcuts
+		// 6 core navigation buttons (always required)
+		private static readonly string[] _coreNavButtons = { "UP", "DOWN", "LEFT", "RIGHT", "SELECT", "BACK" };
+		// 1 special action button (required)
+		private static readonly string[] _actionButtons = { "GO" };
+		// 3 optional shortcut buttons (can be skipped in wizard)
+		private static readonly string[] _optionalShortcuts = { "SC1", "SC2", "SC3" };
+
+		// Combined list for wizard steps (9 buttons total: 6 nav + 1 action + 2 we'll make optional later)
+		// For now, let's make GO required and SC1/SC2/SC3 optional
+		private static readonly string[] _requiredButtons = { "UP", "DOWN", "LEFT", "RIGHT", "SELECT", "BACK", "GO" };
+		private static readonly string[] _allButtonNames = { "UP", "DOWN", "LEFT", "RIGHT", "SELECT", "BACK", "GO", "SC1", "SC2", "SC3" };
 
 
 		/// <summary>
@@ -615,64 +625,269 @@ namespace AcManager.UiObserver
 		/// <summary>
 		/// Handles wheel button press events and executes navigation commands.
 		/// Always runs on UI THREAD (marshaled from lambda handlers on background thread).
-		/// Takes navKey parameter directly from lambda closure - no lookup needed.
+		/// Context-aware: Maps physical buttons to different actions based on current page.
+		/// Supports slider interaction on Slider/DoubleSlider/RoundSlider pages.
+		/// Supports GO and custom shortcut buttons (SC1, SC2, SC3).
 		/// </summary>
 		private static void OnWheelButtonPressed(string navKey)
 		{
-			DebugLog.WriteLine($"[Navigator.Wheel] Executing: {navKey} ({GetActionDescription(navKey)})");
+			var currentPage = CurrentContext?.PageName ?? "Navigation";
+
+			DebugLog.WriteLine($"[Navigator.Wheel] Button: {navKey}, Page: {currentPage}");
 
 			try
 			{
-				switch (navKey)
+				// Handle GO and shortcut buttons first (work on any page)
+				if (navKey == "GO" || navKey == "SC1" || navKey == "SC2" || navKey == "SC3")
 				{
-					case "UP":
-						MoveInDirection(NavDirection.Up);
+					HandleActionOrShortcutButton(navKey);
+					return;
+				}
+
+				// Handle based on current page context
+				switch (currentPage)
+				{
+					case "Slider":
+						HandleSliderPage(navKey);
 						break;
-					case "DOWN":
-						MoveInDirection(NavDirection.Down);
+
+					case "DoubleSlider":
+						HandleDoubleSliderPage(navKey);
 						break;
-					case "LEFT":
-						MoveInDirection(NavDirection.Left);
+
+					case "RoundSlider":
+						HandleRoundSliderPage(navKey);
 						break;
-					case "RIGHT":
-						MoveInDirection(NavDirection.Right);
+
+					case "Confirm":
+						// Wheel doesn't support Confirm page - ignore all buttons
+						DebugLog.WriteLine("[Navigator.Wheel] Ignoring button on Confirm page (wheel doesn't support visual confirmation)");
 						break;
-					case "SELECT":
-						ActivateFocusedNode();
-						break;
-					case "BACK":
-						// Check if we're exiting the application - require confirmation
-						if (CurrentContext?.ScopeNode?.TryGetVisual(out var scopeElement) == true
-							&& scopeElement is Window window
-							&& window.GetType().Name == "MainWindow")
-						{
-							RequestConfirmation(
-								description: "Exit Application",
-								onConfirm: () =>
-								{
-									DebugLog.WriteLine("[Navigator.Wheel] ✅ Exiting application (user confirmed)");
-									Application.Current?.Dispatcher.Invoke(() =>
-									{
-										Application.Current.Shutdown();
-									});
-								},
-								onCancel: () =>
-								{
-									DebugLog.WriteLine("[Navigator.Wheel] User cancelled exit");
-								}
-							);
-						}
-						else
-						{
-							// Regular back navigation
-							ExitGroup();
-						}
+
+					default: // Navigation, UpDown, custom pages
+						HandleNavigationPage(navKey);
 						break;
 				}
 			}
 			catch (Exception ex)
 			{
 				DebugLog.WriteLine($"[Navigator.Wheel] Error handling button {navKey}: {ex.Message}");
+			}
+		}
+
+		/// <summary>
+		/// Handles GO and custom shortcut buttons (SC1, SC2, SC3).
+		/// Maps buttons to context-specific shortcut keys and executes them.
+		/// GO button executes primary action shortcuts (Go, OK, Start).
+		/// SC1/SC2/SC3 execute context-specific shortcuts (ChangeCar, Brands, etc.).
+		/// </summary>
+		private static void HandleActionOrShortcutButton(string navKey)
+		{
+			DebugLog.WriteLine($"[Navigator.Wheel] Action/Shortcut button: {navKey}");
+
+			// Get current page name to determine context
+			var pageName = CurrentContext?.PageName ?? "Navigation";
+
+			// Map button to shortcut key based on context
+			string shortcutKey = MapButtonToShortcutKey(navKey, pageName);
+
+			if (shortcutKey == null)
+			{
+				DebugLog.WriteLine($"[Navigator.Wheel] No shortcut mapped for {navKey} on page {pageName}");
+				return;
+			}
+
+				DebugLog.WriteLine($"[Navigator.Wheel] Executing shortcut: {navKey} → {shortcutKey} (page: {pageName})");
+
+				// Execute the shortcut using shared method from Navigator.SD.cs
+				// CRITICAL: Skip confirmation - wheel has no visual display to show confirmation dialogs
+				ExecuteShortcutKey(shortcutKey, skipConfirmation: true);
+			}
+
+		/// <summary>
+		/// Maps a wheel button (GO, SC1, SC2, SC3) to a shortcut key name based on current page.
+		/// Returns null if no mapping exists for this button/page combination.
+		/// </summary>
+		private static string MapButtonToShortcutKey(string buttonName, string pageName)
+		{
+			switch (buttonName)
+			{
+				case "GO":
+					// Primary action buttons - execute main action for current page
+					switch (pageName)
+					{
+						case "QuickDrive": return "QD_Go";
+						case "Career": return "KC_QuickDrive";
+						case "SelectCarDialog": return "SCD_OK";
+						case "SelectTrackDialog": return "STD_OK";
+					}
+					break;
+
+				case "SC1":
+					// Shortcut 1 - typically "change/select primary item"
+					switch (pageName)
+					{
+						case "QuickDrive": return "QD_ChangeCar";
+						case "Career": return "KC_SeriesGroup";
+						case "SelectCarDialog": return "SCD_Brands";
+						case "SelectTrackDialog": return "STD_Countries";
+					}
+					break;
+
+				case "SC2":
+					// Shortcut 2 - typically "change/select secondary item"
+					switch (pageName)
+					{
+						case "QuickDrive": return "QD_ChangeTrack";
+						case "Career": return "KC_START";
+						case "SelectCarDialog": return "SCD_Countries";
+						case "SelectTrackDialog": return "STD_Categories";
+					}
+					break;
+
+				case "SC3":
+					// Shortcut 3 - additional shortcuts (sparse mapping)
+					switch (pageName)
+					{
+						case "SelectTrackDialog": return "STD_Configurations";
+						// No mappings for QuickDrive, Career, SelectCarDialog
+					}
+					break;
+			}
+
+			return null; // No mapping found
+		}
+
+		/// <summary>
+		/// Handles buttons on Slider page (value adjustment only).
+		/// LEFT/RIGHT = decrease/increase value
+		/// BACK/SELECT = exit interaction mode
+		/// </summary>
+		private static void HandleSliderPage(string navKey)
+		{
+			switch (navKey)
+			{
+				case "LEFT":
+					DebugLog.WriteLine("[Navigator.Wheel] Slider: Decrease value");
+					AdjustSliderValue(SliderAdjustment.SmallDecrement);
+					break;
+				case "RIGHT":
+					DebugLog.WriteLine("[Navigator.Wheel] Slider: Increase value");
+					AdjustSliderValue(SliderAdjustment.SmallIncrement);
+					break;
+				case "BACK":
+				case "SELECT":
+					DebugLog.WriteLine("[Navigator.Wheel] Slider: Exit interaction mode");
+					ExitGroup(); // Exits interaction mode
+					break;
+				// Ignore UP/DOWN on Slider page
+			}
+		}
+
+		/// <summary>
+		/// Handles buttons on DoubleSlider page (value + range adjustment).
+		/// LEFT/RIGHT = decrease/increase value
+		/// UP/DOWN = expand/contract range
+		/// BACK/SELECT = exit interaction mode
+		/// </summary>
+		private static void HandleDoubleSliderPage(string navKey)
+		{
+			switch (navKey)
+			{
+				case "LEFT":
+					DebugLog.WriteLine("[Navigator.Wheel] DoubleSlider: Decrease value");
+					AdjustSliderValue(SliderAdjustment.SmallDecrement);
+					break;
+				case "RIGHT":
+					DebugLog.WriteLine("[Navigator.Wheel] DoubleSlider: Increase value");
+					AdjustSliderValue(SliderAdjustment.SmallIncrement);
+					break;
+				case "UP":
+					DebugLog.WriteLine("[Navigator.Wheel] DoubleSlider: Expand range");
+					AdjustSliderRange(SliderAdjustment.SmallIncrement);
+					break;
+				case "DOWN":
+					DebugLog.WriteLine("[Navigator.Wheel] DoubleSlider: Contract range");
+					AdjustSliderRange(SliderAdjustment.SmallDecrement);
+					break;
+				case "BACK":
+				case "SELECT":
+					DebugLog.WriteLine("[Navigator.Wheel] DoubleSlider: Exit interaction mode");
+					ExitGroup(); // Exits interaction mode
+					break;
+			}
+		}
+
+		/// <summary>
+		/// Handles buttons on RoundSlider page (circular slider value adjustment).
+		/// LEFT/RIGHT = turn CCW/CW
+		/// BACK/SELECT = exit interaction mode
+		/// </summary>
+		private static void HandleRoundSliderPage(string navKey)
+		{
+			switch (navKey)
+			{
+				case "LEFT":
+					DebugLog.WriteLine("[Navigator.Wheel] RoundSlider: Turn CCW");
+					AdjustSliderValue(SliderAdjustment.SmallDecrement); // Turn CCW
+					break;
+				case "RIGHT":
+					DebugLog.WriteLine("[Navigator.Wheel] RoundSlider: Turn CW");
+					AdjustSliderValue(SliderAdjustment.SmallIncrement); // Turn CW
+					break;
+				case "BACK":
+				case "SELECT":
+					DebugLog.WriteLine("[Navigator.Wheel] RoundSlider: Exit interaction mode");
+					ExitGroup(); // Exits interaction mode
+					break;
+				// Ignore UP/DOWN on RoundSlider
+			}
+		}
+
+		/// <summary>
+		/// Handles buttons on Navigation/UpDown/custom pages (standard navigation).
+		/// Wheel has no visual confirmation UI - all actions execute immediately.
+		/// </summary>
+		private static void HandleNavigationPage(string navKey)
+		{
+			DebugLog.WriteLine($"[Navigator.Wheel] Executing: {navKey} ({GetActionDescription(navKey)})");
+
+			switch (navKey)
+			{
+				case "UP":
+					MoveInDirection(NavDirection.Up);
+					break;
+				case "DOWN":
+					MoveInDirection(NavDirection.Down);
+					break;
+				case "LEFT":
+					MoveInDirection(NavDirection.Left);
+					break;
+				case "RIGHT":
+					MoveInDirection(NavDirection.Right);
+					break;
+				case "SELECT":
+					ActivateFocusedNode();
+					break;
+				case "BACK":
+					// Check if we're exiting the application
+					if (CurrentContext?.ScopeNode?.TryGetVisual(out var scopeElement) == true
+						&& scopeElement is Window window
+						&& window.GetType().Name == "MainWindow")
+					{
+						// Wheel has no visual confirmation UI - exit immediately
+						DebugLog.WriteLine("[Navigator.Wheel] Exiting application (BACK at MainWindow - no confirmation needed)");
+						Application.Current?.Dispatcher.Invoke(() =>
+						{
+							Application.Current.Shutdown();
+						});
+					}
+					else
+					{
+						// Regular back navigation
+						ExitGroup();
+					}
+					break;
 			}
 		}
 
@@ -857,11 +1072,15 @@ namespace AcManager.UiObserver
 		/// <summary>
 		/// Launches the wheel configuration wizard.
 		/// Shows a dialog for device selection and button capture.
+		/// Temporarily stops wheel polling to prevent interference with button capture.
 		/// Returns true if configuration was completed successfully.
 		/// </summary>
 		public static bool ShowWheelConfigWizard()
 		{
 			DebugLog.WriteLine("[Navigator.Wheel] Launching configuration wizard...");
+
+			// Remember if polling was enabled before wizard
+			bool wasPollingEnabled = (_wheelPollTimer != null);
 
 			try
 			{
@@ -872,6 +1091,14 @@ namespace AcManager.UiObserver
 					return (bool)Application.Current.Dispatcher.Invoke(() => ShowWheelConfigWizard());
 				}
 
+				// CRITICAL: Stop wheel polling before showing wizard
+				// This prevents Navigator.Wheel from handling button presses during configuration
+				if (wasPollingEnabled)
+				{
+					DebugLog.WriteLine("[Navigator.Wheel] Stopping wheel polling for wizard (prevents interference)");
+					DisableWheelPolling();
+				}
+
 				DebugLog.WriteLine("[Navigator.Wheel] Creating WheelConfigDialog...");
 				var dialog = new WheelConfigDialog();
 
@@ -879,12 +1106,94 @@ namespace AcManager.UiObserver
 				var result = dialog.ShowDialog();
 
 				DebugLog.WriteLine($"[Navigator.Wheel] Wizard result: {result}");
+
+				// Enable polling based on wizard result:
+				// - If DialogResult == true: Wizard completed successfully, SaveWheelConfig was called
+				//   → Reload new config and enable polling
+				// - If DialogResult == false: Wizard was cancelled
+				//   → Reload old config (if was enabled before) and enable polling
+
+				if (result == true)
+				{
+					// Wizard completed successfully - enable new configuration
+					DebugLog.WriteLine("[Navigator.Wheel] Wizard completed successfully, enabling new configuration");
+					Application.Current?.Dispatcher.BeginInvoke(
+						DispatcherPriority.ApplicationIdle,
+						new Action(async () =>
+						{
+							try
+							{
+								if (await LoadWheelButtonConfigAsync(true))
+								{
+									EnableWheelPolling();
+									DebugLog.WriteLine("[Navigator.Wheel] ✅ New configuration activated");
+								}
+								else
+								{
+									DebugLog.WriteLine("[Navigator.Wheel] ⚠ Failed to load new configuration");
+								}
+							}
+							catch (Exception ex)
+							{
+								DebugLog.WriteLine($"[Navigator.Wheel] Failed to activate new config: {ex.Message}");
+							}
+						})
+					);
+				}
+				else if (wasPollingEnabled)
+				{
+					// Wizard was cancelled - restore old configuration if it was enabled
+					DebugLog.WriteLine("[Navigator.Wheel] Wizard cancelled, restoring previous configuration");
+					Application.Current?.Dispatcher.BeginInvoke(
+						DispatcherPriority.ApplicationIdle,
+						new Action(async () =>
+						{
+							try
+							{
+								if (await LoadWheelButtonConfigAsync(true))
+								{
+									EnableWheelPolling();
+									DebugLog.WriteLine("[Navigator.Wheel] ✅ Previous configuration restored");
+								}
+							}
+							catch (Exception ex)
+							{
+								DebugLog.WriteLine($"[Navigator.Wheel] Failed to restore config: {ex.Message}");
+							}
+						})
+					);
+				}
+
 				return result == true;
 			}
 			catch (Exception ex)
 			{
 				DebugLog.WriteLine($"[Navigator.Wheel] Wizard error: {ex.Message}");
 				DebugLog.WriteLine($"[Navigator.Wheel] Stack trace: {ex.StackTrace}");
+
+				// If error occurred and polling was enabled before, try to restart it
+				if (wasPollingEnabled)
+				{
+					DebugLog.WriteLine("[Navigator.Wheel] Attempting to restart polling after error");
+					try
+					{
+						Application.Current?.Dispatcher.BeginInvoke(
+							DispatcherPriority.ApplicationIdle,
+							new Action(async () =>
+							{
+								try
+								{
+									if (await LoadWheelButtonConfigAsync(true))
+									{
+										EnableWheelPolling();
+									}
+								}
+								catch { }
+							})
+						);
+					}
+					catch { }
+				}
 
 				// Show error to user
 				try
@@ -903,21 +1212,22 @@ namespace AcManager.UiObserver
 
 		/// <summary>
 		/// Saves multi-device wheel navigation configuration.
-		/// Called by wizard after user configures all 6 buttons.
+		/// Called by wizard after user configures all required buttons (and optional shortcuts).
 		/// </summary>
 		/// <param name="bindings">Dictionary of NavKey → ButtonBinding</param>
 		public static void SaveWheelConfig(Dictionary<string, ButtonBinding> bindings)
 		{
-			if (bindings == null || bindings.Count != 6)
-				throw new ArgumentException("Configuration must contain exactly 6 button bindings", nameof(bindings));
+			if (bindings == null || bindings.Count < 7)
+				throw new ArgumentException("Configuration must contain at least 7 required button bindings (6 nav + GO)", nameof(bindings));
 
-			// Validate all nav keys are present
-			string[] requiredKeys = { "UP", "DOWN", "LEFT", "RIGHT", "SELECT", "BACK" };
-			foreach (var key in requiredKeys)
+			// Validate all required keys are present (6 nav + GO)
+			foreach (var key in _requiredButtons)
 			{
 				if (!bindings.ContainsKey(key))
 					throw new ArgumentException($"Missing required navigation key: {key}", nameof(bindings));
 			}
+
+			// Optional shortcuts (SC1, SC2, SC3) may or may not be present
 
 			// Validate ProductId lengths and button indices
 			foreach (var binding in bindings.Values)
@@ -945,37 +1255,18 @@ namespace AcManager.UiObserver
 			ValuesStorage.Set("WheelNav_Enabled", true);
 			ValuesStorage.Set("WheelNav_ButtonConfig", configString);
 
-			DebugLog.WriteLine($"[Navigator.Wheel] ✅ Configuration saved successfully");
+				DebugLog.WriteLine($"[Navigator.Wheel] ✅ Configuration saved successfully");
 
-			// Stop old polling before reloading (critical for wizard completion)
-			DisableWheelPolling();
-			DebugLog.WriteLine("[Navigator.Wheel] Stopped old polling to reload new config");
+				// CRITICAL: Do NOT enable polling here!
+				// SaveWheelConfig is called while the wizard completion screen is still open.
+				// If we enable polling now, wheel buttons will interfere with the completion screen
+				// (e.g., SELECT button trying to click Done button will fail).
+				// Polling will be enabled by ShowWheelConfigWizard() after dialog closes with DialogResult = true.
 
-			// Reload and enable immediately
-			Application.Current?.Dispatcher.BeginInvoke(
-				DispatcherPriority.ApplicationIdle,
-				new Action(async () =>
-				{
-					try
-					{
-						DebugLog.WriteLine("[Navigator.Wheel] Reloading configuration...");
-						if (await LoadWheelButtonConfigAsync(true))
-						{
-							EnableWheelPolling();
-							DebugLog.WriteLine("[Navigator.Wheel] ✅ Configuration activated immediately");
-						}
-						else
-						{
-							DebugLog.WriteLine("[Navigator.Wheel] ⚠ Failed to load new configuration");
-						}
-					}
-					catch (Exception ex)
-					{
-						DebugLog.WriteLine($"[Navigator.Wheel] ❌ Failed to activate config: {ex.Message}");
-					}
-				})
-			);
-		}
+				// Stop old polling to prevent conflicts
+				DisableWheelPolling();
+				DebugLog.WriteLine("[Navigator.Wheel] Stopped old polling (new config will be activated after wizard closes)");
+			}
 
 		/// <summary>
 		/// Disables wheel navigation (called from settings UI or wizard).

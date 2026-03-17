@@ -20,7 +20,10 @@ namespace AcManager.UiObserver
 	{
 		#region Fields
 
-		private readonly string[] _stepNames = { "UP", "DOWN", "LEFT", "RIGHT", "SELECT", "BACK" };
+		// Step configuration: 7 required buttons + 3 optional shortcuts
+		private readonly string[] _stepNames = { "UP", "DOWN", "LEFT", "RIGHT", "SELECT", "BACK", "GO", "SC1", "SC2", "SC3" };
+		private readonly bool[] _stepOptional = { false, false, false, false, false, false, false, true, true, true }; // SC1/SC2/SC3 are optional
+
 		private readonly Dictionary<string, CapturedBinding> _capturedBindings = 
 			new Dictionary<string, CapturedBinding>();
 		private int _currentStep = 0;
@@ -266,8 +269,31 @@ namespace AcManager.UiObserver
 					return;
 				}
 
-				// Capture this button with device info
 				var navKey = _stepNames[_currentStep];
+				var isOptional = _stepOptional[_currentStep];
+
+				// Check if user pressed SELECT to skip optional button
+				if (isOptional && button.Id == GetSelectButtonIndex())
+				{
+					Debug.WriteLine($"[WheelConfig] Step {_currentStep} ({navKey}): User skipped optional button with SELECT");
+					// Don't capture binding for this button
+					_currentStep++;
+					ResetButton.IsEnabled = true;
+
+					if (_currentStep >= _stepNames.Length)
+					{
+						// All steps done - finish
+						FinishConfiguration();
+					}
+					else
+					{
+						// Move to next step
+						UpdatePrompt();
+					}
+					return;
+				}
+
+				// Capture this button with device info
 				_capturedBindings[navKey] = new CapturedBinding
 				{
 					DeviceId = sourceDevice.ProductId,
@@ -280,9 +306,9 @@ namespace AcManager.UiObserver
 				_currentStep++;
 				ResetButton.IsEnabled = true;
 
-				if (_currentStep >= 6)
+				if (_currentStep >= _stepNames.Length)
 				{
-					// All buttons captured - finish
+					// All steps done - finish
 					FinishConfiguration();
 				}
 				else
@@ -296,11 +322,23 @@ namespace AcManager.UiObserver
 		/// <summary>
 		/// Updates prompt text for current step.
 		/// Shows which device(s) buttons were captured from.
+		/// For optional buttons, shows that SELECT can skip.
 		/// </summary>
 		private void UpdatePrompt()
 		{
-			StepTitle.Text = $"Press button for {_stepNames[_currentStep]} navigation";
-			StepProgress.Text = $"Step {_currentStep + 1} of 6";
+			var navKey = _stepNames[_currentStep];
+			var isOptional = _stepOptional[_currentStep];
+
+			if (isOptional)
+			{
+				StepTitle.Text = $"Press button for {navKey} (optional shortcut)";
+			}
+			else
+			{
+				StepTitle.Text = $"Press button for {navKey}";
+			}
+
+			StepProgress.Text = $"Step {_currentStep + 1} of {_stepNames.Length}";
 
 			// Show captured bindings so far (with device names)
 			if (_currentStep > 0)
@@ -308,20 +346,36 @@ namespace AcManager.UiObserver
 				var capturedInfo = new List<string>();
 				for (int i = 0; i < _currentStep; i++)
 				{
-					var navKey = _stepNames[i];
-					if (_capturedBindings.ContainsKey(navKey))
+					var key = _stepNames[i];
+					if (_capturedBindings.ContainsKey(key))
 					{
-						var binding = _capturedBindings[navKey];
-						capturedInfo.Add($"{navKey}: {binding.DeviceName} Btn{binding.ButtonIndex}");
+						var binding = _capturedBindings[key];
+						capturedInfo.Add($"{key}: {binding.DeviceName} Btn{binding.ButtonIndex}");
+					}
+					else if (_stepOptional[i])
+					{
+						capturedInfo.Add($"{key}: (skipped)");
 					}
 				}
-				StepPrompt.Text = string.Join("\n", capturedInfo);
+				var prompt = string.Join("\n", capturedInfo);
+				if (isOptional)
+				{
+					prompt += "\n\nPress SELECT to skip";
+				}
+				StepPrompt.Text = prompt;
 			}
+			else
+			{
+				if (isOptional)
+				{
+					StepPrompt.Text = $"Press button on selected device(s)\n{_selectedDevices.Count} device(s) active\n\nPress SELECT to skip";
+				}
 				else
 				{
-					StepPrompt.Text = $"Press any button on selected device(s)\n{_selectedDevices.Count} device(s) active";
+					StepPrompt.Text = $"Press button on selected device(s)\n{_selectedDevices.Count} device(s) active";
 				}
 			}
+		}
 		
 		private void OnResetClicked(object sender, RoutedEventArgs e)
 		{
@@ -333,7 +387,20 @@ namespace AcManager.UiObserver
 			UpdatePrompt();
 			ResetButton.IsEnabled = false;
 		}
-		
+
+		/// <summary>
+		/// Gets the button index for SELECT (if configured).
+		/// Returns -1 if SELECT not yet configured.
+		/// </summary>
+		private int GetSelectButtonIndex()
+		{
+			if (_capturedBindings.ContainsKey("SELECT"))
+			{
+				return _capturedBindings["SELECT"].ButtonIndex;
+			}
+			return -1;
+		}
+
 		#endregion
 		
 		#region Completion
@@ -359,6 +426,8 @@ namespace AcManager.UiObserver
 			}
 
 			// Validate - check for duplicate button+device combinations
+			// Required: 6 navigation buttons + GO button = 7 minimum
+			// Optional: SC1, SC2, SC3 (up to 10 total)
 			var uniqueBindings = new HashSet<string>();
 			foreach (var binding in _capturedBindings.Values)
 			{
@@ -366,11 +435,24 @@ namespace AcManager.UiObserver
 				uniqueBindings.Add(key);
 			}
 
-			if (uniqueBindings.Count != 6)
+			// Must have at least 7 unique bindings (6 nav + GO)
+			if (uniqueBindings.Count < 7)
 			{
 				ShowError("Error: You selected the same button multiple times.\n\n" +
-						 "Each navigation function must use a different button.\n\n" +
+						 $"Required: 7 unique buttons (6 navigation + GO)\n" +
+						 $"You configured: {uniqueBindings.Count} unique buttons\n\n" +
 						 "Click Reset to try again.");
+				_currentStep = 0;
+				UpdatePrompt();
+				return;
+			}
+
+			// Verify configured count matches captured count
+			if (uniqueBindings.Count != _capturedBindings.Count)
+			{
+				ShowError("Error: Duplicate buttons detected.\n\n" +
+						 $"You selected {_capturedBindings.Count} buttons, but only {uniqueBindings.Count} are unique.\n\n" +
+						 "Each function must use a different button. Click Reset to try again.");
 				_currentStep = 0;
 				UpdatePrompt();
 				return;
@@ -515,7 +597,40 @@ namespace AcManager.UiObserver
 		
 		private void ShowError(string message)
 		{
+			// CRITICAL: Pause button detection before showing error dialog
+			// This prevents button presses from being captured while error dialog is visible
+			// which would corrupt the DirectInput state and cause missed steps
+			Debug.WriteLine($"[WheelConfig] Pausing button detection for error dialog");
+
+			// Temporarily detach handlers
+			if (_selectedDevices != null)
+			{
+				foreach (var device in _selectedDevices)
+				{
+					foreach (var button in device.Buttons)
+					{
+						button.PropertyChanged -= OnButtonPressedDuringConfig;
+					}
+				}
+			}
+
+			// Show error dialog (blocking)
 			ModernDialog.ShowMessage(message, "Wheel Configuration", MessageBoxButton.OK);
+
+			// Resume button detection after error dialog closes
+			Debug.WriteLine($"[WheelConfig] Resuming button detection after error dialog");
+
+			// Re-attach handlers
+			if (_selectedDevices != null)
+			{
+				foreach (var device in _selectedDevices)
+				{
+					foreach (var button in device.Buttons)
+					{
+						button.PropertyChanged += OnButtonPressedDuringConfig;
+					}
+				}
+			}
 		}
 		
 		#endregion

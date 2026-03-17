@@ -241,9 +241,10 @@ namespace AcManager.UiObserver
 		/// Adjusts the value of the currently focused slider control.
 		/// Only works when in InteractiveControl context (slider interaction mode).
 		/// Supports Slider, DoubleSlider, and RoundSlider types.
+		/// StreamDeck-agnostic - can be called by both StreamDeck and Wheel navigation.
 		/// </summary>
 		/// <param name="adjustment">The adjustment operation to perform</param>
-		private static void AdjustSliderValue(SliderAdjustment adjustment)
+		internal static void AdjustSliderValue(SliderAdjustment adjustment)
 		{
 			if (CurrentContext?.ContextType != NavContextType.InteractiveControl)
 			{
@@ -295,9 +296,10 @@ namespace AcManager.UiObserver
 		/// <summary>
 		/// Adjusts the range (min/max bounds) of a DoubleSlider control.
 		/// Only works when in InteractiveControl context with a DoubleSlider.
+		/// StreamDeck-agnostic - can be called by both StreamDeck and Wheel navigation.
 		/// </summary>
 		/// <param name="adjustment">The adjustment operation to perform</param>
-		private static void AdjustSliderRange(SliderAdjustment adjustment)
+		internal static void AdjustSliderRange(SliderAdjustment adjustment)
 		{
 			if (CurrentContext?.ContextType != NavContextType.InteractiveControl)
 			{

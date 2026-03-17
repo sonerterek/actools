@@ -43,7 +43,9 @@ namespace AcManager.UiObserver
 
 		/// <summary>
 		/// Requests user confirmation for a critical operation.
-		/// Switches StreamDeck to Confirm page with Yes/No buttons.
+		/// Shows Confirm page on StreamDeck with YES/NO buttons.
+		/// This is ONLY called by StreamDeck - wheel navigation executes actions immediately
+		/// without confirmation since it has no visual UI to display YES/NO.
 		/// </summary>
 		/// <param name="description">Description of the action (for logging)</param>
 		/// <param name="onConfirm">Action to execute if user confirms (Yes)</param>
@@ -62,11 +64,15 @@ namespace AcManager.UiObserver
 
 			DebugLog.WriteLine($"[Navigator] RequestConfirmation: '{description}'");
 
-			// Switch to Confirm page
-			if (_streamDeckClient != null)
+			// Switch to Confirm page on StreamDeck
+			if (_streamDeckClient?.IsConnected == true)
 			{
 				DebugLog.WriteLine($"[Navigator] Switching to Confirm page");
 				_streamDeckClient.SwitchPage("Confirm");
+			}
+			else
+			{
+				DebugLog.WriteLine($"[Navigator] ⚠ StreamDeck not connected - cannot show Confirm page");
 			}
 		}
 
