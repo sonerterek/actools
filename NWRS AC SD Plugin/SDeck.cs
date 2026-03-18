@@ -1245,39 +1245,45 @@ namespace NWRS_AC_SDPlugin
 			{
 				Debug.WriteLine($"?? SDeck: Virtual key disappeared from {e.Event.Payload.Coordinates.Columns},{e.Event.Payload.Coordinates.Rows}");
 				SDPage.RemoveKey(e.Event.Payload.Coordinates, e.Event.Context);
-				
-				// Check if all virtual keys are gone - THIS is when we clear the flag
+
+				// Count remaining keys
 				var remainingKeys = SDPage.SDKeys.Cast<SDKey>().Count(k => k.Context != null);
 				Debug.WriteLine($"?? SDeck: {remainingKeys} virtual keys remaining after disappearance");
-				
-				if (remainingKeys == 0)
+
+				// Aggressive clearing: Clear flag immediately when ANY key disappears (not all 15)
+				// This prevents stuck states from missed WillDisappear events
+				if (remainingKeys < 15)
 				{
 					lock (_stateLock)
 					{
-						_virtualKeysReady = false;
-						
-						// Check if we expected this disappearance
-						if (_cmExpectsVirtualKeysGone)
+						// Only process if we were previously at 15 keys (ready state)
+						if (_virtualKeysReady)
 						{
-							// EXPECTED: CM switched profiles OR CM disconnected
-							Debug.WriteLine("? SDeck: VirtualKeys disappeared (EXPECTED - CM switched profile or disconnected)");
-							_cmExpectsVirtualKeysGone = false;  // Reset flag
-							_currentProfile = null;  // Don't know where we are anymore
-						}
-						else
-						{
-							// UNEXPECTED: User manually switched away
-							Debug.WriteLine("?? SDeck: VirtualKeys disappeared (UNEXPECTED - user manual switch?)");
-							_currentProfile = null;
-							
-							// Only trigger recovery if still active
-							if (_isActive)
+							_virtualKeysReady = false;
+
+							// Check if we expected this disappearance
+							if (_cmExpectsVirtualKeysGone)
 							{
-								Debug.WriteLine("?? SDeck: Active mode - recovery will be attempted by CheckAndCorrectProfileMismatch");
+								// EXPECTED: CM switched profiles OR CM disconnected
+								Debug.WriteLine($"? SDeck: VirtualKeys no longer ready (EXPECTED - {remainingKeys}/15 keys remain)");
+								_cmExpectsVirtualKeysGone = false;  // Reset flag
+								_currentProfile = null;  // Don't know where we are anymore
 							}
 							else
 							{
-								Debug.WriteLine("?? SDeck: Passive mode - no recovery needed");
+								// UNEXPECTED: User manually switched away or profile change
+								Debug.WriteLine($"?? SDeck: VirtualKeys no longer ready (UNEXPECTED - {remainingKeys}/15 keys remain)");
+								_currentProfile = null;
+
+								// Only trigger recovery if still active
+								if (_isActive)
+								{
+									Debug.WriteLine("?? SDeck: Active mode - recovery will be attempted by CheckAndCorrectProfileMismatch");
+								}
+								else
+								{
+									Debug.WriteLine("?? SDeck: Passive mode - no recovery needed");
+								}
 							}
 						}
 					}

@@ -146,14 +146,14 @@ namespace NWRS_AC_SDPlugin
 			{
 				// Activate SDeck when client connects
 				SDeck.Activate();
-				
+
 				// Immediately switch to NWRS AC profile if keys aren't ready
 				// This bypasses the command queue for the initial profile switch
 				if (!SDeck.AreVirtualKeysReady())
 				{
 					Debug.WriteLine("⚡ NamedPipe: Keys not ready - forcing immediate profile switch to NWRS AC");
 					SDeck.ForceImmediateProfileSwitch();
-					
+
 					// Wait briefly for keys to appear before allowing CM to send commands
 					int waitAttempts = 0;
 					while (!SDeck.AreVirtualKeysReady() && waitAttempts < 50) // 5 seconds max
@@ -161,7 +161,7 @@ namespace NWRS_AC_SDPlugin
 						await Task.Delay(100);
 						waitAttempts++;
 					}
-					
+
 					if (!SDeck.AreVirtualKeysReady())
 					{
 						Debug.WriteLine("⚠️ NamedPipe: Keys did not appear after 5 seconds - continuing anyway");
