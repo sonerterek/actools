@@ -39,7 +39,7 @@
     <None Update="INHERITANCE_EXAMPLES.md">
       <CopyToOutputDirectory>Never</CopyToOutputDirectory>
     </None>
-    <None Update="Protocol.md">
+    <None Update="PROTOCOL.md">
       <CopyToOutputDirectory>Never</CopyToOutputDirectory>
     </None>
     
