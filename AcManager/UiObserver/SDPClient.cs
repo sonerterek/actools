@@ -167,6 +167,12 @@ namespace AcManager.UiObserver
         // ??????????????????????????????????????????
 
         private bool _isReplicaSynced = false;
+
+        /// <summary>
+        /// True after initial state replication to the plugin has completed successfully.
+        /// Commands such as SwitchProfile are silently dropped while this is false.
+        /// </summary>
+        public bool IsReplicaSynced => _isReplicaSynced;
         private bool _isReplicating = false;
         private readonly Queue<string> _asyncCommandQueue = new Queue<string>();
 
@@ -189,6 +195,13 @@ namespace AcManager.UiObserver
         /// Fired when connection to StreamDeck plugin is successfully established.
         /// </summary>
         public event EventHandler ConnectionEstablished;
+
+        /// <summary>
+        /// Fired after the initial state replication to the plugin completes successfully.
+        /// At this point <see cref="IsReplicaSynced"/> is true and all commands (including
+        /// SwitchProfile) are safe to send.
+        /// </summary>
+        public event EventHandler ReplicationCompleted;
 
         /// <summary>
         /// Fired when connection to StreamDeck plugin is lost.
@@ -780,6 +793,8 @@ namespace AcManager.UiObserver
                 DebugLog.WriteLine("[SDPClient] ? Replication complete");
 
                 ProcessAsyncCommandQueue();
+
+                ReplicationCompleted?.Invoke(this, EventArgs.Empty);
             }
             catch (Exception ex)
             {

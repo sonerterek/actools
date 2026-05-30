@@ -224,6 +224,12 @@ namespace AcManager {
                         _showMainWindow = true;
                     }
 
+                    // Notify UiObserver that we are running without a UI, so StreamDeck
+                    // can switch directly to the ACS profile once replication completes.
+                    if (!_showMainWindow) {
+                        AcManager.UiObserver.Navigator.SetHeadlessMode(true);
+                    }
+
                     if (_additionalProcessing > 0) {
                         Logging.Write("Waiting for extra workers…");
                         await WaitForInProgress();

@@ -2402,7 +2402,7 @@
   </PropertyGroup>
   <Import Project="..\Libraries\PreBuildEvents.Templates.props" />
   <PropertyGroup>
-    <EditBinLocation>C:\Program Files (x86)\Microsoft Visual Studio 14.0\VC\bin\editbin.exe</EditBinLocation>
+    <EditBinLocation>C:\Program Files\Microsoft Visual Studio\18\Professional\VC\Tools\MSVC\14.51.36231\bin\Hostx86\x86\editbin.exe</EditBinLocation>
     <!-- In release builds, there is a special script to do that (and more). And I think 64-bit builds
      should work fine without that flag as well. -->
     <EditBinLocation Condition="'$(Configuration)|$(Platform)' != 'Debug|x86'">NUL</EditBinLocation>

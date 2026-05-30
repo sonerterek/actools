@@ -30,6 +30,7 @@ namespace AcManager.UiObserver
 		private static bool _streamDeckHasConnectedAtLeastOnce;
 		private static bool _discoverySessionHeaderWritten;
 		private static NavConfiguration _navConfig;
+		private static bool _isHeadless;
 		
 		/// <summary>
 		/// Runtime shortcut keys indexed by KeyName.
@@ -67,6 +68,9 @@ namespace AcManager.UiObserver
 			// ✅ NEW: Hook up game lifecycle events for StreamDeck profile management
 			GameWrapper.Started += OnGameStarted;
 			GameWrapper.Ended += OnGameEnded;
+
+			// Hook up replication-complete event for headless profile switching
+			_streamDeckClient.ReplicationCompleted += OnReplicationCompleted;
 			
 			// Define all keys and pages
 			DefineStreamDeckKeys(icons);
@@ -670,25 +674,38 @@ namespace AcManager.UiObserver
 		/// i.e. no main window was ever created (AC Launcher direct-launch path).
 		/// This check has zero footprint in the CM codebase.
 		/// </summary>
-		private static bool IsHeadlessMode()
+		/// <summary>
+		/// Sets headless mode. In headless mode the app has no UI and the StreamDeck
+		/// should switch directly to the ACS profile as soon as replication completes.
+		/// May be called before or after replication; late calls are handled safely.
+		/// </summary>
+		internal static void SetHeadlessMode(bool headless)
 		{
-			return Application.Current?.MainWindow == null;
+			_isHeadless = headless;
+
+			// If replication already finished before this was called, switch immediately.
+			if (_isHeadless && _streamDeckClient?.IsReplicaSynced == true)
+			{
+				DebugLog.WriteLine("[Navigator] SetHeadlessMode: replication already done — switching to ACS now");
+				_streamDeckClient.SwitchProfile("ACS");
+			}
+		}
+
+		/// <summary>
+		/// Called after SDPClient has fully replicated its state to the plugin.
+		/// This is the safe point to issue SwitchProfile in headless mode.
+		/// </summary>
+		private static void OnReplicationCompleted(object sender, EventArgs e)
+		{
+			if (!_isHeadless) return;
+
+			DebugLog.WriteLine("[Navigator] Replication complete in headless mode — switching directly to ACS profile");
+			_streamDeckClient?.SwitchProfile("ACS");
 		}
 
 		private static void OnStreamDeckConnected(object sender, EventArgs e)
 		{
 			DebugLog.WriteLine("[Navigator] StreamDeck connected event received");
-
-			// In headless (no-UI) mode, skip the normal NWRS AC profile entirely
-			// and go straight to ACS. There is no UI to navigate back to, so no
-			// SwitchProfileBack is needed — the app exits when the game ends.
-			if (IsHeadlessMode())
-			{
-				DebugLog.WriteLine("[Navigator] Headless mode detected — switching directly to ACS profile");
-				_streamDeckClient?.SwitchProfile("ACS");
-				_streamDeckHasConnectedAtLeastOnce = true;
-				return;
-			}
 
 			// ✅ FIX #2: Only show Toast if this is NOT the first connection
 			if (_streamDeckHasConnectedAtLeastOnce)
