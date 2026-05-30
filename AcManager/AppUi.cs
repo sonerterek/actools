@@ -31,8 +31,13 @@ namespace AcManager {
         public AppUi([NotNull] Application application) {
             _application = application ?? throw new ArgumentNullException(nameof(application));
 
-            // Initialize navigation mapper
-            AcManager.UiObserver.Navigator.Initialize();
+            // ✅ FIX: Determine headless mode BEFORE Navigator.Initialize() to avoid race condition
+            // If there are no command-line arguments, we'll show the main window
+            // This check is safe because AppArguments.Initialize() is called very early in App.xaml.cs
+            bool willShowMainWindow = !AppArguments.Values.Any();
+
+            // Initialize navigation mapper (passing headless flag)
+            AcManager.UiObserver.Navigator.Initialize(!willShowMainWindow);
 
             // Extra close-if-nothing-shown timer just to be sure
             if (_application.Dispatcher != null) {
@@ -222,12 +227,6 @@ namespace AcManager {
                     if (!AppArguments.Values.Any()
                             || await ArgumentsHandler.ProcessArguments(AppArguments.Values, false) != ArgumentsHandler.ShowMainWindow.No) {
                         _showMainWindow = true;
-                    }
-
-                    // Notify UiObserver that we are running without a UI, so StreamDeck
-                    // can switch directly to the ACS profile once replication completes.
-                    if (!_showMainWindow) {
-                        AcManager.UiObserver.Navigator.SetHeadlessMode(true);
                     }
 
                     if (_additionalProcessing > 0) {

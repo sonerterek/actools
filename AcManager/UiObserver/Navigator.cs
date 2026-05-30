@@ -194,7 +194,7 @@ namespace AcManager.UiObserver
 
 		#region Initialization
 
-		public static void Initialize()
+		public static void Initialize(bool headless = false)
 		{
 			if (_initialized) return;
 			_initialized = true;
@@ -209,6 +209,11 @@ namespace AcManager.UiObserver
 			DebugLog.WriteLine("[Navigator] ===== NAVIGATOR INITIALIZATION STARTED =====");
 			DebugLog.WriteLine($"[Navigator] Log file: {DebugLog.GetCurrentLogPath()}");
 
+			if (headless)
+			{
+				DebugLog.WriteLine("[Navigator] Running in HEADLESS mode (no UI, direct ACS profile switch)");
+			}
+
 			// Step 1: Load NavConfig from file FIRST
 			_navConfig = NavConfigParser.Load();
 
@@ -216,7 +221,7 @@ namespace AcManager.UiObserver
 			AddBuiltInRules();
 
 			// Step 3: Initialize StreamDeck (uses _navConfig)
-			InitializeStreamDeck();
+			InitializeStreamDeck(headless);
 
 			// Step 4: Initialize Wheel Navigation (follows same pattern as StreamDeck)
 			InitializeWheelNavigation();

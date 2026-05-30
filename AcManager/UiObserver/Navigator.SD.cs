@@ -45,39 +45,46 @@ namespace AcManager.UiObserver
 		/// Initializes the StreamDeck integration subsystem.
 		/// Called once during Navigator initialization.
 		/// </summary>
-		private static void InitializeStreamDeck()
+		private static void InitializeStreamDeck(bool headless = false)
 		{
 			DebugLog.WriteLine("[Navigator] Initializing StreamDeck integration...");
-			
+
+			// ✅ FIX: Set headless mode BEFORE connecting to avoid race condition
+			_isHeadless = headless;
+			if (_isHeadless)
+			{
+				DebugLog.WriteLine("[Navigator] Headless mode enabled - will switch to ACS profile after replication");
+			}
+
 			// Build runtime shortcut keys from classifications
 			BuildShortcutKeys();
-			
+
 			// Discover icons
 			var icons = SDPIconHelper.DiscoverIcons();
 			DebugLog.WriteLine($"[Navigator] Discovered {icons.Count} StreamDeck icons");
-			
+
 			// Create StreamDeck client
 			_streamDeckClient = new SDPClient();
-			
+
 			// Hook up events
 			_streamDeckClient.KeyPressed += OnStreamDeckKeyPressed;
 			_streamDeckClient.ConnectionEstablished += OnStreamDeckConnected;
 			_streamDeckClient.ConnectionLost += OnStreamDeckDisconnected;
 			_streamDeckClient.ReconnectionAttempt += OnStreamDeckReconnecting;
-			
+
 			// ✅ NEW: Hook up game lifecycle events for StreamDeck profile management
 			GameWrapper.Started += OnGameStarted;
 			GameWrapper.Ended += OnGameEnded;
 
 			// Hook up replication-complete event for headless profile switching
 			_streamDeckClient.ReplicationCompleted += OnReplicationCompleted;
-			
+
 			// Define all keys and pages
 			DefineStreamDeckKeys(icons);
 			DefineStreamDeckPages();
-			
+
 			DebugLog.WriteLine("[Navigator] StreamDeck initialization complete");
-			
+
 			// Connect to StreamDeck plugin
 			Task.Run(async () => await _streamDeckClient.ConnectAsync());
 		}
@@ -666,21 +673,22 @@ namespace AcManager.UiObserver
 		}
 
 		#endregion
-		
+
 		#region StreamDeck Connection Event Handlers
 
 		/// <summary>
-		/// Returns true when the app is running in headless (no-UI) mode,
-		/// i.e. no main window was ever created (AC Launcher direct-launch path).
-		/// This check has zero footprint in the CM codebase.
-		/// </summary>
-		/// <summary>
-		/// Sets headless mode. In headless mode the app has no UI and the StreamDeck
-		/// should switch directly to the ACS profile as soon as replication completes.
-		/// May be called before or after replication; late calls are handled safely.
+		/// [DEPRECATED] Sets headless mode dynamically.
+		/// 
+		/// NOTE: This method is now deprecated. Headless mode should be set during
+		/// Navigator.Initialize() to avoid race conditions with connection/replication.
+		/// 
+		/// Kept for backwards compatibility in case external code still calls it.
 		/// </summary>
 		internal static void SetHeadlessMode(bool headless)
 		{
+			if (_isHeadless == headless) return; // No change
+
+			DebugLog.WriteLine($"[Navigator] SetHeadlessMode called with {headless} (current: {_isHeadless})");
 			_isHeadless = headless;
 
 			// If replication already finished before this was called, switch immediately.
@@ -699,8 +707,14 @@ namespace AcManager.UiObserver
 		{
 			if (!_isHeadless) return;
 
-			DebugLog.WriteLine("[Navigator] Replication complete in headless mode — switching directly to ACS profile");
-			_streamDeckClient?.SwitchProfile("ACS");
+			DebugLog.WriteLine("[Navigator] Replication complete in headless mode");
+
+			// Give plugin time to process replicated state before switching profiles
+			Task.Delay(900).ContinueWith(_ =>
+			{
+				DebugLog.WriteLine("[Navigator] Switching to ACS profile");
+				_streamDeckClient?.SwitchProfile("ACS");
+			});
 		}
 
 		private static void OnStreamDeckConnected(object sender, EventArgs e)
