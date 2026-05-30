@@ -692,10 +692,31 @@ namespace AcManager.UiObserver
 		
 		#region StreamDeck Connection Event Handlers
 
+		/// <summary>
+		/// Returns true when the app is running in headless (no-UI) mode,
+		/// i.e. no main window was ever created (AC Launcher direct-launch path).
+		/// This check has zero footprint in the CM codebase.
+		/// </summary>
+		private static bool IsHeadlessMode()
+		{
+			return Application.Current?.MainWindow == null;
+		}
+
 		private static void OnStreamDeckConnected(object sender, EventArgs e)
 		{
 			Debug.WriteLine("[Navigator] StreamDeck connected event received");
-			
+
+			// In headless (no-UI) mode, skip the normal NWRS AC profile entirely
+			// and go straight to ACS. There is no UI to navigate back to, so no
+			// SwitchProfileBack is needed — the app exits when the game ends.
+			if (IsHeadlessMode())
+			{
+				Debug.WriteLine("[Navigator] Headless mode detected — switching directly to ACS profile");
+				_streamDeckClient?.SwitchProfile("ACS");
+				_streamDeckHasConnectedAtLeastOnce = true;
+				return;
+			}
+
 			// ✅ FIX #2: Only show Toast if this is NOT the first connection
 			if (_streamDeckHasConnectedAtLeastOnce)
 			{
@@ -720,7 +741,7 @@ namespace AcManager.UiObserver
 				// First connection - no Toast (expected behavior at startup)
 				Debug.WriteLine("[Navigator] First connection established (no Toast)");
 				_streamDeckHasConnectedAtLeastOnce = true;
-				
+
 				// ✅ REMOVED: Async validation is not needed
 				// The plugin's successful replication IS the validation
 				// Individual KeyDefined/PageDefined events are only sent when
