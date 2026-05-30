@@ -54,10 +54,17 @@ namespace AcManager.UiObserver
 			// ✅ Capture original value for Cancel functionality
 			object originalValue = CaptureControlValue(control);
 			
-			// Create interaction context (focus set to control itself)
+			// ✅ Determine page name at creation time if not explicitly provided
+			if (string.IsNullOrEmpty(pageName))
+			{
+				pageName = DeterminePageForNode(control, NavContextType.InteractiveControl);
+			}
+			
+			// ✅ Create interaction context with PageName assigned
 			var context = new NavContext(control, NavContextType.InteractiveControl, focusedNode: control)
 			{
-				OriginalValue = originalValue
+				OriginalValue = originalValue,
+				PageName = pageName  // ← Store page in context
 			};
 			
 			_contextStack.Add(context);
@@ -66,18 +73,10 @@ namespace AcManager.UiObserver
 			Debug.WriteLine($"[Navigator] Entered interaction mode: {control.SimpleName}");
 			Debug.WriteLine($"[Navigator] Context stack depth: {depth}");
 			Debug.WriteLine($"[Navigator] Context type: {NavContextType.InteractiveControl}");
+			Debug.WriteLine($"[Navigator] Context page: {pageName ?? "(none)"}");
 			
-			// Switch StreamDeck page
-			if (string.IsNullOrEmpty(pageName) && control.TryGetVisual(out var element))
-			{
-				pageName = GetBuiltInPageForControl(element);
-			}
-			
-			if (!string.IsNullOrEmpty(pageName) && _streamDeckClient != null)
-			{
-				Debug.WriteLine($"[Navigator] Switching to page: {pageName}");
-				_streamDeckClient.SwitchPage(pageName);
-			}
+			// ✅ Switch to interaction page
+			SwitchToCurrentContextPage();
 			
 			// Show focus visuals (blue highlight on the control)
 			SetFocusVisuals(control);
@@ -124,6 +123,9 @@ namespace AcManager.UiObserver
 			Debug.WriteLine($"[Navigator] Exited interaction mode: {control.SimpleName} (revert={revertChanges})");
 			Debug.WriteLine($"[Navigator] Context stack depth: {depth}");
 			
+			// ✅ Switch to parent context's page
+			SwitchToCurrentContextPage();
+			
 			// Restore parent context focus
 			if (CurrentContext != null)
 			{
@@ -135,12 +137,9 @@ namespace AcManager.UiObserver
 				}
 				else
 				{
-					// Focus already on control, just update visuals/page
+					// Focus already on control, just update visuals
 					SetFocusVisuals(control);
 				}
-				
-				// Switch StreamDeck page for parent context
-				SwitchStreamDeckPageForModal(CurrentContext.ScopeNode);
 			}
 			else
 			{

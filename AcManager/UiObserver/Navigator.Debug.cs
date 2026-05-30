@@ -35,7 +35,7 @@ namespace AcManager.UiObserver
 		/// Handles debug hotkeys (F9/F11/F12) for toggling visualization overlay and verbose output.
 		/// Called from OnPreviewKeyDown in Navigator.cs.
 		/// </summary>
-		static partial void OnDebugHotkey(KeyEventArgs e)
+		static void OnDebugHotkey(KeyEventArgs e)
 		{
 			if (e == null) return;
 

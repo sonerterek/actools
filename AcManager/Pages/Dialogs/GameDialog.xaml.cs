@@ -169,7 +169,8 @@ namespace AcManager.Pages.Dialogs {
                 effect.BlurRadius *= ProgressRing.DensityMultiplier;
             }
 
-            PrepareToFixSize().Ignore();
+            // NWRS FIX: Don't mess with AC video settings
+            // PrepareToFixSize().Ignore();
         }
 
         private async Task PrepareToFixSize() {
