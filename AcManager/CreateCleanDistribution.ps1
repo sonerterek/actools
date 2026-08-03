@@ -12,17 +12,17 @@ $OutputPath = $OutputPath.TrimEnd('"')
 Write-Host "Creating clean distribution folder..." -ForegroundColor Green
 Write-Host "Output Path: $OutputPath" -ForegroundColor Yellow
 
-# Find the main executable (look for NWRS*.exe specifically)
-$ExeFiles = Get-ChildItem -Path $OutputPath -Filter "NWRS*.exe" | Where-Object { $_.Name -notlike "*.vshost.exe" }
+# Find the main executable (look for Content Manager.exe specifically)
+$ExeFiles = Get-ChildItem -Path $OutputPath -Filter "Content Manager.exe" | Where-Object { $_.Name -notlike "*.vshost.exe" }
 
 if ($ExeFiles.Count -eq 0) {
-    Write-Host "ERROR: No NWRS executable found in output path!" -ForegroundColor Red
-    Write-Host "Looking for: NWRS*.exe in $OutputPath" -ForegroundColor Red
+    Write-Host "ERROR: No 'Content Manager.exe' found in output path!" -ForegroundColor Red
+    Write-Host "Looking for: Content Manager.exe in $OutputPath" -ForegroundColor Red
     exit 1
 }
 
 if ($ExeFiles.Count -gt 1) {
-    Write-Host "WARNING: Multiple NWRS executables found, using the first one: $($ExeFiles[0].Name)" -ForegroundColor Yellow
+    Write-Host "WARNING: Multiple executables found, using the first one: $($ExeFiles[0].Name)" -ForegroundColor Yellow
 }
 
 $TargetPath = $ExeFiles[0].FullName

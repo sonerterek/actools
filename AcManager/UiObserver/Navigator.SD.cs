@@ -677,29 +677,6 @@ namespace AcManager.UiObserver
 		#region StreamDeck Connection Event Handlers
 
 		/// <summary>
-		/// [DEPRECATED] Sets headless mode dynamically.
-		/// 
-		/// NOTE: This method is now deprecated. Headless mode should be set during
-		/// Navigator.Initialize() to avoid race conditions with connection/replication.
-		/// 
-		/// Kept for backwards compatibility in case external code still calls it.
-		/// </summary>
-		internal static void SetHeadlessMode(bool headless)
-		{
-			if (_isHeadless == headless) return; // No change
-
-			DebugLog.WriteLine($"[Navigator] SetHeadlessMode called with {headless} (current: {_isHeadless})");
-			_isHeadless = headless;
-
-			// If replication already finished before this was called, switch immediately.
-			if (_isHeadless && _streamDeckClient?.IsReplicaSynced == true)
-			{
-				DebugLog.WriteLine("[Navigator] SetHeadlessMode: replication already done — switching to ACS now");
-				_streamDeckClient.SwitchProfile("ACS");
-			}
-		}
-
-		/// <summary>
 		/// Called after SDPClient has fully replicated its state to the plugin.
 		/// This is the safe point to issue SwitchProfile in headless mode.
 		/// </summary>
