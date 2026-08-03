@@ -352,6 +352,7 @@ namespace AcManager {
             AppArguments.Set(AppFlag.BenchmarkReplays, ref GameDialog.OptionBenchmarkReplays);
             AppArguments.Set(AppFlag.HideRaceCancelButton, ref GameDialog.OptionHideCancelButton);
             AppArguments.Set(AppFlag.SkipAllResults, ref GameDialog.OptionSkipAllResults);
+            AppArguments.Set(AppFlag.HideCmAfterRace, ref GameDialog.OptionHideCmAfterRace);
             AppArguments.Set(AppFlag.PatchSupport, ref PatchHelper.OptionPatchSupport);
             AppArguments.Set(AppFlag.CspReportsLocation, ref CspReportUtils.OptionLocation);
             AppArguments.Set(AppFlag.RingDebug, ref ExtraProgressRings.OptionAnimationDevelopment);

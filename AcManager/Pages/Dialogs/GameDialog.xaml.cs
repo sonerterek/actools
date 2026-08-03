@@ -79,6 +79,7 @@ namespace AcManager.Pages.Dialogs {
         public static bool OptionBenchmarkReplays = false;
         public static bool OptionHideCancelButton = false;
         public static bool OptionSkipAllResults = false;
+        public static bool OptionHideCmAfterRace = false;
 
         public const int DefinitelyNonPrizePlace = 99999;
         private static GoodShuffle<string> _progressStyles;
@@ -721,11 +722,17 @@ namespace AcManager.Pages.Dialogs {
             if (skipResults) {
                 if (IsLoaded) {
                     Close();
-                    Application.Current?.MainWindow?.Activate();
+                    if (!OptionHideCmAfterRace) {
+                        Application.Current?.MainWindow?.Activate();
+                    }
                 } else {
-                    Model.CurrentState = ViewModel.State.Error;
-                    Model.ErrorMessage = AppStrings.Online_NothingToDisplay;
-                    Buttons = new[] { CloseButton };
+                    // OnResult was called before the dialog finished loading — defer close to Loaded event
+                    Loaded += (s, e) => {
+                        Close();
+                        if (!OptionHideCmAfterRace) {
+                            Application.Current?.MainWindow?.Activate();
+                        }
+                    };
                 }
                 return;
             }

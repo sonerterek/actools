@@ -103,6 +103,12 @@ namespace AcManager {
         SkipAllResults,
 
         /// <summary>
+        /// Hide CM main window after race instead of bringing it to the foreground.
+        /// Example: --hide-cm-after-race.
+        /// </summary>
+        HideCmAfterRace,
+
+        /// <summary>
         /// For development purposes.
         /// </summary>
         WeatherExtMode,
