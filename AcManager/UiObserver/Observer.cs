@@ -287,6 +287,16 @@ namespace AcManager.UiObserver
 				return;
 			}
 
+			// Ignore UI injected by tooling (e.g. Visual Studio's XAML Live Visual Tree /
+			// in-app toolbar). These roots/adorners belong to Microsoft diagnostics
+			// assemblies, are not part of the application, and previously caused the
+			// navigator to walk into them and get stuck (the toolbar appears at the top
+			// center of the main window under the debugger).
+			if (IsForeignDiagnosticsRoot(root)) {
+				Debug.WriteLine($"[Observer] Skipping foreign/diagnostics root: {root.GetType().FullName}");
+				return;
+			}
+
 			try {
 				var ps = PresentationSource.FromVisual(root);
 				if (ps == null) return;
@@ -328,6 +338,39 @@ namespace AcManager.UiObserver
 				// Trigger initial scan
 				navRoot.ScheduleScan();
 			} catch { }
+		}
+
+		/// <summary>
+		/// Returns true when the given root visual belongs to tooling injected into the
+		/// process (rather than the application itself). The main case is Visual Studio's
+		/// XAML UI debugging: the "Live Visual Tree" in-app toolbar and its adorners are
+		/// added to the app's visual tree under the debugger, appear at the top-center of
+		/// the main window, and would otherwise be treated as navigable UI.
+		/// Detection is based on the element type's namespace/assembly, which live in
+		/// Microsoft diagnostics assemblies and never overlap with application UI.
+		/// </summary>
+		private static bool IsForeignDiagnosticsRoot(DependencyObject root)
+		{
+			try {
+				var type = root.GetType();
+
+				var ns = type.Namespace ?? string.Empty;
+				if (ns.StartsWith("Microsoft.VisualStudio", StringComparison.Ordinal) ||
+					ns.StartsWith("Microsoft.XamlDiagnostics", StringComparison.Ordinal) ||
+					ns.StartsWith("Microsoft.Windows.Diagnostics", StringComparison.Ordinal) ||
+					ns.IndexOf("XamlDiagnostics", StringComparison.OrdinalIgnoreCase) >= 0) {
+					return true;
+				}
+
+				var asmName = type.Assembly.GetName().Name ?? string.Empty;
+				if (asmName.StartsWith("Microsoft.VisualStudio", StringComparison.Ordinal) ||
+					asmName.IndexOf("XamlDiagnostics", StringComparison.OrdinalIgnoreCase) >= 0 ||
+					asmName.IndexOf("DesignTools", StringComparison.OrdinalIgnoreCase) >= 0) {
+					return true;
+				}
+			} catch { }
+
+			return false;
 		}
 
 		public static void UnregisterRoot(FrameworkElement root)

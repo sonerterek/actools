@@ -19,6 +19,7 @@ namespace AcManager.UiObserver
 		/// Built-in page names
 		/// </summary>
 		private const string PageNavigation = "Navigation";
+		private const string PagePopupNavigation = "PopupNavigation";
 		private const string PageUpDown = "UpDown";
 		private const string PageSlider = "Slider";
 		private const string PageDoubleSlider = "DoubleSlider";
@@ -83,7 +84,7 @@ namespace AcManager.UiObserver
 					}
 				}
 
-				_streamDeckClient.DefineKey(shortcut.KeyName, shortcut.KeyTitle, null);
+				_streamDeckClient.DefineKey(shortcut.KeyName, shortcut.KeyTitle, iconSpec);
 
 				DebugLog.WriteLine($"[Navigator] Defined StreamDeck key: {shortcut.KeyName} → {shortcut.PathFilter}");
 			}
@@ -107,6 +108,18 @@ namespace AcManager.UiObserver
 				new[] { "", "Down", "" }
 			});
 			DebugLog.WriteLine($"[Navigator] ✅ Defined built-in page: {PageNavigation}");
+
+			// Popup navigation page: full directional navigation with a real Escape key
+		// so ModernPopup controls close in the same way as keyboard Escape.
+			DebugLog.WriteLine($"[Navigator] Defining page: {PagePopupNavigation}");
+			_streamDeckClient.DefinePage(PagePopupNavigation, new[] {
+				new[] { "Esc", "", "" },
+				new[] { "","",""},
+				new[] { "", "Up", "" },
+				new[] { "Left", "MouseLeft", "Right" },
+				new[] { "", "Down", "" }
+			});
+			DebugLog.WriteLine($"[Navigator] ✅ Defined built-in page: {PagePopupNavigation}");
 			
 			// UpDown page (vertical navigation only, for menus)
 			DebugLog.WriteLine($"[Navigator] Defining page: {PageUpDown}");

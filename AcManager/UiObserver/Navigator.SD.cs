@@ -12,6 +12,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Threading;
+using NWRS.StreamDeck;
 
 namespace AcManager.UiObserver
 {
@@ -63,14 +64,23 @@ namespace AcManager.UiObserver
 			var icons = SDPIconHelper.DiscoverIcons();
 			DebugLog.WriteLine($"[Navigator] Discovered {icons.Count} StreamDeck icons");
 
-			// Create StreamDeck client
-			_streamDeckClient = new SDPClient();
+			// Create StreamDeck client — "NWRS_AC_CM" at priority 10.
+			// The client id MUST be a single space-free token: the plugin's Hello
+			// handshake is positional and space-delimited
+			// ("Hello <ClientId> <Priority> V<Version> PID:<pid>"), so a multi-word
+			// id (e.g. "NWRS AC CM") shifts every field and the version parse fails.
+			// The plugin grants control to the highest-priority connected client.
+			_streamDeckClient = new SDPClient("NWRS_AC_CM", priority: 10);
 
 			// Hook up events
 			_streamDeckClient.KeyPressed += OnStreamDeckKeyPressed;
 			_streamDeckClient.ConnectionEstablished += OnStreamDeckConnected;
 			_streamDeckClient.ConnectionLost += OnStreamDeckDisconnected;
 			_streamDeckClient.ReconnectionAttempt += OnStreamDeckReconnecting;
+
+			// Inject definition-result callbacks (shared SDPClient no longer hard-calls Navigator)
+			_streamDeckClient.OnKeyDefinedResult = OnKeyDefinedResult;
+			_streamDeckClient.OnPageDefinedResult = OnPageDefinedResult;
 
 			// ✅ NEW: Hook up game lifecycle events for StreamDeck profile management
 			GameWrapper.Started += OnGameStarted;
@@ -678,20 +688,13 @@ namespace AcManager.UiObserver
 
 		/// <summary>
 		/// Called after SDPClient has fully replicated its state to the plugin.
-		/// This is the safe point to issue SwitchProfile in headless mode.
+		/// Any pending SwitchProfile call queued before replication is flushed
+		/// automatically by SDPClient at the end of replication, so no extra
+		/// action is needed here.
 		/// </summary>
 		private static void OnReplicationCompleted(object sender, EventArgs e)
 		{
-			if (!_isHeadless) return;
-
-			DebugLog.WriteLine("[Navigator] Replication complete in headless mode");
-
-			// Give plugin time to process replicated state before switching profiles
-			Task.Delay(900).ContinueWith(_ =>
-			{
-				DebugLog.WriteLine("[Navigator] Switching to ACS profile");
-				_streamDeckClient?.SwitchProfile("ACS");
-			});
+			DebugLog.WriteLine("[Navigator] Replication complete");
 		}
 
 		private static void OnStreamDeckConnected(object sender, EventArgs e)
