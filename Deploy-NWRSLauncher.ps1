@@ -3,26 +3,18 @@
 	Publishes the Content Manager (AC Launcher) build into the NWRS repo so it
 	can be tested end-to-end against the NWRS SD Plugin.
 
-.DESCRIPTION
-	Content Manager builds into an un-packed folder (with loose DLLs, locales,
-	etc.) and then packs itself into a single-file "Content Manager.exe" that is
-	dropped, together with the runtime Assets and UiObserver config, into the
-	'Distribution' sub-folder of the build output.
+	Release builds are Costura-packed and published from their `Distribution`
+	sub-folder. Debug builds are intentionally left unpacked in `Output`, so the
+	script mirrors the complete Debug output folder, including loose dependencies.
 
-	That 'Distribution' folder is exactly the file set the NWRS launcher target
-	expects:
-		Content Manager.exe
-		Content Manager.pdb
-		Assets\SDIcons\*.png
-		UiObserver\NWRS Navigation.cfg
-
-	This script mirrors that Distribution folder into the NWRS target directory.
+	This script mirrors the selected source folder into the NWRS target directory.
 	By default it does a clean mirror (removes files in the target that are not
 	in the source) so the deployed set always matches the build output. Use
 	-NoDelete to keep extra files in the target.
 
 .PARAMETER Configuration
-	Build configuration folder to publish from. Default: Release.
+	Build configuration to publish from. Release uses its Distribution folder;
+	Debug uses the complete unpacked Output folder. Default: Release.
 
 .PARAMETER Platform
 	Build platform folder to publish from. Default: x86.
@@ -38,9 +30,13 @@
 
 .EXAMPLE
 	.\Deploy-NWRSLauncher.ps1 -WhatIf
+
+.EXAMPLE
+	.\Deploy-NWRSLauncher.ps1 -Configuration Debug
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
+	[ValidateSet('Release', 'Debug')]
 	[string] $Configuration = 'Release',
 	[string] $Platform      = 'x86',
 	[switch] $NoDelete
@@ -55,7 +51,11 @@ if (-not $repoRoot) { $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Pat
 # The NWRS repo is assumed to be a sibling of the actools repo under the same parent.
 $reposParent = Split-Path -Parent $repoRoot
 
-$source = Join-Path $repoRoot ("AcManager\bin\{0}\{1}\Distribution" -f $Platform, $Configuration)
+if ($Configuration -eq 'Debug') {
+	$source = Join-Path $repoRoot ("Output\{0}\Debug" -f $Platform)
+} else {
+	$source = Join-Path $repoRoot ("AcManager\bin\{0}\Release\Distribution" -f $Platform)
+}
 $target = Join-Path $reposParent 'NWRS\bin\NWRS AC Launcher'
 
 Write-Host "Source : $source"
@@ -63,7 +63,10 @@ Write-Host "Target : $target"
 Write-Host ""
 
 if (-not (Test-Path -LiteralPath $source)) {
-	throw "Source publish folder not found: '$source'. Build Content Manager ($Configuration|$Platform) first so the packed 'Distribution' folder is produced."
+	if ($Configuration -eq 'Debug') {
+		throw "Debug output folder not found: '$source'. Build Content Manager ($Configuration|$Platform) first."
+	}
+	throw "Release distribution folder not found: '$source'. Build Content Manager ($Configuration|$Platform) first so the packed 'Distribution' folder is produced."
 }
 
 $exe = Join-Path $source 'Content Manager.exe'
