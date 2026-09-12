@@ -15,6 +15,7 @@ namespace AcManager.UiObserver
     public class NavConfigParser
 	{
 		private const string ConfigFileName = "NWRS Navigation.cfg";
+		internal const string DebugConfigFileName = "NWRS Navigation debug.cfg";
 
 		/// <summary>
 		/// Loads configuration from the standard location.
@@ -34,9 +35,15 @@ namespace AcManager.UiObserver
 				}
 
 				Debug.WriteLine($"[NavConfig] Loading config from: {configPath}");
-				var content = File.ReadAllText(configPath);
-
-				return Parse(content);
+				var config = Parse(File.ReadAllText(configPath));
+#if DEBUG
+				var debugPath = GetDebugConfigPath();
+				if (File.Exists(debugPath)) {
+					Debug.WriteLine($"[NavConfig] Loading debug adjacency overrides from: {debugPath}");
+					ParseInto(config, File.ReadAllText(debugPath), true);
+				}
+#endif
+				return config;
 			}
 			catch (Exception ex)
 			{
@@ -51,11 +58,22 @@ namespace AcManager.UiObserver
 		public static NavConfiguration Parse(string content)
 		{
 			var config = new NavConfiguration();
+			ParseInto(config, content, false);
+			return config;
+		}
+
+		internal static string GetDebugConfigPath()
+		{
+			return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AcTools Content Manager", "UiObserver", DebugConfigFileName);
+		}
+
+		private static void ParseInto(NavConfiguration config, string content, bool isDebugOverride)
+		{
 
 			if (string.IsNullOrWhiteSpace(content))
 			{
 				Debug.WriteLine("[NavConfig] Empty config content");
-				return config;
+				return;
 			}
 
 			var lines = content.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
@@ -125,6 +143,11 @@ namespace AcManager.UiObserver
 							config.Pages.Add(page);
 							Debug.WriteLine($"[NavConfig] Loaded page: {page}");
 						}
+					}
+					else if (line.StartsWith("ADJACENCY:", StringComparison.OrdinalIgnoreCase))
+					{
+						var adjacency = ParseAdjacencyRule(line, isDebugOverride);
+						if (adjacency != null) config.Adjacencies.Add(adjacency);
 					} else {
 						throw new FormatException($"Unknown config statement: {line}. Did you forget a \\ at the end of line above?");
 					}
@@ -146,8 +169,24 @@ namespace AcManager.UiObserver
 			var pageCount = config.Classifications.Count(c => !string.IsNullOrEmpty(c.PageName));
 			var shortcutCount = config.Classifications.Count(c => !string.IsNullOrEmpty(c.KeyName));
 			
-			Debug.WriteLine($"[NavConfig] Loaded {config.Classifications.Count} classifications: {modalCount} modals, {pageCount} page mappings, {shortcutCount} shortcuts; {config.Pages.Count} page definitions");
-			return config;
+			Debug.WriteLine($"[NavConfig] Loaded {config.Classifications.Count} classifications: {modalCount} modals, {pageCount} page mappings, {shortcutCount} shortcuts; {config.Pages.Count} page definitions; {config.Adjacencies.Count} adjacency rules");
+		}
+
+		private static NavAdjacency ParseAdjacencyRule(string line, bool isDebugOverride)
+		{
+			var parts = line.Substring("ADJACENCY:".Length).Trim().Split(new[] { "=>" }, StringSplitOptions.None);
+			if (parts.Length != 2) throw new FormatException("Invalid ADJACENCY format (missing '=>').");
+			var source = Unquote(parts[0].Trim());
+			var assignment = SplitRespectingQuotes(parts[1].Trim(), '=', 2);
+			if (assignment.Length != 2 || !Enum.TryParse(assignment[0].Trim(), true, out NavDirection direction)) throw new FormatException("Invalid ADJACENCY direction.");
+			var target = Unquote(assignment[1].Trim());
+			if (string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(target)) throw new FormatException("ADJACENCY source and target are required.");
+			return new NavAdjacency { SourceFilter = source, Direction = direction, TargetFilter = target, IsRemoved = string.Equals(target, "REMOVE", StringComparison.OrdinalIgnoreCase), IsDebugOverride = isDebugOverride };
+		}
+
+		private static string Unquote(string value)
+		{
+			return value.Length >= 2 && value.StartsWith("\"") && value.EndsWith("\"") ? value.Substring(1, value.Length - 2) : value;
 		}
 
 		/// <summary>

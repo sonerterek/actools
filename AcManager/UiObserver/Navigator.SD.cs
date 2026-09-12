@@ -197,8 +197,9 @@ namespace AcManager.UiObserver
 				try {
 					DebugLog.WriteLine($"[Navigator] Executing command for '{e.KeyName}' on UI thread");
 
-					// ✅ Check if Ctrl+Shift are held down
+					// Ctrl+direction starts debug adjacency authoring; Ctrl+Shift remains reserved for discovery.
 					var modifiers = Keyboard.Modifiers;
+					if (modifiers == ModifierKeys.Control && TryParseDirection(e.KeyName, out var authoringDirection) && BeginAdjacencyAuthoring(authoringDirection)) return;
 					bool ctrlShiftHeld = modifiers.HasFlag(ModifierKeys.Control) &&
 										 modifiers.HasFlag(ModifierKeys.Shift);
 
@@ -215,6 +216,7 @@ namespace AcManager.UiObserver
 								break; 
 							// Add other keys as needed
 						}
+
 						return; // Do not process the key further (Ctrl-Shift is held down)
 					}
 
@@ -322,6 +324,17 @@ namespace AcManager.UiObserver
 					DebugLog.WriteLine($"[Navigator] Stack trace: {ex.StackTrace}");
 				}
 			}), DispatcherPriority.Input);
+		}
+
+		private static bool TryParseDirection(string keyName, out NavDirection direction)
+		{
+			switch (keyName) {
+				case "Up": direction = NavDirection.Up; return true;
+				case "Down": direction = NavDirection.Down; return true;
+				case "Left": direction = NavDirection.Left; return true;
+				case "Right": direction = NavDirection.Right; return true;
+				default: direction = default(NavDirection); return false;
+			}
 		}
 
 		private static void SendEscapeKey()

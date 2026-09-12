@@ -856,6 +856,47 @@ namespace AcManager.UiObserver
             }
         }
 
+        public Rect? GetBoundsDip()
+        {
+            if (!TryGetVisual(out var fe) || !fe.IsLoaded || !fe.IsArrangeValid ||
+                    fe.ActualWidth < 1.0 || fe.ActualHeight < 1.0) {
+                return null;
+            }
+
+            try {
+                var presentationSource = PresentationSource.FromVisual(fe);
+                if (presentationSource?.CompositionTarget == null) return null;
+
+                System.Windows.Rect? bounds = GetVisibleBoundsDip(fe, presentationSource.CompositionTarget.TransformFromDevice);
+                if (!bounds.HasValue) return null;
+                var visibleBounds = bounds.GetValueOrDefault();
+                var centerY = visibleBounds.Top + visibleBounds.Height / 2.0;
+                return centerY < -100 || centerY > 2000 ? (Rect?)null : bounds;
+            } catch (Exception ex) {
+                if (VerboseDebug) Debug.WriteLine($"[NavNode] GetBoundsDip failed: Exception - {SimpleName}: {ex.Message}");
+                return null;
+            }
+        }
+
+        private static System.Windows.Rect? GetVisibleBoundsDip(FrameworkElement element, Matrix transformFromDevice)
+        {
+            var topLeft = transformFromDevice.Transform(element.PointToScreen(new Point(0, 0)));
+            var bottomRight = transformFromDevice.Transform(element.PointToScreen(new Point(element.ActualWidth, element.ActualHeight)));
+            var visibleBounds = new System.Windows.Rect(topLeft, bottomRight);
+
+            for (DependencyObject current = element; current != null; current = VisualTreeHelper.GetParent(current)) {
+                var ancestor = current as FrameworkElement;
+                if (ancestor == null || (!ancestor.ClipToBounds && ancestor.Clip == null)) continue;
+
+                var ancestorTopLeft = transformFromDevice.Transform(ancestor.PointToScreen(new Point(0, 0)));
+                var ancestorBottomRight = transformFromDevice.Transform(ancestor.PointToScreen(new Point(ancestor.ActualWidth, ancestor.ActualHeight)));
+                visibleBounds.Intersect(new System.Windows.Rect(ancestorTopLeft, ancestorBottomRight));
+                if (visibleBounds.IsEmpty || visibleBounds.Width < 1.0 || visibleBounds.Height < 1.0) return null;
+            }
+
+            return visibleBounds;
+        }
+
         /// <summary>
         /// Activates this navigation node by performing its default action.
         /// 

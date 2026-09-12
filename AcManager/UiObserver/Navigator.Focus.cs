@@ -168,6 +168,7 @@ namespace AcManager.UiObserver
 				CurrentContext.FocusedNode = newNode;
 				
 				SetFocusVisuals(newNode);
+				RefreshAdjacencyTargetDisplay();
 				
 				// ? NEW: Ensure the item is scrolled into view if in a virtualized container
 				EnsureScrolledIntoView(newNode);
@@ -331,6 +332,7 @@ namespace AcManager.UiObserver
 				}
 				
 				DebugLog.WriteLine($"[Navigator] Initialized focus in '{CurrentContext.ScopeNode.SimpleName}' -> '{firstNode.SimpleName}'");
+				AnalyzeNavigationReachability(firstNode, allCandidates);
 				try { FocusChanged?.Invoke(null, firstNode); } catch { }
 			} else {
 				DebugLog.WriteLine($"[Navigator] No valid candidate found after filtering!");

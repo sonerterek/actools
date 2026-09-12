@@ -19,6 +19,15 @@ namespace AcManager.UiObserver
 		Group
 	}
 
+	internal class NavAdjacency
+	{
+		public string SourceFilter { get; set; }
+		public NavDirection Direction { get; set; }
+		public string TargetFilter { get; set; }
+		public bool IsRemoved { get; set; }
+		public bool IsDebugOverride { get; set; }
+	}
+
 	/// <summary>
 	/// Runtime shortcut key definition for StreamDeck button execution.
 	/// Contains only properties needed during shortcut execution.
@@ -201,10 +210,29 @@ namespace AcManager.UiObserver
 		/// <summary>Custom page definitions</summary>
 		public List<NavPageDef> Pages { get; set; }
 
+		/// <summary>Directed navigation overrides loaded in declaration order.</summary>
+		internal List<NavAdjacency> Adjacencies { get; set; }
+
 		public NavConfiguration()
 		{
 			Classifications = new List<NavClassifier>();
 			Pages = new List<NavPageDef>();
+			Adjacencies = new List<NavAdjacency>();
+		}
+
+		internal NavAdjacency FindAdjacency(string sourcePath, NavDirection direction)
+		{
+			var normalizedPath = NormalizePath(sourcePath);
+			return Adjacencies.LastOrDefault(x => x.Direction == direction && NavPathFilter.Matches(normalizedPath, x.SourceFilter));
+		}
+
+		internal static string NormalizePath(string path)
+		{
+			if (string.IsNullOrEmpty(path)) return path;
+			return string.Join(" > ", path.Split(new[] { " > " }, StringSplitOptions.None).Select(segment => {
+				var parts = segment.Split(':');
+				return parts.Length >= 3 ? parts[0] + ":" + parts[1] : segment;
+			}));
 		}
 		
 		/// <summary>

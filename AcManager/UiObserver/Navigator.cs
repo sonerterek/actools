@@ -8,6 +8,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Threading;
 
@@ -246,6 +247,8 @@ namespace AcManager.UiObserver
 			try {
 				EventManager.RegisterClassHandler(typeof(Window), UIElement.PreviewKeyDownEvent, 
 					new KeyEventHandler(OnPreviewKeyDown), true);
+				EventManager.RegisterClassHandler(typeof(Window), UIElement.PreviewMouseDownEvent,
+					new MouseButtonEventHandler(OnPreviewMouseDown), true);
 			} catch { }
 		}
 
@@ -451,6 +454,13 @@ namespace AcManager.UiObserver
 						OnPageSelectorActivated(addedNode);
 						// Only process the FIRST PageSelector found
 						break;
+					}
+					else if (addedNode.SimpleName == "This:AssistsEditor" &&
+							CurrentContext?.ContextType == NavContextType.ModalDialog &&
+							IsDescendantOf(addedNode, CurrentContext.ScopeNode))
+					{
+						CurrentContext.PageName = "PopupNavigation";
+						DebugLog.WriteLine($"[Navigator] AssistsEditor discovered; using PopupNavigation for {CurrentContext.ScopeNode.SimpleName}");
 					}
 				}
 			}
@@ -926,6 +936,7 @@ namespace AcManager.UiObserver
 
 		static void OnPreviewKeyDown(object sender, KeyEventArgs e)
 		{
+			if (HandleAdjacencyAuthoringKey(e)) return;
 			if (Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift)) {
 				// Ctrl+Shift+W: Launch Wheel Configuration Wizard
 				if (e.Key == Key.W) {
@@ -957,12 +968,18 @@ namespace AcManager.UiObserver
 							} catch { }
 						});
 					}
+
 					return;
 				}
 
 				// Other Ctrl+Shift hotkeys (debug, etc.)
 				OnDebugHotkey(e);
 			}
+		}
+
+		static void OnPreviewMouseDown(object sender, MouseButtonEventArgs e)
+		{
+			HandleAdjacencyAuthoringMouse(e);
 		}
 
 		private static bool HaveSameImmediateParent(NavNode a, NavNode b)
@@ -995,6 +1012,13 @@ namespace AcManager.UiObserver
 		private static string DeterminePageForNode(NavNode node, NavContextType contextType)
 		{
 			if (node == null) return null;
+			if (node.TryGetVisual(out var popupRoot) && popupRoot.GetType().Name == "PopupRoot") {
+				var popupNodes = Observer.GetNodesUnderPath(node.HierarchicalPath);
+				if (popupNodes.Any(x => x.HierarchicalPath.Contains(" > This:AssistsEditor >"))) {
+					DebugLog.WriteLine($"[Navigator] Using PopupNavigation for AssistsEditor popup: {node.SimpleName}");
+					return "PopupNavigation";
+				}
+			}
 			
 			// Priority 1: Check if node has explicit PageName (from classification)
 			if (!string.IsNullOrEmpty(node.PageName))
@@ -1130,6 +1154,28 @@ namespace AcManager.UiObserver
 			
 			// Switch StreamDeck page
 			_streamDeckClient?.SwitchPage(pageSelectorNode.PageName);
+			AnalyzePageSelectorNavigation(pageSelectorNode, context);
+		}
+
+		[Conditional("DEBUG")]
+		private static void AnalyzePageSelectorNavigation(NavNode pageSelectorNode, NavContext context)
+		{
+			if (!pageSelectorNode.TryGetVisual(out var element)) return;
+
+			element.Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(() => {
+				if (CurrentContext != context) return;
+
+				var candidates = GetCandidatesInScope()
+						.Where(x => IsDescendantOf(x, pageSelectorNode))
+						.ToList();
+				if (candidates.Count == 0) return;
+
+				var initialNode = candidates.OrderBy(x => {
+					var center = x.GetCenterDip().Value;
+					return center.X + center.Y * 10000.0;
+				}).First();
+				AnalyzeNavigationReachability(initialNode, candidates);
+			}));
 		}
 
 		/// <summary>

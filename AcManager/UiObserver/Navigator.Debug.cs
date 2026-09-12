@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Input;
@@ -19,6 +20,10 @@ namespace AcManager.UiObserver
 		#region Debug Fields
 
 		private static bool _debugMode;
+		private static bool _showAdjacencyTargets;
+		private static bool _adjacencyInspectionMode;
+		private static NavNode _adjacencySource;
+		private static NavDirection? _adjacencyDirection;
 
 		/// <summary>
 		/// Controls verbose navigation algorithm debug output.
@@ -38,27 +43,198 @@ namespace AcManager.UiObserver
 		static void OnDebugHotkey(KeyEventArgs e)
 		{
 			if (e == null) return;
+			var key = e.Key == Key.System ? e.SystemKey : e.Key;
 
 			// Ctrl+Shift+F12: Toggle debug overlay (filtered by active modal scope)
-			if (e.Key == Key.F12 && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift)) {
+			if (key == Key.F12 && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift)) {
 				e.Handled = true;
 				ToggleHighlighting(filterByModalScope: true);
 				return;
 			}
 
+			if (key == Key.F10 && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift)) {
+				e.Handled = true;
+				ToggleAdjacencyTargetDisplay();
+				return;
+			}
+
 			// Ctrl+Shift+F11: Toggle debug overlay (show ALL nodes, unfiltered)
-			if (e.Key == Key.F11 && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift)) {
+			if (key == Key.F11 && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift)) {
 				e.Handled = true;
 				ToggleHighlighting(filterByModalScope: false);
 				return;
 			}
 
 			// Ctrl+Shift+F9: Toggle verbose navigation debug output
-			if (e.Key == Key.F9 && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift)) {
+			if (key == Key.F9 && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift)) {
 				e.Handled = true;
 				ToggleVerboseNavigationDebug();
 				return;
 			}
+		}
+
+		private static bool BeginAdjacencyAuthoring(NavDirection direction)
+		{
+			var source = CurrentContext?.FocusedNode;
+			if (source == null) return false;
+			_adjacencyInspectionMode = true; _adjacencySource = source; _adjacencyDirection = direction;
+			ShowAdjacencyTargets();
+			DebugLog.WriteLine($"[NAV-ADJACENCY] Select a target for '{source.SimpleName}' ? {direction}. Click to save, Escape to cancel, Delete to remove.");
+			return true;
+		}
+
+		private static bool HandleAdjacencyAuthoringKey(KeyEventArgs e)
+		{
+			if (!_adjacencyInspectionMode || !_adjacencyDirection.HasValue) return false;
+			if (e.Key != Key.Escape && e.Key != Key.Delete) return false;
+			if (e.Key == Key.Delete) {
+				RemoveAdjacencyOverride(_adjacencySource, _adjacencyDirection.Value);
+			} else {
+				DebugLog.WriteLine("[NAV-ADJACENCY] Authoring cancelled.");
+			}
+			CancelAdjacencyAuthoring(); e.Handled = true; return true;
+		}
+
+		private static void HandleAdjacencyAuthoringMouse(System.Windows.Input.MouseButtonEventArgs e)
+		{
+			if (!_adjacencyInspectionMode || e.ChangedButton != MouseButton.Left) return;
+			var target = FindClickedNavigationNode(e.OriginalSource as DependencyObject);
+			if (target == null || ReferenceEquals(target, _adjacencySource)) {
+				DebugLog.WriteLine("[NAV-ADJACENCY] Click ignored: no different navigable target was found.");
+				return;
+			}
+
+			SaveAdjacencyOverride(_adjacencySource, _adjacencyDirection.Value, target);
+			e.Handled = true;
+			CancelAdjacencyAuthoring();
+		}
+
+		private static NavNode FindClickedNavigationNode(DependencyObject clicked)
+		{
+			var candidates = GetCandidatesInScope();
+			var current = clicked;
+			while (current != null) {
+				var element = current as FrameworkElement;
+				NavNode node;
+				if (element != null && Observer.TryGetNavNode(element, out node) && candidates.Contains(node)) return node;
+				try { current = VisualTreeHelper.GetParent(current); } catch { return null; }
+			}
+			return null;
+		}
+
+		private static void SaveAdjacencyOverride(NavNode source, NavDirection direction, NavNode target)
+		{
+			if (source == null || target == null) return;
+			SetDebugAdjacency(source, direction, NavConfiguration.NormalizePath(target.HierarchicalPath));
+			DebugLog.WriteLine($"[NAV-ADJACENCY] Saved '{source.SimpleName}' ? {direction} ? '{target.SimpleName}'.");
+		}
+
+		private static void RemoveAdjacencyOverride(NavNode source, NavDirection direction)
+		{
+			if (source == null) return;
+			var existing = _navConfig.FindAdjacency(source.HierarchicalPath, direction);
+			SetDebugAdjacency(source, direction, existing != null && !existing.IsDebugOverride ? "REMOVE" : null);
+			DebugLog.WriteLine(existing == null ? "[NAV-ADJACENCY] No override exists for this direction." : $"[NAV-ADJACENCY] Removed '{source.SimpleName}' ? {direction} override.");
+		}
+
+		private static void SetDebugAdjacency(NavNode source, NavDirection direction, string targetPath)
+		{
+			var sourcePath = NavConfiguration.NormalizePath(source.HierarchicalPath);
+			_navConfig.Adjacencies.RemoveAll(x => x.IsDebugOverride && x.Direction == direction && string.Equals(x.SourceFilter, sourcePath, StringComparison.OrdinalIgnoreCase));
+			if (targetPath != null) {
+				_navConfig.Adjacencies.Add(new NavAdjacency { SourceFilter = sourcePath, Direction = direction, TargetFilter = targetPath, IsRemoved = targetPath == "REMOVE", IsDebugOverride = true });
+			}
+			WriteDebugAdjacencies();
+		}
+
+		private static void WriteDebugAdjacencies()
+		{
+			var path = NavConfigParser.GetDebugConfigPath();
+			var directory = Path.GetDirectoryName(path);
+			if (!Directory.Exists(directory)) Directory.CreateDirectory(directory);
+			var rules = _navConfig.Adjacencies.Where(x => x.IsDebugOverride).ToList();
+			var lines = new List<string> { "# Debug-only navigation overrides. Copy reviewed entries into NWRS Navigation.cfg, then remove them here." };
+			lines.AddRange(rules.Select(x => $"ADJACENCY: \"{x.SourceFilter}\" => {x.Direction}=\"{x.TargetFilter}\""));
+			var temporaryPath = path + ".tmp";
+			File.WriteAllLines(temporaryPath, lines);
+			if (File.Exists(path)) File.Replace(temporaryPath, path, null); else File.Move(temporaryPath, path);
+			WriteAdjacencyMergePreview(rules);
+		}
+
+		private static void WriteAdjacencyMergePreview(List<NavAdjacency> rules)
+		{
+			var path = Path.Combine(Path.GetDirectoryName(NavConfigParser.GetDebugConfigPath()), "NWRS Navigation debug.merge-preview.cfg");
+			var lines = new List<string> { "# Review these entries before copying non-REMOVE rules into NWRS Navigation.cfg." };
+			lines.AddRange(rules.Select(x => x.IsRemoved
+					? $"# REMOVE: {x.SourceFilter} => {x.Direction}"
+					: $"ADJACENCY: \"{x.SourceFilter}\" => {x.Direction}=\"{x.TargetFilter}\""));
+			File.WriteAllLines(path, lines);
+			DebugLog.WriteLine($"[NAV-ADJACENCY] Merge preview written: {path}");
+		}
+
+		private static void CancelAdjacencyAuthoring()
+		{
+			_adjacencyInspectionMode = false; _adjacencySource = null; _adjacencyDirection = null; ClearHighlighting();
+		}
+
+		private static void ShowAdjacencyTargets()
+		{
+			if (_adjacencySource == null || !_adjacencyDirection.HasValue) return;
+			var candidates = GetCandidatesInScope(); var brush = GetDirectionBrush(_adjacencyDirection.Value);
+			var rectangles = new List<IDebugRect>();
+			AddAdjacencyDebugRect(rectangles, FindGeometryCandidateInDirection(_adjacencySource, _adjacencyDirection.Value, candidates), brush, 2.0);
+			AddAdjacencyDebugRect(rectangles, FindAdjacencyCandidate(_adjacencySource, _adjacencyDirection.Value, candidates), brush, 5.0);
+			EnsureOverlay(); _overlay?.ShowDebugRects(rectangles);
+		}
+
+		private static void ShowAllAdjacencyTargets()
+		{
+			var source = CurrentContext?.FocusedNode;
+			if (source == null) return;
+			_adjacencyInspectionMode = false;
+			var candidates = GetCandidatesInScope();
+			var rectangles = new List<IDebugRect>();
+			foreach (NavDirection direction in Enum.GetValues(typeof(NavDirection))) {
+				var brush = GetDirectionBrush(direction);
+				AddAdjacencyDebugRect(rectangles, FindGeometryCandidateInDirection(source, direction, candidates), brush, 2.0);
+				AddAdjacencyDebugRect(rectangles, FindAdjacencyCandidate(source, direction, candidates), brush, 5.0);
+			}
+			EnsureOverlay(); _overlay?.ShowDebugRects(rectangles);
+			DebugLog.WriteLine($"[NAV-ADJACENCY] Showing geometry and override targets for '{source.SimpleName}'.");
+		}
+
+		private static void ToggleAdjacencyTargetDisplay()
+		{
+			_showAdjacencyTargets = !_showAdjacencyTargets;
+			if (_showAdjacencyTargets) {
+				ShowAllAdjacencyTargets();
+				DebugLog.WriteLine("[NAV-ADJACENCY] Target display enabled. It will refresh when focus changes.");
+			} else {
+				ClearHighlighting();
+				DebugLog.WriteLine("[NAV-ADJACENCY] Target display disabled.");
+			}
+		}
+
+		private static void RefreshAdjacencyTargetDisplay()
+		{
+			if (_showAdjacencyTargets && !_adjacencyInspectionMode) ShowAllAdjacencyTargets();
+		}
+
+		private static void AddAdjacencyDebugRect(List<IDebugRect> rectangles, NavNode node, Brush brush, double thickness)
+		{
+			var bounds = node?.GetBoundsDip(); if (bounds.HasValue) rectangles.Add(new AdjacencyDebugRect(bounds.Value, node, brush, thickness));
+		}
+
+		private static Brush GetDirectionBrush(NavDirection direction)
+		{
+			switch (direction) { case NavDirection.Up: return Brushes.LimeGreen; case NavDirection.Down: return Brushes.Gold; case NavDirection.Left: return Brushes.Orange; case NavDirection.Right: return Brushes.MediumPurple; default: return Brushes.White; }
+		}
+
+		private sealed class AdjacencyDebugRect : IDebugRect
+		{
+			private readonly Rect _bounds; private readonly NavNode _node; private readonly Brush _brush; private readonly double _thickness;
+			public AdjacencyDebugRect(Rect bounds, NavNode node, Brush brush, double thickness) { _bounds = bounds; _node = node; _brush = brush; _thickness = thickness; }
+			public Rect Bounds => _bounds; public Point? CenterPoint => _node.GetCenterDip(); public Brush StrokeBrush => _brush; public double StrokeThickness => _thickness; public Brush FillBrush => Brushes.Transparent; public double Inset => 0.0;
 		}
 
 		/// <summary>
