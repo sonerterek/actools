@@ -1082,6 +1082,11 @@ namespace AcManager.UiObserver
 		/// </summary>
 		private static void SwitchToCurrentContextPage()
 		{
+			if (_gameIsActive) {
+				DebugLog.WriteLine("[Navigator] Game is active - retaining ACS destination");
+				return;
+			}
+
 			if (CurrentContext == null)
 			{
 				DebugLog.WriteLine("[Navigator] No current context - cannot switch page");
@@ -1100,23 +1105,17 @@ namespace AcManager.UiObserver
 			}
 			
 			DebugLog.WriteLine($"[Navigator] Switching to page: '{CurrentContext.PageName}' (context: {CurrentContext.ContextType}, scope: {CurrentContext.ScopeNode.SimpleName})");
-			_streamDeckClient.SwitchPage(CurrentContext.PageName);
+			_streamDeckClient.SwitchToPage(CurrentContext.PageName);
 		}
 
 		/// <summary>
-		/// Restores the previous StreamDeck page before confirmation was requested.
-		/// Uses SDPClient's page history tracking for reliable restoration.
+		/// Restores the current context's explicit StreamDeck destination after confirmation.
 		/// </summary>
 		private static void RestorePreviousPage()
 		{
 			if (_streamDeckClient == null) return;
 			
-			// ✅ Use SDPClient's built-in page history tracking
-			if (!_streamDeckClient.RestorePreviousPage())
-			{
-				// Fallback: If history is empty, restore to current context's page
-				SwitchToCurrentContextPage();
-			}
+			SwitchToCurrentContextPage();
 		}
 
 		/// <summary>
@@ -1153,7 +1152,7 @@ namespace AcManager.UiObserver
 			DebugLog.WriteLine($"[Navigator] Pushed PageSelector context: page='{context.PageName}', scope={scopeNode.SimpleName}, stack depth={_contextStack.Count}");
 			
 			// Switch StreamDeck page
-			_streamDeckClient?.SwitchPage(pageSelectorNode.PageName);
+			_streamDeckClient?.SwitchToPage(pageSelectorNode.PageName);
 			AnalyzePageSelectorNavigation(pageSelectorNode, context);
 		}
 
@@ -1253,7 +1252,7 @@ namespace AcManager.UiObserver
 			if (!string.IsNullOrEmpty(context.PageName))
 			{
 				DebugLog.WriteLine($"[Navigator] Switching to page: {context.PageName} (context type: {context.ContextType})");
-				_streamDeckClient?.SwitchPage(context.PageName);
+				_streamDeckClient?.SwitchToPage(context.PageName);
 			}
 			else
 			{

@@ -108,7 +108,7 @@ The StreamDeck integration enables Content Manager's UI navigation through a Str
 - Automatic reconnection
 
 **Layer 4: Plugin Bridge**
-- `NWRS AC SD Plugin`: Named pipe server
+- `NWRS SD Plugin2`: Named pipe server
 - Command processing
 - StreamDeck SDK integration
 

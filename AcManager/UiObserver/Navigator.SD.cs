@@ -32,6 +32,7 @@ namespace AcManager.UiObserver
 		private static bool _discoverySessionHeaderWritten;
 		private static NavConfiguration _navConfig;
 		private static bool _isHeadless;
+		private static bool _gameIsActive;
 		
 		/// <summary>
 		/// Runtime shortcut keys indexed by KeyName.
@@ -155,6 +156,7 @@ namespace AcManager.UiObserver
 				// ═══════════════════════════════════════════════════════════
 				
 				DefineBuiltInPages();
+				_streamDeckClient.DefinePage("ACSGame", "ACS");
 
 				// ═══════════════════════════════════════════════════════════
 				// STEP 2: Define all custom pages from configuration
@@ -708,6 +710,10 @@ namespace AcManager.UiObserver
 		private static void OnReplicationCompleted(object sender, EventArgs e)
 		{
 			DebugLog.WriteLine("[Navigator] Replication complete");
+			if (_gameIsActive) {
+				DebugLog.WriteLine("[Navigator] Reasserting ACS destination after replication");
+				_streamDeckClient?.SwitchToPage("ACSGame");
+			}
 		}
 
 		private static void OnStreamDeckConnected(object sender, EventArgs e)
@@ -823,8 +829,9 @@ namespace AcManager.UiObserver
 		/// </summary>
 		private static void OnGameStarted(object sender, AcManager.Tools.SemiGui.GameStartedArgs e)
 		{
-			DebugLog.WriteLine($"[Navigator] Game started: {e.Mode}, switching to ACS profile");
-			_streamDeckClient?.SwitchProfile("ACS");
+			_gameIsActive = true;
+			DebugLog.WriteLine($"[Navigator] Game started: {e.Mode}, switching to ACS destination");
+			_streamDeckClient?.SwitchToPage("ACSGame");
 		}
 		
 		/// <summary>
@@ -833,8 +840,9 @@ namespace AcManager.UiObserver
 		/// </summary>
 		private static void OnGameEnded(object sender, AcManager.Tools.SemiGui.GameEndedArgs e)
 		{
-			DebugLog.WriteLine($"[Navigator] Game ended, switching back from ACS profile");
-			_streamDeckClient?.SwitchProfileBack();
+			_gameIsActive = false;
+			DebugLog.WriteLine($"[Navigator] Game ended, restoring the active navigation destination");
+			_streamDeckClient?.SwitchToPage(CurrentContext?.PageName);
 		}
 
 		#endregion

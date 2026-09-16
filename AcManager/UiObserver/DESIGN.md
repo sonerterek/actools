@@ -870,7 +870,7 @@ Context Stack (3 contexts):
 
 - **StreamDeck Integration Design.md** - Complete StreamDeck integration architecture
 - **Configuration System Documentation.md** - Config file format and parser
-- **Protocol.md** - Named pipe communication protocol (in NWRS AC SD Plugin)
+- **NWRS.StreamDeck/SDPClient.cs** - Named pipe communication protocol client shared with NWRS SD Plugin2
 - **CHANGELOG.md** - Chronological history of architectural changes
 
 ---

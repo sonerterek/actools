@@ -68,7 +68,7 @@ namespace AcManager.UiObserver
 			if (_streamDeckClient?.IsConnected == true)
 			{
 				DebugLog.WriteLine($"[Navigator] Switching to Confirm page");
-				_streamDeckClient.SwitchPage("Confirm");
+				_streamDeckClient.SwitchToPage("Confirm");
 			}
 			else
 			{
