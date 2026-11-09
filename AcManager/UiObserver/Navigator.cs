@@ -3,6 +3,7 @@ using FirstFloor.ModernUI.Windows.Controls;
 using FirstFloor.ModernUI.Windows.Media;
 using System;
 using System.Collections.Generic;
+using NWRS.Logging;
 using System.Diagnostics;
 using System.Linq;
 using System.Threading.Tasks;
@@ -146,6 +147,7 @@ namespace AcManager.UiObserver
 		#region Fields and Properties
 
 		private static bool _initialized = false;
+		private static TraceFileHost _traceFileHost;
 
 		// Context stack - each entry bundles scope + focused node
 		// Invariant: _contextStack.Count >= 1 after initialization (root context always present)
@@ -200,11 +202,10 @@ namespace AcManager.UiObserver
 			if (_initialized) return;
 			_initialized = true;
 
-			// ✅ Initialize debug logging FIRST (before any other logs)
-			// This captures ALL DebugLog.WriteLine() output to a timestamped log file
-			// Works in BOTH Debug and Release builds
-			DebugLog.Initialize();
-			DebugLog.CleanupOldLogs();
+			_traceFileHost = TraceFileHost.Start(new TraceFileOptions { ApplicationName = "ACLauncher" }, true);
+			DebugLog.Initialize(_traceFileHost.Writer, _traceFileHost.FilePath);
+			NWRS.SDPClient.DebugLog.Initialize(_traceFileHost.Writer, _traceFileHost.FilePath);
+			AppDomain.CurrentDomain.ProcessExit += OnProcessExit;
 
 			// ✅ TEST: Write directly to ensure logging works
 			DebugLog.WriteLine("[Navigator] ===== NAVIGATOR INITIALIZATION STARTED =====");
@@ -250,6 +251,22 @@ namespace AcManager.UiObserver
 				EventManager.RegisterClassHandler(typeof(Window), UIElement.PreviewMouseDownEvent,
 					new MouseButtonEventHandler(OnPreviewMouseDown), true);
 			} catch { }
+		}
+
+		private static void OnProcessExit(object sender, EventArgs e)
+		{
+			try {
+				DebugLog.WriteLine("[Navigator] ===== NAVIGATOR SHUTDOWN =====");
+			} catch { }
+
+			try {
+				DebugLog.Shutdown();
+			} catch { }
+
+			if (_traceFileHost != null) {
+				_traceFileHost.Dispose();
+				_traceFileHost = null;
+			}
 		}
 
 		/// <summary>

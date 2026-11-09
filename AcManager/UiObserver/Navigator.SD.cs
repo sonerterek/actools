@@ -12,7 +12,8 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Threading;
-using NWRS.StreamDeck;
+using NWRS.SDPClient;
+using StreamDeckClient = NWRS.SDPClient.SDPClient;
 
 namespace AcManager.UiObserver
 {
@@ -27,7 +28,7 @@ namespace AcManager.UiObserver
 	/// </summary>
 	internal static partial class Navigator
 	{
-		private static SDPClient _streamDeckClient;
+		private static StreamDeckClient _streamDeckClient;
 		private static bool _streamDeckHasConnectedAtLeastOnce;
 		private static bool _discoverySessionHeaderWritten;
 		private static NavConfiguration _navConfig;

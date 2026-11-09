@@ -990,11 +990,20 @@
     <Compile Include="UiObserver\NavPathFilter.cs" />
     <Compile Include="UiObserver\NavRoot.cs" />
     <Compile Include="UiObserver\Observer.cs" />
-    <Compile Include="..\..\NWRS\NWRS.StreamDeck\SDPClient.cs">
+    <Compile Include="..\..\NWRS\NWRS.SDPClient\SDPClient.cs">
       <Link>UiObserver\Shared\SDPClient.cs</Link>
     </Compile>
-    <Compile Include="..\..\NWRS\NWRS.StreamDeck\DebugLog.cs">
+    <Compile Include="..\..\NWRS\NWRS.SDPClient\DebugLog.cs">
       <Link>UiObserver\Shared\SDPDebugLog.cs</Link>
+    </Compile>
+    <Compile Include="..\..\NWRS\NWRS.Logging\TraceFileOptions.cs">
+      <Link>UiObserver\Shared\TraceFileOptions.cs</Link>
+    </Compile>
+    <Compile Include="..\..\NWRS\NWRS.Logging\TraceFileSession.cs">
+      <Link>UiObserver\Shared\TraceFileSession.cs</Link>
+    </Compile>
+    <Compile Include="..\..\NWRS\NWRS.Logging\TraceFileHost.cs">
+      <Link>UiObserver\Shared\TraceFileHost.cs</Link>
     </Compile>
     <Compile Include="UiObserver\WheelConfigDialog.xaml.cs">
       <DependentUpon>WheelConfigDialog.xaml</DependentUpon>
@@ -2436,4 +2445,21 @@
     <PostBuildEvent>if not "$(EditBinLocation)"=="NUL" "$(EditBinLocation)" /largeaddressaware /nologo "$(TargetPath)"
 if "$(ConfigurationName)"=="Release" if "$(UseCosturaToPack)"=="true" powershell.exe -ExecutionPolicy Bypass -NoProfile -File "$(ProjectDir)CreateCleanDistribution.ps1" -OutputPath "$(TargetDir)"</PostBuildEvent>
   </PropertyGroup>
+  <Target Name="DeployNWRSLauncher" DependsOnTargets="Build">
+    <Error Condition="'$(Platform)' != 'x86'" Text="DeployNWRSLauncher supports only the x86 AcManager build." />
+    <PropertyGroup>
+      <NWRSLauncherSource>$(TargetDir)</NWRSLauncherSource>
+      <NWRSLauncherSource Condition="'$(Configuration)' == 'Release'">$(TargetDir)Distribution\</NWRSLauncherSource>
+      <NWRSLauncherDeployDir Condition="'$(NWRSLauncherDeployDir)' == ''">$(MSBuildProjectDirectory)\..\..\NWRS\bin\NWRS AC Launcher\</NWRSLauncherDeployDir>
+    </PropertyGroup>
+    <Error Condition="!Exists('$(NWRSLauncherSource)Content Manager.exe')" Text="AcManager deployment source is missing Content Manager.exe: $(NWRSLauncherSource)" />
+    <ItemGroup>
+      <NWRSLauncherFiles Include="$(NWRSLauncherSource)**\*" />
+    </ItemGroup>
+    <RemoveDir Directories="$(NWRSLauncherDeployDir)" />
+    <MakeDir Directories="$(NWRSLauncherDeployDir)" />
+    <Copy SourceFiles="@(NWRSLauncherFiles)"
+          DestinationFiles="@(NWRSLauncherFiles->'$(NWRSLauncherDeployDir)%(RecursiveDir)%(Filename)%(Extension)')" />
+    <Message Text="AcManager deployed to $(NWRSLauncherDeployDir)" Importance="high" />
+  </Target>
 </Project>
