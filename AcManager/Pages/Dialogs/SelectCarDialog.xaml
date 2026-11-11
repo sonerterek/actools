@@ -4,7 +4,7 @@
     xmlns:di="clr-namespace:AcManager.Pages.Dialogs" xmlns:t="http://acstuff.club/app/tools" xmlns:c="http://acstuff.club/app/controls" mc:Ignorable="d"
     Title="{Binding SelectedCar.DisplayName}" Loaded="OnLoaded" Unloaded="OnUnloaded" d:DataContext="{d:DesignInstance di:SelectCarDialog}"
     SizeToContent="Manual" ResizeMode="CanResizeWithGrip" Width="960" MaxWidth="1600" MaxHeight="1200" ShowTitle="False" MinWidth="745" MinHeight="540"
-    Height="640" LocationAndSizeKey="SelectCarDialog_LS" WindowStartupLocation="Manual" ShowTopBlob="False" Padding="24" ButtonsMargin="0">
+    Height="640" LocationAndSizeKey="SelectCarDialog_LS" WindowStartupLocation="CenterOwner" ShowTopBlob="False" Padding="24" ButtonsMargin="0">
   <mui:ModernDialog.Resources>
     <ResourceDictionary>
       <ResourceDictionary.MergedDictionaries>

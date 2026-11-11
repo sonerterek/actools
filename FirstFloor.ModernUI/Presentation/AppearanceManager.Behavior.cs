@@ -6,11 +6,10 @@ using JetBrains.Annotations;
 
 namespace FirstFloor.ModernUI.Presentation {
     public partial class AppearanceManager {
-        private readonly StoredValue<bool> _manageWindowsLocation = Stored.Get("/Appearance.ManageWindowsLocation", true);
-
+        // NWRS owns window placement; saved preferences must not re-enable upstream management.
         public bool ManageWindowsLocation {
-            get => _manageWindowsLocation.Value;
-            set => Apply(value, _manageWindowsLocation);
+            get => false;
+            set { }
         }
 
         private readonly StoredValue<bool> _keepWithinSingleScreen = Stored.Get("/Appearance.KeepWithinSingleScreen", true);

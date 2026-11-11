@@ -615,12 +615,18 @@ namespace AcManager.Pages.Windows {
         private HwndSourceHook _hook;
         private bool _loaded;
 
+        protected override void OnSourceInitializedOverride() {
+            base.OnSourceInitializedOverride();
+
+            // The base class has initialized DPI conversion; Loaded can fire before that.
+            PositionWindow4By3();
+        }
+
         private void OnLoaded(object sender, RoutedEventArgs e) {
             if (_loaded) return;
             _loaded = true;
 
-            // Position window: centered, full height, 4:3 aspect ratio
-            PositionWindow4By3();
+            SizeChanged += OnWindowSizingChanged;
 
             AboutHelper.Instance.PropertyChanged += OnAboutPropertyChanged;
             UpdateAboutIsNew();
@@ -642,26 +648,59 @@ namespace AcManager.Pages.Windows {
             Logging.Debug("Main window is loaded and ready");
         }
 
+        private void LogWindowSizing(string stage) {
+            try {
+                var screenBounds = GetScreen().Bounds;
+                var widthSource = DependencyPropertyHelper.GetValueSource(this, WidthProperty);
+                var heightSource = DependencyPropertyHelper.GetValueSource(this, HeightProperty);
+                AcManager.UiObserver.DebugLog.WriteLine(
+                        $"[WindowSizing] {stage}: position=({Left:F2},{Top:F2}), " +
+                        $"requested=({Width:F2},{Height:F2}), actual=({ActualWidth:F2},{ActualHeight:F2}), " +
+                        $"min=({MinWidth:F2},{MinHeight:F2}), max=({MaxWidth},{MaxHeight}), " +
+                        $"state={WindowState}, SizeToContent={SizeToContent}, " +
+                        $"ManageWindowsLocation={AppearanceManager.Instance.ManageWindowsLocation}, " +
+                        $"deviceScale=({DeviceScaleX:F3},{DeviceScaleY:F3}), appScale=({ScaleX:F3},{ScaleY:F3}), " +
+                        $"monitorBounds=({screenBounds.Left:F2},{screenBounds.Top:F2},{screenBounds.Width:F2},{screenBounds.Height:F2}), " +
+                        $"localWidth={ReadLocalValue(WidthProperty)}, localHeight={ReadLocalValue(HeightProperty)}, " +
+                        $"widthSource={widthSource.BaseValueSource}, widthCoerced={widthSource.IsCoerced}, " +
+                        $"widthAnimated={widthSource.IsAnimated}, widthExpression={widthSource.IsExpression}, " +
+                        $"heightSource={heightSource.BaseValueSource}, heightCoerced={heightSource.IsCoerced}");
+            } catch (Exception ex) {
+                AcManager.UiObserver.DebugLog.WriteLine($"[WindowSizing] {stage}: diagnostics failed: {ex}");
+            }
+        }
+
+        private void OnWindowSizingChanged(object sender, SizeChangedEventArgs e) {
+            LogWindowSizing($"SizeChanged ({e.PreviousSize.Width:F2},{e.PreviousSize.Height:F2}) -> " +
+                    $"({e.NewSize.Width:F2},{e.NewSize.Height:F2})");
+            AcManager.UiObserver.DebugLog.WriteLine($"[WindowSizing] SizeChanged delivery stack: {Environment.StackTrace}");
+        }
+
         private void PositionWindow4By3() {
             try {
-                // Get the working area of the primary screen (excludes taskbar)
-                var workingArea = SystemParameters.WorkArea;
+                LogWindowSizing("Before positioning");
 
-                // Set height to full working area height (minus small margin for aesthetics)
-                var targetHeight = workingArea.Height - 20; // 10px margin top and bottom
+                // Use the current monitor's full bounds in WPF units, including taskbar space.
+                var screenBounds = GetScreen().Bounds;
+
+                // Fill the monitor height without adding outer margins.
+                var targetHeight = screenBounds.Height;
 
                 // Calculate width based on 4:3 aspect ratio
                 var targetWidth = targetHeight * 4.0 / 3.0;
 
                 // If calculated width exceeds screen width, constrain it
-                if (targetWidth > workingArea.Width - 20) {
-                    targetWidth = workingArea.Width - 20;
+                if (targetWidth > screenBounds.Width) {
+                    targetWidth = screenBounds.Width;
                     targetHeight = targetWidth * 3.0 / 4.0;
                 }
 
                 // Calculate position to center both horizontally and vertically
-                var left = (workingArea.Width - targetWidth) / 2;
-                var top = (workingArea.Height - targetHeight) / 2;
+                var left = screenBounds.Left + (screenBounds.Width - targetWidth) / 2;
+                var top = screenBounds.Top + (screenBounds.Height - targetHeight) / 2;
+
+                AcManager.UiObserver.DebugLog.WriteLine(
+                        $"[WindowSizing] Target: size=({targetWidth:F2},{targetHeight:F2}), position=({left:F2},{top:F2})");
 
                 // Apply the positioning
                 this.Width = targetWidth;
@@ -670,6 +709,9 @@ namespace AcManager.Pages.Windows {
                 this.Top = top;
 
                 Logging.Debug($"Window positioned: {targetWidth:F0}x{targetHeight:F0} (4:3 ratio) at ({left:F0}, {top:F0})");
+                LogWindowSizing("After positioning");
+                Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.ContextIdle,
+                        new Action(() => LogWindowSizing("After layout (ContextIdle)")));
             } catch (Exception ex) {
                 Logging.Warning($"Failed to position window: {ex.Message}");
             }
