@@ -157,7 +157,6 @@ namespace AcManager.UiObserver
 				// ═══════════════════════════════════════════════════════════
 				
 				DefineBuiltInPages();
-				_streamDeckClient.DefinePage("ACSGame", "ACS");
 
 				// ═══════════════════════════════════════════════════════════
 				// STEP 2: Define all custom pages from configuration
